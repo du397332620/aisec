@@ -43,8 +43,22 @@ function packageNameFromLockPath(path, item) {
   return offset === -1 ? undefined : normalized.slice(offset + marker.length).replaceAll(sep, "/");
 }
 
-function normalizeSbom(sbom) {
-  delete sbom.serialNumber;
+function deterministicUuid(value) {
+  const bytes = createHash("sha256").update(value).digest().subarray(0, 16);
+  // RFC 9562 UUIDv8: deterministic, locally defined SHA-256 name mapping.
+  bytes[6] = (bytes[6] & 0x0f) | 0x80;
+  bytes[8] = (bytes[8] & 0x3f) | 0x80;
+  const hex = bytes.toString("hex");
+  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+function expectedSbomSerial(metadata, source) {
+  const repository = typeof metadata.repository === "string" ? metadata.repository : metadata.repository?.url;
+  return `urn:uuid:${deterministicUuid(`${repository}\n${metadata.name}\n${metadata.version}\n${source.commit}`)}`;
+}
+
+function normalizeSbom(sbom, metadata, source) {
+  sbom.serialNumber = expectedSbomSerial(metadata, source);
   if (sbom.metadata && typeof sbom.metadata === "object") delete sbom.metadata.timestamp;
   if (Array.isArray(sbom.components)) sbom.components.sort((left, right) => String(left["bom-ref"]).localeCompare(String(right["bom-ref"]), "en"));
   if (Array.isArray(sbom.dependencies)) {
@@ -100,7 +114,7 @@ export async function buildRelease(outputPath, options = {}) {
     "--sbom-type=application",
     "--omit=dev",
     "--package-lock-only",
-  ])));
+  ])), metadata, source);
   const sbomName = safeFilename(tarballName.replace(/\.tgz$/, ".cdx.json"), "SBOM filename");
   await writeFile(join(outputDirectory, sbomName), `${JSON.stringify(sbom, null, 2)}\n`, { mode: 0o644 });
 
@@ -176,7 +190,7 @@ export async function verifyRelease(outputPath, options = {}) {
   const sbom = JSON.parse(await readFile(sbomPath, "utf8"));
   assert.equal(sbom.bomFormat, "CycloneDX");
   assert.equal(sbom.specVersion, "1.5");
-  assert.equal(sbom.serialNumber, undefined, "normalized SBOM must not contain a random serial number");
+  assert.equal(sbom.serialNumber, expectedSbomSerial(metadata, currentSource), "SBOM serial number must be deterministic for this source commit");
   assert.equal(sbom.metadata?.timestamp, undefined, "normalized SBOM must not contain a volatile timestamp");
   assert.equal(sbom.metadata?.component?.version, metadata.version);
   assert.equal(sbom.metadata?.component?.purl, `pkg:npm/${metadata.name.replace(/^@/, "%40")}@${metadata.version}`);
