@@ -1,0 +1,27 @@
+{
+  "schemaVersion": 1,
+  "description": "Small public bootstrap corpus. It establishes reproducibility, not broad real-world efficacy.",
+  "cases": [
+    {
+      "id": "next-supabase-react-native-vulnerable",
+      "path": "test/fixtures/vulnerable",
+      "materializeSyntheticStripeKey": true,
+      "expectedRuleIds": [
+        "ai.model-output-dangerous-sink",
+        "auth.sensitive-route-without-visible-guard",
+        "dataflow.sql-injection",
+        "mobile.insecure-http-endpoint",
+        "react-native.sensitive-async-storage",
+        "secret.client-public-privileged-variable",
+        "secret.stripe-live",
+        "supabase.permissive-rls-policy",
+        "supabase.table-without-rls"
+      ]
+    },
+    {
+      "id": "next-supabase-safe-near-miss",
+      "path": "test/fixtures/safe",
+      "expectedRuleIds": []
+    }
+  ]
+}

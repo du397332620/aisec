@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/authorization-manifest-1.0.0.json",
+  "title": "AIsec Web Authorization Manifest 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "targetBaseUrl", "environment", "ownedBy", "allowedHosts", "dataPrefix", "maxRequests", "acknowledgment"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "targetBaseUrl": { "type": "string", "format": "uri" },
+    "environment": { "enum": ["local", "test", "staging"] },
+    "ownedBy": { "type": "string", "minLength": 1 },
+    "allowedHosts": { "type": "array", "minItems": 1, "maxItems": 10, "uniqueItems": true, "items": { "type": "string", "pattern": "^[A-Za-z0-9.-]+$" } },
+    "dataPrefix": { "type": "string", "pattern": "^aisec[-_][A-Za-z0-9_-]{3,40}$" },
+    "maxRequests": { "type": "integer", "minimum": 1, "maximum": 100 },
+    "accounts": {
+      "type": "array",
+      "maxItems": 2,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["label", "usernameEnv", "passwordEnv"],
+        "properties": {
+          "label": { "type": "string", "minLength": 1 },
+          "usernameEnv": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" },
+          "passwordEnv": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" }
+        }
+      }
+    },
+    "acknowledgment": { "const": "I am authorized to test this target" }
+  }
+}

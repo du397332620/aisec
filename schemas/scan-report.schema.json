@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/scan-report-1.0.0.json",
+  "title": "AIsec ScanReport 1.0.0",
+  "type": "object",
+  "required": ["schemaVersion", "toolVersion", "scanId", "profile", "coverage", "signals", "findings", "decision", "summary", "disclaimer"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "toolVersion": { "type": "string" },
+    "scanId": { "type": "string", "pattern": "^scan_" },
+    "profile": { "type": "object" },
+    "assetGraph": { "type": "object" },
+    "coverage": { "type": "array", "items": { "$ref": "#/$defs/coverage" } },
+    "signals": { "type": "array", "items": { "$ref": "#/$defs/signal" } },
+    "attackPaths": { "type": "array" },
+    "findings": { "type": "array" },
+    "decision": { "enum": ["block", "incomplete", "review", "no_blockers_found"] },
+    "summary": { "type": "object" },
+    "disclaimer": { "type": "string", "minLength": 1 }
+  },
+  "$defs": {
+    "coverage": {
+      "type": "object",
+      "required": ["domain", "engine", "status", "required"],
+      "properties": {
+        "domain": { "type": "string" },
+        "engine": { "type": "string" },
+        "status": { "enum": ["complete", "partial", "not_run", "failed"] },
+        "required": { "type": "boolean" }
+      }
+    },
+    "signal": {
+      "type": "object",
+      "required": ["id", "fingerprint", "engine", "ruleId", "title", "severity", "evidenceLevel", "locations"],
+      "properties": {
+        "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
+        "evidenceLevel": { "enum": ["verified", "static_confirmed", "inferred"] },
+        "locations": { "type": "array" }
+      }
+    }
+  }
+}

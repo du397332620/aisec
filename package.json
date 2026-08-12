@@ -1,0 +1,62 @@
+{
+  "name": "@aisec/cli",
+  "version": "0.1.0",
+  "description": "Local-first security acceptance scanner for AI-built web and mobile projects",
+  "type": "module",
+  "bin": {
+    "aisec": "dist/src/cli.js"
+  },
+  "files": [
+    "dist/src",
+    "rules",
+    "schemas",
+    "benchmark",
+    "docs/PRODUCT_PROGRESS.md",
+    "examples",
+    "test/fixtures",
+    "README.md",
+    "SECURITY.md",
+    "CONTRIBUTING.md",
+    "LICENSE",
+    "THIRD_PARTY_NOTICES.md"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json && chmod 755 dist/src/cli.js",
+    "test": "npm run build && node --test dist/test/*.test.js",
+    "test:engines": "npm run build && node --test dist/test/engines.integration.js",
+    "check": "tsc -p tsconfig.json --noEmit",
+    "start": "node dist/src/cli.js",
+    "benchmark": "npm run build && node dist/src/benchmark.js",
+    "prepublishOnly": "npm test && npm run benchmark"
+  },
+  "main": "dist/src/index.js",
+  "types": "dist/src/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/src/index.d.ts",
+      "import": "./dist/src/index.js"
+    },
+    "./schemas/*": "./schemas/*"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "typescript": "5.9.3",
+    "yaml": "2.9.0"
+  },
+  "devDependencies": {
+    "@types/node": "24.10.1"
+  },
+  "license": "Apache-2.0",
+  "keywords": [
+    "security",
+    "sast",
+    "ai-generated-code",
+    "mcp",
+    "supabase",
+    "firebase",
+    "react-native",
+    "flutter"
+  ]
+}

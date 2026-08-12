@@ -1,0 +1,33 @@
+rules:
+  - id: aisec.javascript.dynamic-code-execution
+    languages: [javascript, typescript]
+    severity: ERROR
+    message: Dynamic code execution creates an injection boundary; remove eval or Function.
+    metadata:
+      cwe: CWE-95
+      technology: [javascript]
+    patterns:
+      - pattern-either:
+          - pattern: eval(...)
+          - pattern: new Function(...)
+  - id: aisec.python.unsafe-pickle-load
+    languages: [python]
+    severity: ERROR
+    message: Deserializing untrusted pickle data can execute arbitrary code.
+    metadata:
+      cwe: CWE-502
+      technology: [python]
+    pattern-either:
+      - pattern: pickle.loads(...)
+      - pattern: pickle.load(...)
+  - id: aisec.generic.weak-hash
+    languages: [javascript, typescript, python, java, go]
+    severity: WARNING
+    message: MD5 or SHA-1 should not protect passwords, signatures, or security-sensitive integrity.
+    metadata:
+      cwe: CWE-328
+    pattern-either:
+      - pattern: crypto.createHash("md5")
+      - pattern: crypto.createHash("sha1")
+      - pattern: hashlib.md5(...)
+      - pattern: hashlib.sha1(...)

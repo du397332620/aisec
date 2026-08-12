@@ -1,0 +1,11 @@
+{
+  "name": "aisec-vulnerable-fixture",
+  "private": true,
+  "dependencies": {
+    "next": "15.0.0",
+    "react": "19.0.0",
+    "@supabase/supabase-js": "2.0.0",
+    "openai": "5.0.0",
+    "react-native": "0.80.0"
+  }
+}

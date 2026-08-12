@@ -1,0 +1,9 @@
+schemaVersion: 1.0.0
+targetBaseUrl: http://127.0.0.1:3000
+environment: local
+ownedBy: Local developer
+allowedHosts:
+  - 127.0.0.1
+dataPrefix: aisec-local
+maxRequests: 10
+acknowledgment: I am authorized to test this target

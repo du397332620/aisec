@@ -1,0 +1,135 @@
+import { open, opendir, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { basename, extname, join } from "node:path";
+import { DEFAULT_EXCLUDES, MANIFEST_NAMES, TEXT_EXTENSIONS } from "./constants.js";
+import { assertPathInside, normalizeRelative } from "./utils.js";
+
+export interface ProjectFile {
+  absolutePath: string;
+  relativePath: string;
+  size: number;
+  content: string;
+}
+
+export interface FileInventory {
+  files: ProjectFile[];
+  skippedFiles: number;
+  skippedReasons: Record<string, number>;
+}
+
+function isTextCandidate(name: string): boolean {
+  if (MANIFEST_NAMES.has(name)) return true;
+  if (name === ".aisec.yml") return true;
+  if (name.startsWith(".env")) return true;
+  if (name === "Dockerfile" || name.startsWith("Dockerfile.")) return true;
+  return TEXT_EXTENSIONS.has(extname(name).toLowerCase());
+}
+
+export async function collectProjectFiles(
+  root: string,
+  options: { maxFiles: number; maxFileBytes: number },
+): Promise<FileInventory> {
+  const files: ProjectFile[] = [];
+  let skippedFiles = 0;
+  let entriesSeen = 0;
+  let entryLimitReached = false;
+  const skippedReasons: Record<string, number> = {};
+
+  const skip = (reason: string): void => {
+    skippedFiles += 1;
+    skippedReasons[reason] = (skippedReasons[reason] ?? 0) + 1;
+  };
+
+  async function walk(directory: string, depth = 0): Promise<void> {
+    if (entryLimitReached) return;
+    if (depth > 64) {
+      skip("directory_depth");
+      return;
+    }
+    let handle: Awaited<ReturnType<typeof opendir>>;
+    try {
+      handle = await opendir(directory);
+    } catch {
+      skip("unreadable_directory");
+      return;
+    }
+    const entries = [];
+    for await (const entry of handle) entries.push(entry);
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+
+    for (const entry of entries) {
+      entriesSeen += 1;
+      if (entriesSeen > options.maxFiles * 5) {
+        entryLimitReached = true;
+        skip("entry_limit");
+        return;
+      }
+      if (files.length >= options.maxFiles) {
+        skip("file_limit");
+        continue;
+      }
+      if (DEFAULT_EXCLUDES.has(entry.name)) {
+        skip("excluded_directory");
+        continue;
+      }
+      const absolutePath = join(directory, entry.name);
+      if (entry.isSymbolicLink()) {
+        skip("symbolic_link");
+        continue;
+      }
+      if (entry.isDirectory()) {
+        await walk(absolutePath, depth + 1);
+        continue;
+      }
+      if (!entry.isFile() || !isTextCandidate(entry.name)) continue;
+
+      let fileHandle: Awaited<ReturnType<typeof open>> | undefined;
+      try {
+        // O_NOFOLLOW closes the usual Dirent-check/read race for the final path
+        // component. The realpath check also prevents persistent parent links
+        // from escaping the selected root.
+        fileHandle = await open(absolutePath, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0));
+        const realPath = await realpath(absolutePath);
+        assertPathInside(root, realPath);
+        const fileStat = await fileHandle.stat();
+        if (!fileStat.isFile()) {
+          skip("non_regular_file");
+          continue;
+        }
+        if (fileStat.size > options.maxFileBytes) {
+          skip("oversized_file");
+          continue;
+        }
+        const content = await fileHandle.readFile("utf8");
+        if (content.includes("\u0000")) {
+          skip("binary_file");
+          continue;
+        }
+        files.push({
+          absolutePath: realPath,
+          relativePath: normalizeRelative(root, absolutePath),
+          size: fileStat.size,
+          content,
+        });
+      } catch (error) {
+        const code = error && typeof error === "object" && "code" in error ? String(error.code) : "";
+        if (code === "ELOOP") skip("symbolic_link");
+        else if (error instanceof Error && error.message.startsWith("Path escapes scan root:")) skip("path_escape");
+        else skip("unreadable_file");
+      } finally {
+        await fileHandle?.close().catch(() => undefined);
+      }
+    }
+  }
+
+  await walk(root);
+  return { files, skippedFiles, skippedReasons };
+}
+
+export function findFile(files: ProjectFile[], name: string): ProjectFile | undefined {
+  return files.find((file) => basename(file.relativePath) === name);
+}
+
+export function filesMatching(files: ProjectFile[], pattern: RegExp): ProjectFile[] {
+  return files.filter((file) => pattern.test(file.relativePath));
+}
