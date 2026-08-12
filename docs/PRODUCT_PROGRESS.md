@@ -34,7 +34,7 @@ AIsec 是面向 AI 辅助开发项目的、本地优先的安全验收 CLI 与 M
 
 当前仓库已经形成可运行的 `0.1.0` Beta 基础：CLI、原生检测、报告、基线复扫、修复合同、MCP、受控被动 Web 验证和 CI 配置均已落地。默认测试当前为 33/33 通过、0 跳过；真实引擎套件为 2/2 通过；生产依赖审计为 0 个已知漏洞。公开合成语料包含 22 个独立用例，覆盖全部 31 条确定性原生 Beta 规则，结果为 31 TP / 0 FP / 0 FN / 0 证据等级偏差。正式 Beta 运行矩阵为 Ubuntu 24.04 x64 与 macOS 15 arm64，分别使用仍受维护的 Node.js 22、24 LTS。
 
-这还不是公开发布就绪状态。P0-01 至 P0-04 已关闭；P0-05 的实现已完成并等待四组合远程矩阵验收。Git 基线、公开远程仓库、真实第三方引擎矩阵、31 条原生规则的分类语料、3 条随包 Opengrep 规则的真实引擎语料、三类公开数据契约运行时门禁及 tarball 安装 smoke 均已建立。当前最大的证据缺口转为：语料仍是小型合成集合，尚不能代表真实世界效能；没有发布 provenance 或正式安全报告渠道。
+这还不是公开发布就绪状态。P0-01 至 P0-05 已关闭。Git 基线、公开远程仓库、真实第三方引擎矩阵、31 条原生规则的分类语料、3 条随包 Opengrep 规则的真实引擎语料、三类公开数据契约运行时门禁，以及四组合跨平台 CI 和 tarball 安装 smoke 均已建立。当前最大的证据缺口转为：语料仍是小型合成集合，尚不能代表真实世界效能；没有发布 provenance 或正式安全报告渠道。
 
 ### 与现有开源工具的关系
 
@@ -142,7 +142,7 @@ AIsec 提供一个本地编排与证据归一层：
 | FR-12 | 显式授权的被动 Web 验证 | P0 | 已完成 | 非沙箱复验确认本地回环、请求上限和跨源重定向拒绝测试通过 |
 | FR-13 | 环境诊断和散列固定的本地引擎管理 | P0 | 已完成 | 安装、二次校验与篡改失效测试通过 |
 | FR-14 | JSON Schema 契约 | P0 | 已完成 | 三份 Draft 2020-12 Schema 已完整定义嵌套对象；生成、序列化、保存、读取、修复合同、授权清单和 MCP 边界均运行时校验 |
-| FR-15 | CI、依赖审计和发布包检查 | P0 | 验证中 | Ubuntu 24.04 x64 / macOS 15 arm64 × Node.js 22/24 的四组合工作流和真实 tarball 安装 smoke 已实现；等待远程矩阵验收 |
+| FR-15 | CI、依赖审计和发布包检查 | P0 | 已完成 | Ubuntu 24.04 x64 / macOS 15 arm64 × Node.js 22/24 的四组合工作流和真实 tarball 安装 smoke 全部远程通过 |
 
 ### 7.2 非功能需求
 
@@ -152,7 +152,7 @@ AIsec 提供一个本地编排与证据归一层：
 | NFR-02 | 防止目标配置和环境静默削弱第三方扫描 | 已完成 | AIsec 控制配置/忽略文件与环境；真实 fixture 证明 Gitleaks allow、Opengrep ignore/nosemgrep、Trivy 配置不能绕过 |
 | NFR-03 | 子进程和归档处理有资源边界 | 已完成 | 无 shell、超时、输出上限、有限归档条目读取、不落盘解压 |
 | NFR-04 | 本地优先和数据最小化 | 已完成 | 只传本地规则并禁用更新，Trivy 显式离线；报告位于目标外且秘密脱敏；硬性断网由 OS/CI 出站策略保证 |
-| NFR-05 | macOS/Linux 可重复运行，Node.js 22/24 LTS | 验证中 | Node 20 已结束维护并移出支持范围；四组合 CI matrix 已实现，macOS arm64 / Node 22 本地全量与打包验收通过，等待远程验收 |
+| NFR-05 | macOS/Linux 可重复运行，Node.js 22/24 LTS | 已完成 | Node 20 已结束维护并移出支持范围；四组合 CI matrix 的测试、基准、audit、pack/install smoke 全部通过 |
 | NFR-06 | 对大型或恶意仓库有已量化性能边界 | 部分完成 | 有文件、输出和超时边界；尚无规模化性能与对抗样本基准 |
 | NFR-07 | 可审计、可复现的发布供应链 | 部分完成 | lockfile 统一指向 npm 官方 registry；Actions 固定到不可变 SHA；pack/install smoke 已存在；尚无签名、SBOM、provenance 或正式 Release |
 | NFR-08 | 扫描器自身风险有公开威胁模型 | 已完成 | 已记录信任边界、限制和漏洞报告要求 |
@@ -202,7 +202,7 @@ AIsec 提供一个本地编排与证据归一层：
 | `npm run test:package` | 从 tarball 向空临时项目禁用 scripts 安装；安装后二进制版本正确，安全 fixture 为 `no_blockers_found`、脆弱 fixture 为 `block`，包内基准为 31/0/0/0 | 本地 macOS arm64 / Node 22 通过；脚本设有超时并始终清理临时目录 |
 | `engines prepare trivy` | schema `2`，状态 `ready`；记录 `updatedAt`、`downloadedAt`、`nextUpdate` | 数据库准备是显式联网动作，正常扫描离线；缺失、空、无效或过期均 fail closed |
 | `doctor --json` | Gitleaks `8.30.1`、Opengrep `1.26.0`、Trivy `0.73.0` 全部 compatible | Opengrep 托管二进制 SHA-256 为 `513ff8491f7254c9a672cf8421136a537eb53b2a8af748568bd697acdc59eefe` |
-| Git/CI | P0-03 提交 [`efaa32c`](https://github.com/du397332620/aisec/commit/efaa32ce8449f09ab34c0253f5978d2d3c1e5b5d) 已推送；提交身份为 `xiaobai <397332620@qq.com>` | GitHub Actions [run 31577633155](https://github.com/du397332620/aisec/actions/runs/31577633155) 成功；P0-05 四组合 run 待本次推送后补录 |
+| Git/CI | P0-05 提交 [`482c223`](https://github.com/du397332620/aisec/commit/482c22312b6341b2374f2a9d6f0abb6002bcac97) 已推送；提交身份为 `xiaobai <397332620@qq.com>` | GitHub Actions [run 31579898657](https://github.com/du397332620/aisec/actions/runs/31579898657) 的四个 OS/Node job 全部成功，annotations 为 0 |
 
 证据入口：
 
@@ -237,7 +237,7 @@ AIsec 提供一个本地编排与证据归一层：
 | P0-02 | 真实第三方引擎兼容矩阵 | 已完成 | 固定受支持版本；三种引擎均有安装、缺失、成功、失败、超时、畸形输出测试 | 新版本仅在扩展真实 fixture 和故障矩阵后加入支持表 |
 | P0-03 | 扩充独立安全语料 | 已完成 | 31 条确定性原生 Beta 规则和 3 条随包 Opengrep 规则均有阳性、近似阴性和预期证据级别；原生规则按类别输出结果 | 新规则必须同步目录；后续基于真实项目反馈扩展独立审阅样本 |
 | P0-04 | 完整化并校验公开 schema | 已完成 | 报告、修复合同、授权清单均可运行时校验；有兼容和无效输入测试 | 破坏性字段变化必须发布新 Schema 版本并加入迁移测试 |
-| P0-05 | 跨平台 CI 和安装验收 | 验证中 | Ubuntu 24.04 x64 / macOS 15 arm64 × Node 22/24 均运行测试、基准、audit、pack/install smoke | 推送后确认四个远程 job 全部通过并补录 run |
+| P0-05 | 跨平台 CI 和安装验收 | 已完成 | Ubuntu 24.04 x64 / macOS 15 arm64 × Node 22/24 均运行测试、基准、audit、pack/install smoke | 扩展支持范围前必须先新增矩阵组合并保持全绿 |
 | P0-06 | 发布供应链 | 部分完成 | lockfile 构建可复现；生成 SBOM/provenance；Release 与包内容可追溯到提交 | 选择 npm 发布身份与签名方案 |
 | P0-07 | 正式安全报告渠道 | 待决策 | 私密漏洞报告入口、响应流程和支持版本写入安全政策 | 确定仓库所有者和安全联系渠道 |
 | P0-08 | 规模与恶意输入基准 | 部分完成 | 记录典型/大型仓库耗时、内存和截断行为；加入归档/解析器对抗样本 | 建立不含真实秘密的规模化 fixture |
@@ -314,9 +314,9 @@ AIsec 提供一个本地编排与证据归一层：
 
 ## 17. 建议的下一执行顺序
 
-1. 远程确认跨平台 CI matrix 和真实打包安装验收（P0-05）。
-2. 增加发布 SBOM、provenance 与可追溯 Release（P0-06）。
-3. 完成 npm 包身份、安全报告渠道和公开 Beta 文档走查。
+1. 增加发布 SBOM、provenance 与可追溯 Release（P0-06）。
+2. 配置 GitHub Private Vulnerability Reporting 并完成响应流程（P0-07）。
+3. 完成 npm 包身份和公开 Beta 文档走查（P0-09）。
 
 ## 18. 更新模板
 
@@ -340,7 +340,7 @@ AIsec 提供一个本地编排与证据归一层：
 - 实现 P0-05 四组合 CI：Ubuntu 24.04 x64 / macOS 15 arm64 分别运行 Node.js 22、24；Node 20 已于 2026-04-30 EOL，因此从 Beta 支持声明移除，Node 26 等进入 LTS 后再评估。
 - 将 checkout 固定到 `v7.0.1` 提交 `3d3c42e…`、setup-node 固定到 `v7.0.0` 提交 `8207627…`，两者均使用 Node 24 Action 运行时；禁用依赖缓存并保持最小只读权限。
 - 新增真实 tarball 安装 smoke：空项目禁用 lifecycle scripts 安装，验收安装后二进制、正反扫描裁决及包内 31/0/0/0 benchmark；该测试发现并修复了符号链接入口下 benchmark 静默不运行的问题。
-- 将 lockfile 中残留的第三方镜像下载地址统一为 npm 官方 registry；本地 macOS arm64 / Node 22 package smoke 已通过，等待远程四组合验收后关闭 P0-05。
+- 将 lockfile 中残留的第三方镜像下载地址统一为 npm 官方 registry；GitHub Actions run `31579898657` 的四个 OS/Node job 全部成功且 annotations 为 0，P0-05 已关闭。
 - 完成 P0-03：将跨栈启动 fixture 扩展为 11 组阳性/近似阴性、共 22 个独立合成用例，覆盖 31 条确定性原生 Beta 规则并按六类输出结果和证据等级偏差。
 - 新增规则源码与基准目录漂移守卫；以后原生规则缺少阳性或近似阴性时 CI 会失败。凭据和 APK/IPA 仅在临时目录运行时生成，不向 Git 历史提交密钥形状或二进制产物。
 - 分类基准暴露并修复 Firebase `.rules` 文件未进入项目盘点的真实漏报；最终为 31 TP / 0 FP / 0 FN / 0 证据等级偏差，发布 tarball 内复验相同。
