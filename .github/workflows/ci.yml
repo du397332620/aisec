@@ -39,3 +39,5 @@ jobs:
         run: npm pack --dry-run
       - name: Install and run the packed CLI
         run: npm run test:package
+      - name: Reproduce and verify release files
+        run: npm run test:release

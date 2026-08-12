@@ -25,10 +25,13 @@
     "test": "npm run build && node --test dist/test/*.test.js",
     "test:engines": "npm run build && node --test dist/test/engines.integration.js",
     "test:package": "npm run build && node scripts/package-smoke.mjs",
+    "test:release": "npm run build && node scripts/release-smoke.mjs",
     "check": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/src/cli.js",
     "benchmark": "npm run build && node dist/src/benchmark.js",
-    "prepublishOnly": "npm test && npm run benchmark && npm run test:package"
+    "release:build": "npm run build && node scripts/build-release.mjs",
+    "release:verify": "node scripts/verify-release.mjs",
+    "prepublishOnly": "npm test && npm run benchmark && npm run test:package && npm run test:release"
   },
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",
@@ -52,6 +55,14 @@
     "@types/node": "24.10.1"
   },
   "license": "Apache-2.0",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/du397332620/aisec.git"
+  },
+  "homepage": "https://github.com/du397332620/aisec#readme",
+  "bugs": {
+    "url": "https://github.com/du397332620/aisec/issues"
+  },
   "keywords": [
     "security",
     "sast",

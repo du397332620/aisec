@@ -249,6 +249,7 @@ From a source checkout:
 npm test
 npm run benchmark
 npm run test:package
+npm run test:release
 
 # Requires the exact engine versions above and a prepared Trivy database
 npm run test:engines
@@ -283,3 +284,31 @@ smoke on all four supported OS/Node combinations. It uses commit-pinned GitHub
 Actions, installs from the lockfile without lifecycle scripts, then installs the
 generated tarball into an empty project and exercises the packaged CLI. The
 optional real-engine suite remains a separate, explicitly prepared test.
+
+## Release integrity
+
+`npm run release:build` creates an npm tarball, a normalized CycloneDX 1.5 SBOM,
+`release-manifest.json` and `SHA256SUMS` from a clean Git checkout. The manifest
+records the exact source commit, package/runtime versions and every artifact
+digest. `npm run release:verify -- release` rejects missing, unexpected or
+modified files and checks the SBOM against the locked production dependency
+graph.
+
+The release workflow uses a single Ubuntu 24.04 / Node.js 24.19.0 canonical builder.
+It creates GitHub Sigstore attestations for build provenance and binds the SBOM
+to the tarball. A manual workflow run only uploads a 14-day validation artifact;
+only a tag exactly matching `v<package version>` creates a GitHub Release. Verify
+a downloaded release with:
+
+```bash
+# Linux
+sha256sum --check SHA256SUMS
+
+# macOS
+shasum -a 256 -c SHA256SUMS
+
+gh attestation verify aisec-cli-0.1.0.tgz --repo du397332620/aisec
+```
+
+An npm publish is intentionally not part of this workflow until the long-term
+package owner and trusted-publishing identity are decided.
