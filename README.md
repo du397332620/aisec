@@ -291,8 +291,9 @@ optional real-engine suite remains a separate, explicitly prepared test.
 `release-manifest.json` and `SHA256SUMS` from a clean Git checkout. The manifest
 records the exact source commit, package/runtime versions and every artifact
 digest. `npm run release:verify -- release` rejects missing, unexpected or
-modified files and checks the SBOM against the locked production dependency
-graph.
+modified files, checks the source commit, and checks the SBOM against the locked
+production dependency graph. A downloaded bundle can be verified from its
+matching source checkout even when `GITHUB_REF` is not present locally.
 
 The release workflow uses a single Ubuntu 24.04 / Node.js 24.19.0 canonical builder.
 It creates GitHub Sigstore attestations for build provenance and binds the SBOM
@@ -308,6 +309,10 @@ sha256sum --check SHA256SUMS
 shasum -a 256 -c SHA256SUMS
 
 gh attestation verify aisec-cli-0.1.0.tgz --repo du397332620/aisec
+
+gh attestation verify aisec-cli-0.1.0.tgz \
+  --repo du397332620/aisec \
+  --predicate-type https://cyclonedx.org/bom
 ```
 
 An npm publish is intentionally not part of this workflow until the long-term

@@ -5,9 +5,10 @@ import { join } from "node:path";
 import { buildRelease, verifyRelease } from "./release-lib.mjs";
 
 const temporary = await mkdtemp(join(tmpdir(), "aisec-release-smoke-"));
+const originalRef = process.env.GITHUB_REF;
+const originalRefType = process.env.GITHUB_REF_TYPE;
+const originalRefName = process.env.GITHUB_REF_NAME;
 try {
-  const originalRefType = process.env.GITHUB_REF_TYPE;
-  const originalRefName = process.env.GITHUB_REF_NAME;
   process.env.GITHUB_REF_TYPE = "tag";
   process.env.GITHUB_REF_NAME = "v9.9.9";
   await assert.rejects(() => buildRelease(join(temporary, "wrong-tag"), { allowDirty: true }), /must exactly match package version/);
@@ -16,9 +17,13 @@ try {
 
   const first = join(temporary, "first");
   const second = join(temporary, "second");
+  process.env.GITHUB_REF = "refs/heads/release-smoke";
   await buildRelease(first, { allowDirty: true });
   await assert.rejects(() => buildRelease(first, { allowDirty: true }), /output already exists/);
   await buildRelease(second, { allowDirty: true });
+  process.env.GITHUB_REF = "refs/heads/unrelated";
+  await assert.rejects(() => verifyRelease(first, { allowDirty: true }), /source ref does not match/);
+  delete process.env.GITHUB_REF;
   await verifyRelease(first, { allowDirty: true });
   await verifyRelease(second, { allowDirty: true });
   const files = (await readdir(first)).sort();
@@ -33,5 +38,8 @@ try {
   await assert.rejects(() => verifyRelease(second, { allowDirty: true }), /unexpected file/);
   process.stdout.write(`Release smoke reproduced and verified ${files.length} files on ${process.platform}/${process.arch} with ${process.version}.\n`);
 } finally {
+  if (originalRef === undefined) delete process.env.GITHUB_REF; else process.env.GITHUB_REF = originalRef;
+  if (originalRefType === undefined) delete process.env.GITHUB_REF_TYPE; else process.env.GITHUB_REF_TYPE = originalRefType;
+  if (originalRefName === undefined) delete process.env.GITHUB_REF_NAME; else process.env.GITHUB_REF_NAME = originalRefName;
   await rm(temporary, { recursive: true, force: true });
 }

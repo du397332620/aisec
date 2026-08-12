@@ -160,7 +160,12 @@ export async function verifyRelease(outputPath, options = {}) {
   assert.deepEqual(manifest.package, { name: metadata.name, version: metadata.version, node: metadata.engines.node });
   assert.equal(manifest.source.repository, expectedRepository);
   assert.equal(manifest.source.commit, currentSource.commit, "release source commit does not match this checkout");
-  assert.equal(manifest.source.ref, process.env.GITHUB_REF ?? null, "release source ref does not match this environment");
+  if (process.env.GITHUB_REF !== undefined) {
+    assert.equal(manifest.source.ref, process.env.GITHUB_REF, "release source ref does not match this environment");
+  } else if (manifest.source.ref !== null) {
+    assert.equal(typeof manifest.source.ref, "string", "release source ref must be a string or null");
+    run("git", ["check-ref-format", manifest.source.ref]);
+  }
   assert.equal(manifest.source.dirty, currentSource.dirty, "release source dirty state does not match this checkout");
   if (manifest.source.dirty && !options.allowDirty) throw new Error("Release manifest records a dirty source worktree");
   assert.equal(typeof manifest.build?.node, "string");

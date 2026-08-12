@@ -32,9 +32,9 @@
 
 AIsec 是面向 AI 辅助开发项目的、本地优先的安全验收 CLI 与 MCP 服务。它把待扫描项目视为不可信输入，识别资产和攻击面，运行确定性的原生检测与可选第三方扫描器，关联证据形成攻击路径，并输出覆盖状态、发布决策和受约束的修复合同。
 
-当前仓库已经形成可运行的 `0.1.0` Beta 基础：CLI、原生检测、报告、基线复扫、修复合同、MCP、受控被动 Web 验证和 CI 配置均已落地。默认测试当前为 33/33 通过、0 跳过；真实引擎套件为 2/2 通过；生产依赖审计为 0 个已知漏洞。公开合成语料包含 22 个独立用例，覆盖全部 31 条确定性原生 Beta 规则，结果为 31 TP / 0 FP / 0 FN / 0 证据等级偏差。正式 Beta 运行矩阵为 Ubuntu 24.04 x64 与 macOS 15 arm64，分别使用仍受维护的 Node.js 22、24 LTS。
+当前仓库已经形成可运行的 `0.1.0` Beta 基础：CLI、原生检测、报告、基线复扫、修复合同、MCP、受控被动 Web 验证和 CI 配置均已落地。默认套件当前包含 35 个测试；GitHub 运行环境全部通过，本地受限沙箱为 34 通过、1 个回环网络测试跳过；真实引擎套件为 2/2 通过；生产依赖审计为 0 个已知漏洞。公开合成语料包含 22 个独立用例，覆盖全部 31 条确定性原生 Beta 规则，结果为 31 TP / 0 FP / 0 FN / 0 证据等级偏差。正式 Beta 运行矩阵为 Ubuntu 24.04 x64 与 macOS 15 arm64，分别使用仍受维护的 Node.js 22、24 LTS。
 
-这还不是公开发布就绪状态。P0-01 至 P0-05 已关闭。Git 基线、公开远程仓库、真实第三方引擎矩阵、31 条原生规则的分类语料、3 条随包 Opengrep 规则的真实引擎语料、三类公开数据契约运行时门禁，以及四组合跨平台 CI 和 tarball 安装 smoke 均已建立。当前最大的证据缺口转为：语料仍是小型合成集合，尚不能代表真实世界效能；没有发布 provenance 或正式安全报告渠道。
+这还不是公开发布就绪状态。P0-01 至 P0-05 已关闭；P0-06 的确定性产物、SBOM、校验清单和 GitHub Sigstore 证明已实现并通过无标签演练，正式版本标签、GitHub Release 与 npm 发布仍未执行。当前最大的证据缺口转为：语料仍是小型合成集合，尚不能代表真实世界效能；没有正式安全报告渠道，npm 包身份也尚未决定。
 
 ### 与现有开源工具的关系
 
@@ -154,7 +154,7 @@ AIsec 提供一个本地编排与证据归一层：
 | NFR-04 | 本地优先和数据最小化 | 已完成 | 只传本地规则并禁用更新，Trivy 显式离线；报告位于目标外且秘密脱敏；硬性断网由 OS/CI 出站策略保证 |
 | NFR-05 | macOS/Linux 可重复运行，Node.js 22/24 LTS | 已完成 | Node 20 已结束维护并移出支持范围；四组合 CI matrix 的测试、基准、audit、pack/install smoke 全部通过 |
 | NFR-06 | 对大型或恶意仓库有已量化性能边界 | 部分完成 | 有文件、输出和超时边界；尚无规模化性能与对抗样本基准 |
-| NFR-07 | 可审计、可复现的发布供应链 | 部分完成 | lockfile 统一指向 npm 官方 registry；Actions 固定到不可变 SHA；pack/install smoke 已存在；尚无签名、SBOM、provenance 或正式 Release |
+| NFR-07 | 可审计、可复现的发布供应链 | 部分完成 | 固定 Node 24.19.0 的规范构建器可生成确定性 tarball、CycloneDX 1.5 SBOM、manifest 和校验清单；GitHub provenance 与 SBOM attestation 已严格验证；尚未创建正式版本标签、Release 或 npm trusted publisher |
 | NFR-08 | 扫描器自身风险有公开威胁模型 | 已完成 | 已记录信任边界、限制和漏洞报告要求 |
 
 ## 8. 实现决策
@@ -193,13 +193,15 @@ AIsec 提供一个本地编排与证据归一层：
 
 | 检查 | 结果 | 结论 |
 | --- | --- | --- |
-| `npm test` | 33 通过 / 0 失败 / 0 跳过 | 新增全规则语料完整性、目录漂移守卫和 Opengrep 规则 ID 稳定性回归；原生、CLI/MCP、被动 Web、引擎故障、公开 Schema 与数据库测试全部通过 |
+| `npm test` | 35 个测试；GitHub 35 通过 / 0 失败 / 0 跳过；本地受限沙箱 34 通过 / 0 失败 / 1 跳过 | 唯一本地跳过项是执行沙箱禁止回环监听；远程 Ubuntu/macOS 环境已执行该测试 |
 | `npm run test:engines` | 2 通过 / 0 失败 / 0 跳过 | 三个真实引擎对恶意抑制 fixture 均产生预期发现，安全近似 fixture 三引擎均零告警 |
 | 引擎故障矩阵 | Gitleaks / Opengrep / Trivy 的 missing、成功、失败、超时、畸形输出、未验证版本均已覆盖 | 必需引擎异常统一产生 `failed`/`not_run` 覆盖和 `incomplete`，不能伪装为 clean |
 | `npm audit --omit=dev --audit-level=moderate --registry=https://registry.npmjs.org` | 0 vulnerabilities | 当前锁定的生产依赖未报告已知漏洞 |
 | `npm run benchmark` | 31 TP / 0 FP / 0 FN / 0 证据等级偏差 | 22 个独立合成用例覆盖秘密、数据流、应用、BaaS、移动源码和移动产物六类；不代表真实世界准确率 |
 | `npm pack --dry-run --json` | 189 files，约 117 KB（解包约 474 KB） | 发布文件集合包含分类语料、验证模块和三份公开 Schema |
 | `npm run test:package` | 从 tarball 向空临时项目禁用 scripts 安装；安装后二进制版本正确，安全 fixture 为 `no_blockers_found`、脆弱 fixture 为 `block`，包内基准为 31/0/0/0 | 本地 macOS arm64 / Node 22 通过；脚本设有超时并始终清理临时目录 |
+| `npm run test:release` | 同一环境的两次产物逐字节相同；错误标签、已有输出目录、篡改内容、多余文件和 CI ref 漂移均被拒绝 | tarball、CycloneDX SBOM、manifest 与 `SHA256SUMS` 构成唯一允许的发布集合；下载后可在匹配源码提交上离线复验 |
+| GitHub Release 演练 | [`88a80e5`](https://github.com/du397332620/aisec/commit/88a80e5d9b8099e3e9bac86cadd745db104f9f34) 的 [run 31585652584](https://github.com/du397332620/aisec/actions/runs/31585652584) 构建任务成功，发布任务按无标签条件跳过 | Ubuntu 24.04 / Node 24.19.0 生成并上传 4 文件产物；provenance 与 CycloneDX attestation 均按 signer workflow、source digest 和 `refs/heads/main` 严格验证通过 |
 | `engines prepare trivy` | schema `2`，状态 `ready`；记录 `updatedAt`、`downloadedAt`、`nextUpdate` | 数据库准备是显式联网动作，正常扫描离线；缺失、空、无效或过期均 fail closed |
 | `doctor --json` | Gitleaks `8.30.1`、Opengrep `1.26.0`、Trivy `0.73.0` 全部 compatible | Opengrep 托管二进制 SHA-256 为 `513ff8491f7254c9a672cf8421136a537eb53b2a8af748568bd697acdc59eefe` |
 | Git/CI | P0-05 提交 [`482c223`](https://github.com/du397332620/aisec/commit/482c22312b6341b2374f2a9d6f0abb6002bcac97) 已推送；提交身份为 `xiaobai <397332620@qq.com>` | GitHub Actions [run 31579898657](https://github.com/du397332620/aisec/actions/runs/31579898657) 的四个 OS/Node job 全部成功，annotations 为 0 |
@@ -215,6 +217,7 @@ AIsec 提供一个本地编排与证据归一层：
 - [Schema 契约测试](../test/schema-validation.test.ts)
 - [启动基准清单](../benchmark/manifest.json)
 - [CI 工作流](../.github/workflows/ci.yml)
+- [发布工作流](../.github/workflows/release.yml)
 - [扫描报告 Schema](../schemas/scan-report.schema.json)
 
 ## 11. 里程碑
@@ -222,7 +225,7 @@ AIsec 提供一个本地编排与证据归一层：
 | 里程碑 | 目标 | 状态 | 完成条件 |
 | --- | --- | --- | --- |
 | M0 产品边界 | 确立本地优先、证据驱动、非认证型安全验收定位 | 已完成 | README、安全模型和裁决语义一致 |
-| M1 Beta 基础 `0.1.0` | 形成可运行 CLI/MCP、原生规则、报告和安全执行边界 | 已完成 | 当前默认套件 33 通过、真实引擎套件 2 通过，打包主路径可用 |
+| M1 Beta 基础 `0.1.0` | 形成可运行 CLI/MCP、原生规则、报告和安全执行边界 | 已完成 | 当前默认套件 35 个测试、真实引擎套件 2 个测试，打包主路径可用 |
 | M2 公开 Beta 就绪 | 补齐真实引擎、跨平台、语料、契约和发布证据 | 进行中 | 下方 P0 条目全部完成且发布门禁通过 |
 | M3 Beta 覆盖扩展 | 扩大框架、规则、移动产物和策略可配置能力 | 未开始 | 依据公开 Beta 反馈重新确定优先级和质量阈值 |
 | M4 受控动态能力 | 评估认证态 Web 验证和移动运行时检查 | 暂缓 | 先完成授权、隔离、回滚和法律边界设计 |
@@ -238,7 +241,7 @@ AIsec 提供一个本地编排与证据归一层：
 | P0-03 | 扩充独立安全语料 | 已完成 | 31 条确定性原生 Beta 规则和 3 条随包 Opengrep 规则均有阳性、近似阴性和预期证据级别；原生规则按类别输出结果 | 新规则必须同步目录；后续基于真实项目反馈扩展独立审阅样本 |
 | P0-04 | 完整化并校验公开 schema | 已完成 | 报告、修复合同、授权清单均可运行时校验；有兼容和无效输入测试 | 破坏性字段变化必须发布新 Schema 版本并加入迁移测试 |
 | P0-05 | 跨平台 CI 和安装验收 | 已完成 | Ubuntu 24.04 x64 / macOS 15 arm64 × Node 22/24 均运行测试、基准、audit、pack/install smoke | 扩展支持范围前必须先新增矩阵组合并保持全绿 |
-| P0-06 | 发布供应链 | 部分完成 | lockfile 构建可复现；生成 SBOM/provenance；Release 与包内容可追溯到提交 | 选择 npm 发布身份与签名方案 |
+| P0-06 | 发布供应链 | 部分完成 | 确定性 tarball/SBOM/manifest/checksum 与最小权限 GitHub provenance、SBOM attestation 已实现并演练通过；标签可自动创建可追溯 Release | 决定 npm 包身份与 trusted publisher；经维护者确认后创建首个正式标签和 Release |
 | P0-07 | 正式安全报告渠道 | 待决策 | 私密漏洞报告入口、响应流程和支持版本写入安全政策 | 确定仓库所有者和安全联系渠道 |
 | P0-08 | 规模与恶意输入基准 | 部分完成 | 记录典型/大型仓库耗时、内存和截断行为；加入归档/解析器对抗样本 | 建立不含真实秘密的规模化 fixture |
 | P0-09 | 发布文档与能力矩阵 | 部分完成 | 安装、CI、MCP、引擎版本、平台限制和覆盖边界可由新用户独立复现 | 在真实干净环境完成文档走查 |
@@ -288,7 +291,7 @@ AIsec 提供一个本地编排与证据归一层：
 | 外部漏洞数据库缺失或过期 | 依赖检查伪完整 | 显式准备；记录 schema/freshness；缺失、空、无效、过期均标记 failed/incomplete | 后续增加组织镜像、数据库来源证明和自动化刷新策略 |
 | 静态推断产生误报或漏报 | 降低信任或漏过风险 | 证据分级、近似阴性、抑制到期 | 按规则跟踪真实反馈和适用框架版本 |
 | Web 验证越权或形成 SSRF | 法律与基础设施风险 | 明确授权、非生产限制、DNS 固定、同源重定向 | 动态能力扩大前单独做威胁建模和安全评审 |
-| 发布包或 CI 供应链被篡改 | 用户执行恶意扫描器 | 固定 Action、lockfile、无 lifecycle scripts | 增加 provenance、SBOM、签名与最小权限发布 |
+| 发布包或 CI 供应链被篡改 | 用户执行恶意扫描器 | 固定 Action/Node、lockfile、无 lifecycle scripts、确定性产物和校验清单；GitHub provenance/SBOM attestation 已演练 | 正式发布时验证 tag 保护、Release 证明和 npm trusted publisher；避免长期令牌 |
 | 跨平台行为可能漂移 | 新 OS、CPU 或 Node 主版本可能改变文件、进程或归档行为 | 明确四组合支持矩阵；每组都执行全量测试、基准、audit 和 tarball smoke；Action 固定到 SHA | 仅在完整矩阵通过后扩展支持范围；Node 26 进入 LTS 后再评估 |
 
 ## 15. 当前不在范围内
@@ -314,9 +317,9 @@ AIsec 提供一个本地编排与证据归一层：
 
 ## 17. 建议的下一执行顺序
 
-1. 增加发布 SBOM、provenance 与可追溯 Release（P0-06）。
-2. 配置 GitHub Private Vulnerability Reporting 并完成响应流程（P0-07）。
-3. 完成 npm 包身份和公开 Beta 文档走查（P0-09）。
+1. 配置 GitHub Private Vulnerability Reporting 并完成响应流程（P0-07）。
+2. 完成规模与恶意输入基准（P0-08）。
+3. 确认 npm 包身份，执行首个正式标签/Release，并完成公开 Beta 文档走查（P0-06、P0-09）。
 
 ## 18. 更新模板
 
@@ -337,6 +340,10 @@ AIsec 提供一个本地编排与证据归一层：
 
 ### 2026-08-12
 
+- 实现 P0-06 发布供应链主体：固定 Ubuntu 24.04 / Node.js 24.19.0 规范构建器，生成 npm tarball、确定性 CycloneDX 1.5 SBOM、源码/运行时 manifest 与 `SHA256SUMS`；构建器拒绝脏工作区、版本标签漂移和已有输出目录。
+- 新增发布 smoke，逐字节复现两次产物并验证错误标签、内容篡改、额外文件与 ref 漂移均 fail closed；下载产物可在不含 `GITHUB_REF` 的匹配源码 checkout 中复验。
+- 发布工作流采用最小权限和 commit-pinned Actions；无标签演练 run `31585652584` 完成全部门禁、产物上传、provenance 与 CycloneDX SBOM attestation，严格校验 signer workflow、source digest 和 source ref 均通过；正式标签和 npm 发布尚未执行。
+- 首次演练发现随机 SBOM identity 被删除后不满足 GitHub CycloneDX 识别条件；改为从仓库、包版本和源码提交派生符合 UUIDv8 的稳定 serial number，在保持可复现性的同时恢复标准兼容性。
 - 实现 P0-05 四组合 CI：Ubuntu 24.04 x64 / macOS 15 arm64 分别运行 Node.js 22、24；Node 20 已于 2026-04-30 EOL，因此从 Beta 支持声明移除，Node 26 等进入 LTS 后再评估。
 - 将 checkout 固定到 `v7.0.1` 提交 `3d3c42e…`、setup-node 固定到 `v7.0.0` 提交 `8207627…`，两者均使用 Node 24 Action 运行时；禁用依赖缓存并保持最小只读权限。
 - 新增真实 tarball 安装 smoke：空项目禁用 lifecycle scripts 安装，验收安装后二进制、正反扫描裁决及包内 31/0/0/0 benchmark；该测试发现并修复了符号链接入口下 benchmark 静默不运行的问题。
