@@ -7,11 +7,43 @@ security issue.
 
 ## Reporting
 
-Until a private advisory address is configured for the public repository, do
-not publish an exploit. Open a GitHub Security Advisory after publication of the
-repository, or contact the maintainer privately. Include the affected version,
-platform, minimum reproducer, impact and whether untrusted project content is
-required.
+Report suspected vulnerabilities through [GitHub's private vulnerability
+reporting form](https://github.com/du397332620/aisec/security/advisories/new).
+Do not open a public issue, discussion or pull request containing exploit
+details. General hardening ideas and rule-quality reports that do not expose a
+security boundary bypass can use the public issue tracker.
+
+Include the affected version or commit, platform, minimum reproducer, impact,
+whether untrusted project content is required, and any suggested mitigation.
+Remove real credentials and personal data from reproductions. If the form is
+temporarily unavailable, wait and retry rather than publishing the report.
+
+## Supported versions
+
+| Target | Security support |
+| --- | --- |
+| `main` before the first tagged beta | Supported |
+| Latest tagged release | Supported once a release exists |
+| Older tagged releases | Not supported during the beta |
+
+Until the first tagged release, `0.1.0` in `package.json` is an unreleased beta
+development version and `main` is the only supported target.
+
+## Response and disclosure process
+
+- The maintainer aims to acknowledge a private report within 3 business days
+  and provide an initial assessment within 7 business days.
+- Accepted reports are reproduced and fixed privately. The reporter receives a
+  status update at least every 14 days while remediation remains open.
+- The maintainer and reporter coordinate disclosure. A GitHub Security Advisory
+  and patched release are published when a fix and regression test are ready;
+  earlier disclosure may be necessary when exploitation is already public.
+- Credit is offered unless the reporter asks to remain anonymous.
+
+Good-faith testing must use systems and repositories you own or are explicitly
+authorized to test. Avoid privacy violations, service disruption, persistence,
+social engineering and access to data beyond the minimum needed to demonstrate
+impact. Stop testing and report privately once a vulnerability is confirmed.
 
 ## Trust boundaries
 
