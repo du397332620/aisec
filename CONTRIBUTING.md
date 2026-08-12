@@ -7,8 +7,9 @@
    `benchmark/manifest.json`; the catalog must match the native detector source.
 5. Keep credential-shaped values as placeholders that are materialized only in
    a temporary test directory, and ensure serialized reports redact them.
-6. Run `npm test` and `npm run benchmark`; every category must have zero false
-   positives, false negatives and evidence-level mismatches.
+6. Run `npm test`, `npm run benchmark` and `npm run test:package`; every
+   category must have zero false positives, false negatives and evidence-level
+   mismatches.
 7. For adapter or compatibility changes, prepare the Trivy database and run
    `npm run test:engines` with every version newly added to the verified matrix.
 

@@ -1,4 +1,4 @@
-import { cp, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -291,7 +291,16 @@ export function benchmarkSucceeded(result: Awaited<ReturnType<typeof runBenchmar
   return result.totals.falsePositive === 0 && result.totals.falseNegative === 0 && result.totals.evidenceMismatches === 0;
 }
 
-if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+async function isDirectExecution(): Promise<boolean> {
+  if (!process.argv[1]) return false;
+  try {
+    return await realpath(process.argv[1]) === await realpath(fileURLToPath(import.meta.url));
+  } catch {
+    return resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+  }
+}
+
+if (await isDirectExecution()) {
   const result = await runBenchmark();
   process.stdout.write(`${JSON.stringify(result, null, 2)}\n`);
   if (!benchmarkSucceeded(result)) process.exitCode = 1;

@@ -25,8 +25,15 @@ Trivy engines are installed. A report explicitly records `complete`, `partial`,
 
 ## Quick start
 
-Requires Node.js 20 or later. macOS and Linux are supported; Windows should use
-WSL for the beta.
+Requires a maintained Node.js LTS release: Node.js 22 or 24. CI verifies
+Ubuntu 24.04 x64 and macOS 15 arm64 with both Node versions. Other macOS/Linux
+versions may work but are not part of the Beta acceptance matrix; Windows should
+use WSL for the beta.
+
+| Runner | CPU | Node.js |
+| --- | --- | --- |
+| Ubuntu 24.04 | x64 | 22, 24 |
+| macOS 15 | arm64 | 22, 24 |
 
 ```bash
 npm install
@@ -241,6 +248,7 @@ From a source checkout:
 ```bash
 npm test
 npm run benchmark
+npm run test:package
 
 # Requires the exact engine versions above and a prepared Trivy database
 npm run test:engines
@@ -270,6 +278,8 @@ open decisions and next work in one place.
 
 Apache-2.0. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
-The CI workflow uses commit-pinned GitHub Actions, installs from the lockfile
-without lifecycle scripts, runs tests and the benchmark, audits production
-dependencies, and checks the publish file set.
+The CI workflow runs the default tests, benchmark, dependency audit and package
+smoke on all four supported OS/Node combinations. It uses commit-pinned GitHub
+Actions, installs from the lockfile without lifecycle scripts, then installs the
+generated tarball into an empty project and exercises the packaged CLI. The
+optional real-engine suite remains a separate, explicitly prepared test.
