@@ -32,7 +32,12 @@ test("verified real engines reject target-controlled suppressions and normalize 
 
     const byEngine = new Map(report.signals.map((signal) => [`${signal.engine}:${signal.ruleId}`, signal]));
     assert.ok([...byEngine.keys()].some((key) => key.startsWith("gitleaks:")), "gitleaks:allow and target config must not hide the fixture secret");
-    assert.ok([...byEngine.keys()].some((key) => key.startsWith("opengrep:") && key.includes("dynamic-code-execution")), ".semgrepignore and nosemgrep must not hide eval");
+    const opengrepRules = new Set(report.signals.filter((signal) => signal.engine === "opengrep").map((signal) => signal.ruleId));
+    assert.deepEqual(opengrepRules, new Set([
+      "aisec.generic.weak-hash",
+      "aisec.javascript.dynamic-code-execution",
+      "aisec.python.unsafe-pickle-load",
+    ]), ".semgrepignore and nosemgrep must not hide any shipped Opengrep rule");
     assert.ok([...byEngine.keys()].some((key) => key.startsWith("trivy:CVE-")), "target trivy.yaml, .trivyignore and trivy-secret.yaml must not hide a known vulnerable dependency");
     assert.equal(report.decision, "block");
     assert.doesNotMatch(serializeReport(report, "json"), new RegExp(SYNTHETIC_EXTERNAL_STRIPE_LIVE_KEY));

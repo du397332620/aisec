@@ -1,0 +1,9 @@
+name: safe
+on: issues
+jobs:
+  echo-title:
+    runs-on: ubuntu-latest
+    steps:
+      - env:
+          ISSUE_TITLE: ${{ github.event.issue.title }}
+        run: printf '%s\n' "$ISSUE_TITLE"

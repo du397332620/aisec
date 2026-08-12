@@ -1,0 +1,3 @@
+name: aisec_flutter_near_miss
+environment:
+  sdk: ">=3.3.0 <4.0.0"

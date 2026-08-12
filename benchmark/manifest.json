@@ -1,27 +1,307 @@
 {
-  "schemaVersion": 1,
-  "description": "Small public bootstrap corpus. It establishes reproducibility, not broad real-world efficacy.",
+  "schemaVersion": 2,
+  "description": "Public synthetic corpus for deterministic native AIsec rules. Perfect results describe only these reviewed fixtures, not real-world efficacy.",
+  "ruleCatalog": [
+    { "ruleId": "secret.stripe-live", "category": "secrets", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "secret.openai", "category": "secrets", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "secret.aws-access-key", "category": "secrets", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "secret.github-token", "category": "secrets", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "secret.private-key", "category": "secrets", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "secret.client-public-privileged-variable", "category": "secrets", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "secret.client-public-privileged-reference", "category": "secrets", "evidenceLevel": "static_confirmed" },
+
+    { "ruleId": "dataflow.sql-injection", "category": "dataflow", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "dataflow.command-injection", "category": "dataflow", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "dataflow.ssrf", "category": "dataflow", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "ai.model-output-dangerous-sink", "category": "dataflow", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "dataflow.dom-xss", "category": "dataflow", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "dataflow.react-xss", "category": "dataflow", "evidenceLevel": "static_confirmed" },
+
+    { "ruleId": "auth.sensitive-route-without-visible-guard", "category": "application", "evidenceLevel": "inferred" },
+    { "ruleId": "ci.github-expression-command-injection", "category": "application", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "privacy.sensitive-logging", "category": "application", "evidenceLevel": "inferred" },
+
+    { "ruleId": "supabase.table-without-rls", "category": "baas", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "supabase.permissive-rls-policy", "category": "baas", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "firebase.unconditional-access", "category": "baas", "evidenceLevel": "static_confirmed" },
+
+    { "ruleId": "android.cleartext-enabled", "category": "mobile-source", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "android.backup-enabled", "category": "mobile-source", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "ios.ats-disabled", "category": "mobile-source", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "mobile.webview-javascript-bridge", "category": "mobile-source", "evidenceLevel": "inferred" },
+    { "ruleId": "mobile.insecure-http-endpoint", "category": "mobile-source", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "react-native.sensitive-async-storage", "category": "mobile-source", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "flutter.sensitive-shared-preferences", "category": "mobile-source", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "flutter.webview-unrestricted-javascript", "category": "mobile-source", "evidenceLevel": "inferred" },
+    { "ruleId": "flutter.accept-all-certificates", "category": "mobile-source", "evidenceLevel": "static_confirmed" },
+
+    { "ruleId": "artifact.embedded-secret", "category": "mobile-artifact", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "artifact.cleartext-endpoint", "category": "mobile-artifact", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "artifact.ios-ats-disabled", "category": "mobile-artifact", "evidenceLevel": "static_confirmed" }
+  ],
   "cases": [
     {
-      "id": "next-supabase-react-native-vulnerable",
-      "path": "test/fixtures/vulnerable",
-      "materializeSyntheticStripeKey": true,
+      "id": "secrets-positive",
+      "category": "secrets",
+      "framework": "generic",
+      "variant": "positive",
+      "path": "test/fixtures/corpus/secrets/positive",
+      "materializeSyntheticValues": true,
       "expectedRuleIds": [
-        "ai.model-output-dangerous-sink",
-        "auth.sensitive-route-without-visible-guard",
-        "dataflow.sql-injection",
-        "mobile.insecure-http-endpoint",
-        "react-native.sensitive-async-storage",
-        "secret.client-public-privileged-variable",
         "secret.stripe-live",
-        "supabase.permissive-rls-policy",
-        "supabase.table-without-rls"
+        "secret.openai",
+        "secret.aws-access-key",
+        "secret.github-token",
+        "secret.private-key",
+        "secret.client-public-privileged-variable",
+        "secret.client-public-privileged-reference"
       ]
     },
     {
-      "id": "next-supabase-safe-near-miss",
-      "path": "test/fixtures/safe",
-      "expectedRuleIds": []
+      "id": "secrets-near-miss",
+      "category": "secrets",
+      "framework": "generic",
+      "variant": "near_miss",
+      "path": "test/fixtures/corpus/secrets/near-miss",
+      "expectedRuleIds": [],
+      "nearMissRuleIds": [
+        "secret.stripe-live",
+        "secret.openai",
+        "secret.aws-access-key",
+        "secret.github-token",
+        "secret.private-key",
+        "secret.client-public-privileged-variable",
+        "secret.client-public-privileged-reference"
+      ]
+    },
+    {
+      "id": "dataflow-positive",
+      "category": "dataflow",
+      "framework": "TypeScript/React",
+      "variant": "positive",
+      "path": "test/fixtures/corpus/dataflow/positive",
+      "expectedRuleIds": [
+        "dataflow.sql-injection",
+        "dataflow.command-injection",
+        "dataflow.ssrf",
+        "ai.model-output-dangerous-sink",
+        "dataflow.dom-xss",
+        "dataflow.react-xss"
+      ]
+    },
+    {
+      "id": "dataflow-near-miss",
+      "category": "dataflow",
+      "framework": "TypeScript/React",
+      "variant": "near_miss",
+      "path": "test/fixtures/corpus/dataflow/near-miss",
+      "expectedRuleIds": [],
+      "nearMissRuleIds": [
+        "dataflow.sql-injection",
+        "dataflow.command-injection",
+        "dataflow.ssrf",
+        "ai.model-output-dangerous-sink",
+        "dataflow.dom-xss",
+        "dataflow.react-xss"
+      ]
+    },
+    {
+      "id": "application-positive",
+      "category": "application",
+      "framework": "Next.js/GitHub Actions",
+      "variant": "positive",
+      "path": "test/fixtures/corpus/application/positive",
+      "expectedRuleIds": [
+        "auth.sensitive-route-without-visible-guard",
+        "ci.github-expression-command-injection",
+        "privacy.sensitive-logging"
+      ]
+    },
+    {
+      "id": "application-near-miss",
+      "category": "application",
+      "framework": "Next.js/GitHub Actions",
+      "variant": "near_miss",
+      "path": "test/fixtures/corpus/application/near-miss",
+      "expectedRuleIds": [],
+      "nearMissRuleIds": [
+        "auth.sensitive-route-without-visible-guard",
+        "ci.github-expression-command-injection",
+        "privacy.sensitive-logging"
+      ]
+    },
+    {
+      "id": "supabase-positive",
+      "category": "baas",
+      "framework": "Supabase",
+      "variant": "positive",
+      "path": "test/fixtures/corpus/supabase/positive",
+      "expectedRuleIds": ["supabase.table-without-rls", "supabase.permissive-rls-policy"]
+    },
+    {
+      "id": "supabase-near-miss",
+      "category": "baas",
+      "framework": "Supabase",
+      "variant": "near_miss",
+      "path": "test/fixtures/corpus/supabase/near-miss",
+      "expectedRuleIds": [],
+      "nearMissRuleIds": ["supabase.table-without-rls", "supabase.permissive-rls-policy"]
+    },
+    {
+      "id": "firebase-positive",
+      "category": "baas",
+      "framework": "Firebase",
+      "variant": "positive",
+      "path": "test/fixtures/corpus/firebase/positive",
+      "expectedRuleIds": ["firebase.unconditional-access"]
+    },
+    {
+      "id": "firebase-near-miss",
+      "category": "baas",
+      "framework": "Firebase",
+      "variant": "near_miss",
+      "path": "test/fixtures/corpus/firebase/near-miss",
+      "expectedRuleIds": [],
+      "nearMissRuleIds": ["firebase.unconditional-access"]
+    },
+    {
+      "id": "android-positive",
+      "category": "mobile-source",
+      "framework": "Android",
+      "variant": "positive",
+      "path": "test/fixtures/corpus/android/positive",
+      "expectedRuleIds": ["android.cleartext-enabled", "android.backup-enabled"]
+    },
+    {
+      "id": "android-near-miss",
+      "category": "mobile-source",
+      "framework": "Android",
+      "variant": "near_miss",
+      "path": "test/fixtures/corpus/android/near-miss",
+      "expectedRuleIds": [],
+      "nearMissRuleIds": ["android.cleartext-enabled", "android.backup-enabled"]
+    },
+    {
+      "id": "ios-positive",
+      "category": "mobile-source",
+      "framework": "iOS",
+      "variant": "positive",
+      "path": "test/fixtures/corpus/ios/positive",
+      "expectedRuleIds": ["ios.ats-disabled"]
+    },
+    {
+      "id": "ios-near-miss",
+      "category": "mobile-source",
+      "framework": "iOS",
+      "variant": "near_miss",
+      "path": "test/fixtures/corpus/ios/near-miss",
+      "expectedRuleIds": [],
+      "nearMissRuleIds": ["ios.ats-disabled"]
+    },
+    {
+      "id": "react-native-positive",
+      "category": "mobile-source",
+      "framework": "React Native",
+      "variant": "positive",
+      "path": "test/fixtures/corpus/react-native/positive",
+      "expectedRuleIds": [
+        "mobile.webview-javascript-bridge",
+        "mobile.insecure-http-endpoint",
+        "react-native.sensitive-async-storage"
+      ]
+    },
+    {
+      "id": "react-native-near-miss",
+      "category": "mobile-source",
+      "framework": "React Native",
+      "variant": "near_miss",
+      "path": "test/fixtures/corpus/react-native/near-miss",
+      "expectedRuleIds": [],
+      "nearMissRuleIds": [
+        "mobile.webview-javascript-bridge",
+        "mobile.insecure-http-endpoint",
+        "react-native.sensitive-async-storage"
+      ]
+    },
+    {
+      "id": "flutter-positive",
+      "category": "mobile-source",
+      "framework": "Flutter",
+      "variant": "positive",
+      "path": "test/fixtures/corpus/flutter/positive",
+      "expectedRuleIds": [
+        "flutter.sensitive-shared-preferences",
+        "flutter.webview-unrestricted-javascript",
+        "flutter.accept-all-certificates"
+      ]
+    },
+    {
+      "id": "flutter-near-miss",
+      "category": "mobile-source",
+      "framework": "Flutter",
+      "variant": "near_miss",
+      "path": "test/fixtures/corpus/flutter/near-miss",
+      "expectedRuleIds": [],
+      "nearMissRuleIds": [
+        "flutter.sensitive-shared-preferences",
+        "flutter.webview-unrestricted-javascript",
+        "flutter.accept-all-certificates"
+      ]
+    },
+    {
+      "id": "android-artifact-positive",
+      "category": "mobile-artifact",
+      "framework": "APK",
+      "variant": "positive",
+      "materializeSyntheticValues": true,
+      "artifact": {
+        "filename": "fixture.apk",
+        "entries": {
+          "assets/config.txt": "STRIPE=__AISEC_STRIPE_LIVE_KEY__\nAPI=\"http://api.aisec.invalid/v1\"\n"
+        }
+      },
+      "expectedRuleIds": ["artifact.embedded-secret", "artifact.cleartext-endpoint"]
+    },
+    {
+      "id": "android-artifact-near-miss",
+      "category": "mobile-artifact",
+      "framework": "APK",
+      "variant": "near_miss",
+      "artifact": {
+        "filename": "fixture.apk",
+        "entries": {
+          "assets/config.txt": "STRIPE_PUBLISHABLE=pk_live_publicfixture1234567890\nAPI=\"https://api.example.test/v1\"\n"
+        }
+      },
+      "expectedRuleIds": [],
+      "nearMissRuleIds": ["artifact.embedded-secret", "artifact.cleartext-endpoint"]
+    },
+    {
+      "id": "ios-artifact-positive",
+      "category": "mobile-artifact",
+      "framework": "IPA",
+      "variant": "positive",
+      "artifact": {
+        "filename": "fixture.ipa",
+        "entries": {
+          "Payload/Fixture.app/Info.plist": "<plist><dict><key>NSAllowsArbitraryLoads</key><true/></dict></plist>\n"
+        }
+      },
+      "expectedRuleIds": ["artifact.ios-ats-disabled"]
+    },
+    {
+      "id": "ios-artifact-near-miss",
+      "category": "mobile-artifact",
+      "framework": "IPA",
+      "variant": "near_miss",
+      "artifact": {
+        "filename": "fixture.ipa",
+        "entries": {
+          "Payload/Fixture.app/Info.plist": "<plist><dict><key>NSAllowsArbitraryLoads</key><false/></dict></plist>\n"
+        }
+      },
+      "expectedRuleIds": [],
+      "nearMissRuleIds": ["artifact.ios-ats-disabled"]
     }
   ]
 }

@@ -1,0 +1,5 @@
+{
+  "name": "aisec-react-native-near-miss",
+  "private": true,
+  "dependencies": { "react-native": "0.83.0" }
+}

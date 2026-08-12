@@ -60,6 +60,12 @@ function rulesPath(): string {
   return join(here, "..", "..", "..", "rules", "opengrep", "security.yml");
 }
 
+export function normalizeOpengrepRuleId(checkId: string | undefined): string {
+  if (!checkId) return "opengrep.unknown";
+  const bundledRule = /(?:^|[./])(aisec\.[a-z0-9][a-z0-9._-]*)$/i.exec(checkId);
+  return bundledRule?.[1] ?? checkId;
+}
+
 export async function runOpengrep(context: ScanContext): Promise<DetectorResult> {
   const started = Date.now();
   const command = await resolveEngineCommand("opengrep");
@@ -100,16 +106,19 @@ export async function runOpengrep(context: ScanContext): Promise<DetectorResult>
     return { signals: [], coverage: { domain: "sast-general", engine: "opengrep", status: "failed", required: !context.options.nativeOnly, reason: "opengrep returned an unexpected JSON schema", durationMs: result.durationMs } };
   }
   const parsed = value as { results: OpengrepResult[]; errors?: unknown[] };
-  const signals = (parsed.results ?? []).map((finding) => externalSignal({
-    engine: "opengrep",
-    ruleId: finding.check_id ?? "opengrep.unknown",
-    title: finding.extra?.message ?? finding.check_id ?? "Opengrep finding",
-    description: finding.extra?.message ?? "Opengrep matched a security rule.",
-    severity: normalizeSeverity(finding.extra?.severity),
-    locations: [{ path: finding.path ? (isAbsolute(finding.path) ? normalizeRelative(context.root, finding.path) : finding.path) : ".", line: finding.start?.line, column: finding.start?.col, endLine: finding.end?.line, snippet: finding.extra?.lines ? redactSnippet(finding.extra.lines) : undefined }],
-    cwe: Array.isArray(finding.extra?.metadata?.cwe) ? finding.extra.metadata.cwe : finding.extra?.metadata?.cwe ? [finding.extra.metadata.cwe] : undefined,
-    tags: ["sast", "opengrep", ...(finding.extra?.metadata?.technology ?? [])],
-  }));
+  const signals = (parsed.results ?? []).map((finding) => {
+    const ruleId = normalizeOpengrepRuleId(finding.check_id);
+    return externalSignal({
+      engine: "opengrep",
+      ruleId,
+      title: finding.extra?.message ?? ruleId,
+      description: finding.extra?.message ?? "Opengrep matched a security rule.",
+      severity: normalizeSeverity(finding.extra?.severity),
+      locations: [{ path: finding.path ? (isAbsolute(finding.path) ? normalizeRelative(context.root, finding.path) : finding.path) : ".", line: finding.start?.line, column: finding.start?.col, endLine: finding.end?.line, snippet: finding.extra?.lines ? redactSnippet(finding.extra.lines) : undefined }],
+      cwe: Array.isArray(finding.extra?.metadata?.cwe) ? finding.extra.metadata.cwe : finding.extra?.metadata?.cwe ? [finding.extra.metadata.cwe] : undefined,
+      tags: ["sast", "opengrep", ...(finding.extra?.metadata?.technology ?? [])],
+    });
+  });
   const status = (parsed.errors?.length ?? 0) > 0 ? "partial" : "complete";
   return { signals, coverage: { domain: "sast-general", engine: "opengrep", status, required: !context.options.nativeOnly, version: compatibility.rawVersion, reason: status === "partial" ? `${parsed.errors?.length} parse or scan errors` : undefined, durationMs: result.durationMs } };
 }

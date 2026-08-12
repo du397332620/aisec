@@ -246,13 +246,16 @@ npm run benchmark
 npm run test:engines
 ```
 
-The initial public corpus contains one deliberately vulnerable cross-stack
-fixture and one safe near-miss. Its perfect bootstrap score is **not** a
-real-world efficacy claim; the benchmark output carries this warning and is
-intended to grow into independently reviewed per-category corpora. Adding a rule
-requires both a positive fixture and a near-miss that proves it does not
-over-fire. The separate real-engine suite also verifies that hostile target
-configuration cannot suppress expected findings.
+The public synthetic corpus contains 22 isolated cases: 11 positive/near-miss
+pairs covering all 31 deterministic native Beta rules across secrets, data
+flow, application configuration, BaaS, mobile source and mobile artifacts. The
+benchmark reports each category separately and verifies the expected evidence
+level as well as false positives and false negatives. Its perfect fixture score
+is **not** a real-world efficacy claim; the corpus is deliberately small and
+synthetic. A catalog-drift test fails when a native rule is added without both
+fixture variants. The separate real-engine suite verifies Gitleaks, Opengrep and
+Trivy against their own positive/near-miss fixtures and hostile target
+configuration.
 
 ## Project status
 

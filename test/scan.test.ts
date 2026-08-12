@@ -15,6 +15,7 @@ import { serializeReport } from "../src/reporters/index.js";
 import { engineStatus, installManagedEngine, resolveEngineCommand } from "../src/engines/manager.js";
 import { sha256 } from "../src/core/utils.js";
 import { engineCompatibility, parseEngineVersion } from "../src/engines/compatibility.js";
+import { normalizeOpengrepRuleId } from "../src/engines/opengrep.js";
 import { trivyDatabaseStatus } from "../src/engines/trivy-db.js";
 import { materializeFixture, SYNTHETIC_STRIPE_LIVE_KEY } from "./helpers/materialize-fixture.js";
 
@@ -243,6 +244,16 @@ test("external engine version parsing permits only the verified Beta matrix", ()
   assert.equal(engineCompatibility("gitleaks", "8.30.1").supported, true);
   assert.equal(engineCompatibility("opengrep", "1.25.0").supported, false);
   assert.match(engineCompatibility("trivy", "unknown").reason ?? "", /could not be determined/);
+});
+
+test("bundled Opengrep rule IDs are stable across installed config paths", () => {
+  assert.equal(
+    normalizeOpengrepRuleId("rules.opengrep.aisec.javascript.dynamic-code-execution"),
+    "aisec.javascript.dynamic-code-execution",
+  );
+  assert.equal(normalizeOpengrepRuleId("third-party.rule"), "third-party.rule");
+  assert.equal(normalizeOpengrepRuleId("third-party.notaisec.rule"), "third-party.notaisec.rule");
+  assert.equal(normalizeOpengrepRuleId(undefined), "opengrep.unknown");
 });
 
 test("unverified external engine versions fail closed", async () => {

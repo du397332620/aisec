@@ -25,6 +25,7 @@ export const TEXT_EXTENSIONS = new Set([
   ".dart", ".java", ".kt", ".kts", ".swift", ".m", ".mm", ".xml",
   ".plist", ".gradle", ".properties", ".html", ".css", ".scss", ".md",
   ".py", ".go", ".rb", ".php", ".cs", ".rs", ".sh", ".graphql",
+  ".rules",
 ]);
 
 export const MANIFEST_NAMES = new Set([

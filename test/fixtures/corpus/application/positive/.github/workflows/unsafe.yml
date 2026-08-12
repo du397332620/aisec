@@ -1,0 +1,7 @@
+name: unsafe
+on: issues
+jobs:
+  echo-title:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo "${{ github.event.issue.title }}"

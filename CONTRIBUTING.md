@@ -3,9 +3,13 @@
 1. Add or change a detector with the smallest useful rule surface.
 2. Add a vulnerable fixture proving the true positive.
 3. Add a safe near-miss proving that the rule does not over-fire.
-4. Keep raw credentials synthetic and ensure serialized reports redact them.
-5. Run `npm test` and `npm run benchmark`.
-6. For adapter or compatibility changes, prepare the Trivy database and run
+4. Add the rule, category and expected evidence level to
+   `benchmark/manifest.json`; the catalog must match the native detector source.
+5. Keep credential-shaped values as placeholders that are materialized only in
+   a temporary test directory, and ensure serialized reports redact them.
+6. Run `npm test` and `npm run benchmark`; every category must have zero false
+   positives, false negatives and evidence-level mismatches.
+7. For adapter or compatibility changes, prepare the Trivy database and run
    `npm run test:engines` with every version newly added to the verified matrix.
 
 Detection changes should explain their evidence level, expected false-positive
