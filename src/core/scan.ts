@@ -21,16 +21,28 @@ export const DEFAULT_SCAN_OPTIONS: ScanOptions = {
   includeGitHistory: false,
   maxFiles: 20_000,
   maxFileBytes: 2 * 1024 * 1024,
+  maxTotalBytes: 64 * 1024 * 1024,
   timeoutMs: 120_000,
   persist: true,
 };
+
+const HARD_SCAN_LIMITS = {
+  artifacts: 10,
+  maxFiles: 100_000,
+  maxFileBytes: 16 * 1024 * 1024,
+  maxTotalBytes: 512 * 1024 * 1024,
+  timeoutMs: 30 * 60_000,
+} as const;
 
 function normalizeOptions(overrides: Partial<ScanOptions>): ScanOptions {
   const options = { ...DEFAULT_SCAN_OPTIONS, ...overrides };
   if (!['predeploy', 'native'].includes(options.profile)) throw new Error(`Unsupported scan profile: ${options.profile}`);
   if (!Array.isArray(options.artifacts) || options.artifacts.some((item) => typeof item !== "string" || !item.trim())) throw new Error("artifacts must contain non-empty file paths");
-  for (const [name, value] of Object.entries({ maxFiles: options.maxFiles, maxFileBytes: options.maxFileBytes, timeoutMs: options.timeoutMs })) {
+  if (options.artifacts.length > HARD_SCAN_LIMITS.artifacts) throw new Error(`artifacts cannot exceed ${HARD_SCAN_LIMITS.artifacts}`);
+  for (const [name, value] of Object.entries({ maxFiles: options.maxFiles, maxFileBytes: options.maxFileBytes, maxTotalBytes: options.maxTotalBytes, timeoutMs: options.timeoutMs })) {
     if (!Number.isSafeInteger(value) || value <= 0) throw new Error(`${name} must be a positive safe integer`);
+    const hardLimit = HARD_SCAN_LIMITS[name as keyof Omit<typeof HARD_SCAN_LIMITS, "artifacts">];
+    if (value > hardLimit) throw new Error(`${name} cannot exceed ${hardLimit}`);
   }
   return options;
 }
@@ -66,7 +78,7 @@ export async function scanProject(
     coverage.push({
       domain: "project-inventory",
       engine: "aisec-native",
-      status: ["file_limit", "entry_limit", "directory_depth", "oversized_file", "unreadable_file", "unreadable_directory", "symbolic_link", "path_escape"]
+      status: ["file_limit", "entry_limit", "total_bytes_limit", "directory_depth", "oversized_file", "binary_file", "non_regular_file", "unreadable_file", "unreadable_directory", "symbolic_link", "path_escape"]
         .some((reason) => inventory.skippedReasons[reason]) ? "partial" : "complete",
       required: true,
       reason: Object.entries(inventory.skippedReasons).map(([reason, count]) => `${reason}: ${count}`).join(", "),

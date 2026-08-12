@@ -1,5 +1,7 @@
 import type { Detector } from "./types.js";
 import { createSignal, makeLocation } from "../core/utils.js";
+import type { Signal } from "../schema.js";
+import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
 
 function normalizeTable(value: string): string {
   return value.replace(/["'`]/g, "").toLowerCase();
@@ -9,7 +11,13 @@ export const baasDetector: Detector = {
   name: "native-baas",
   async run(context) {
     const started = Date.now();
-    const signals = [];
+    const signals: Signal[] = [];
+    let truncated = false;
+    const add = (signal: Signal): boolean => {
+      if (signals.length >= MAX_SIGNALS_PER_DETECTOR) { truncated = true; return false; }
+      signals.push(signal);
+      return true;
+    };
     const sqlFiles = context.inventory.files.filter((file) => file.relativePath.endsWith(".sql"));
     const sqlCorpus = sqlFiles.map((file) => file.content).join("\n");
     const rlsTables = new Set<string>();
@@ -22,7 +30,7 @@ export const baasDetector: Detector = {
         for (const match of file.content.matchAll(createPattern)) {
           const table = normalizeTable(match[1] ?? "unknown");
           if (table.startsWith("auth.") || table.startsWith("storage.") || rlsTables.has(table)) continue;
-          signals.push(createSignal({
+          if (!add(createSignal({
             engine: "aisec-native",
             ruleId: "supabase.table-without-rls",
             title: `Supabase table ${table} is created without enabling RLS`,
@@ -36,12 +44,12 @@ export const baasDetector: Detector = {
             tags: ["supabase", "database", "authorization"],
             remediation: `Enable RLS on ${table} and add explicit least-privilege SELECT/INSERT/UPDATE/DELETE policies for authenticated roles.`,
             metadata: { table },
-          }));
+          }))) break;
         }
 
         const permissivePolicy = /create\s+policy[\s\S]{0,500}?(?:using|with\s+check)\s*\(\s*true\s*\)/gi;
-        for (const match of file.content.matchAll(permissivePolicy)) {
-          signals.push(createSignal({
+        for (const match of truncated ? [] : file.content.matchAll(permissivePolicy)) {
+          if (!add(createSignal({
             engine: "aisec-native",
             ruleId: "supabase.permissive-rls-policy",
             title: "Supabase RLS policy unconditionally allows access",
@@ -54,16 +62,17 @@ export const baasDetector: Detector = {
             owasp: ["A01:2021"],
             tags: ["supabase", "database", "authorization"],
             remediation: "Bind policy predicates to auth.uid(), tenant membership, or another server-controlled ownership claim.",
-          }));
+          }))) break;
         }
+        if (truncated) break;
       }
     }
 
     const firebaseFiles = context.inventory.files.filter((file) => /(?:firestore|storage)\.rules$/.test(file.relativePath));
-    for (const file of firebaseFiles) {
+    for (const file of truncated ? [] : firebaseFiles) {
       const openRule = /allow\s+(?:read|write|read\s*,\s*write|create|update|delete)(?:\s*,\s*\w+)*\s*:\s*if\s+true\s*;/gi;
       for (const match of file.content.matchAll(openRule)) {
-        signals.push(createSignal({
+        if (!add(createSignal({
           engine: "aisec-native",
           ruleId: "firebase.unconditional-access",
           title: "Firebase security rule grants unconditional access",
@@ -76,7 +85,7 @@ export const baasDetector: Detector = {
           owasp: ["A01:2021"],
           tags: ["firebase", "baas", "authorization"],
           remediation: "Require request.auth and enforce ownership or tenant membership for each operation and path.",
-        }));
+        }))) break;
       }
     }
 
@@ -89,9 +98,9 @@ export const baasDetector: Detector = {
       coverage: {
         domain: "baas-authorization",
         engine: "aisec-native",
-        status: relevant ? (missingConfiguration.length > 0 ? "partial" : "complete") : "not_run",
+        status: relevant ? (missingConfiguration.length > 0 || truncated ? "partial" : "complete") : "not_run",
         required: relevant,
-        reason: relevant ? missingConfiguration.join("; ") || undefined : "No supported BaaS configuration detected",
+        reason: relevant ? [...missingConfiguration, truncated ? `finding output reached the ${MAX_SIGNALS_PER_DETECTOR} signal safety limit` : undefined].filter(Boolean).join("; ") || undefined : "No supported BaaS configuration detected",
         durationMs: Date.now() - started,
       },
     };

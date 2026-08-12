@@ -9,6 +9,7 @@ import { runProcess } from "./process.js";
 import { externalSignal, isOptionalArrayOf, isOptionalFiniteNumber, isOptionalString, isRecord, isString, normalizeSeverity } from "./common.js";
 import { resolveEngineCommand, sanitizedEngineEnv } from "./manager.js";
 import { inspectEngineCompatibility } from "./compatibility.js";
+import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
 
 interface OpengrepResult {
   check_id?: string;
@@ -106,7 +107,8 @@ export async function runOpengrep(context: ScanContext): Promise<DetectorResult>
     return { signals: [], coverage: { domain: "sast-general", engine: "opengrep", status: "failed", required: !context.options.nativeOnly, reason: "opengrep returned an unexpected JSON schema", durationMs: result.durationMs } };
   }
   const parsed = value as { results: OpengrepResult[]; errors?: unknown[] };
-  const signals = (parsed.results ?? []).map((finding) => {
+  const signalsTruncated = parsed.results.length > MAX_SIGNALS_PER_DETECTOR;
+  const signals = parsed.results.slice(0, MAX_SIGNALS_PER_DETECTOR).map((finding) => {
     const ruleId = normalizeOpengrepRuleId(finding.check_id);
     return externalSignal({
       engine: "opengrep",
@@ -119,6 +121,8 @@ export async function runOpengrep(context: ScanContext): Promise<DetectorResult>
       tags: ["sast", "opengrep", ...(finding.extra?.metadata?.technology ?? [])],
     });
   });
-  const status = (parsed.errors?.length ?? 0) > 0 ? "partial" : "complete";
-  return { signals, coverage: { domain: "sast-general", engine: "opengrep", status, required: !context.options.nativeOnly, version: compatibility.rawVersion, reason: status === "partial" ? `${parsed.errors?.length} parse or scan errors` : undefined, durationMs: result.durationMs } };
+  const errors = parsed.errors?.length ?? 0;
+  const status = errors > 0 || signalsTruncated ? "partial" : "complete";
+  const reason = [errors > 0 ? `${errors} parse or scan errors` : undefined, signalsTruncated ? `finding output reached the ${MAX_SIGNALS_PER_DETECTOR} signal safety limit` : undefined].filter(Boolean).join("; ") || undefined;
+  return { signals, coverage: { domain: "sast-general", engine: "opengrep", status, required: !context.options.nativeOnly, version: compatibility.rawVersion, reason, durationMs: result.durationMs } };
 }

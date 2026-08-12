@@ -1,5 +1,8 @@
 export const TOOL_VERSION = "0.1.0";
 
+// A single noisy rule or external engine must not make a report unbounded.
+export const MAX_SIGNALS_PER_DETECTOR = 2_000;
+
 export const DEFAULT_EXCLUDES = new Set([
   ".git",
   ".hg",

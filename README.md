@@ -229,7 +229,12 @@ new fields or other contract changes require a new schema version.
 - Engine-specific environment variables are removed from scanner child
   processes so ambient Trivy/Gitleaks/Opengrep policy cannot weaken acceptance.
 - Child processes use argument arrays with no shell, bounded time and bounded
-  output. Managed engine binaries are hash-pinned.
+  combined output. Managed engine binaries are hash-pinned.
+- Default inventory limits are 20,000 selected text files, 2 MiB per file and
+  64 MiB total inspected candidate bytes; hard ceilings prevent CLI or API
+  callers from disabling all resource guards. Every detector or adapter emits
+  at most 2,000 signals. Reaching a safety limit makes the affected required
+  coverage `partial`, so it cannot produce a clean acceptance decision.
 - Secret values are redacted from native and normalized third-party findings.
 - AIsec supplies only local scanner rules/configuration, disables engine version
   and database updates, and runs Trivy in explicit offline mode. For a hard
@@ -248,6 +253,7 @@ From a source checkout:
 ```bash
 npm test
 npm run benchmark
+npm run benchmark:resources
 npm run test:package
 npm run test:release
 
@@ -265,6 +271,12 @@ synthetic. A catalog-drift test fails when a native rule is added without both
 fixture variants. The separate real-engine suite verifies Gitleaks, Opengrep and
 Trivy against their own positive/near-miss fixtures and hostile target
 configuration.
+
+The resource benchmark creates synthetic 500-file, 5,000-file and deliberately
+truncated projects at runtime. It records elapsed time and peak RSS in isolated
+child processes and enforces broad cross-platform regression ceilings. These
+measurements are guards against major performance or memory regressions, not a
+promise for every repository or machine.
 
 ## Project status
 

@@ -39,6 +39,7 @@ jobs:
         run: |
           npm test
           npm run benchmark
+          npm run benchmark:resources
           npm run test:package
           npm run test:release
           npm audit --omit=dev --audit-level=moderate --registry=https://registry.npmjs.org

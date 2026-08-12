@@ -33,6 +33,8 @@ Scan safety:
   Project files are read only. AIsec never runs package installation, build scripts,
   repository executables, Gradle, or CocoaPods. External scanners are optional;
   use --native-only for deterministic first-party checks without them.
+  Defaults: --max-files 20000, --max-file-bytes 2097152,
+  --max-total-bytes 67108864, --timeout-ms 120000, at most 10 artifacts.
 
 Decision exit codes:
   0 no_blockers_found/review, 1 block, 2 incomplete, 64 invalid usage/error
@@ -88,6 +90,7 @@ async function main(): Promise<void> {
       includeGitHistory: booleanFlag(parsed, "git-history"),
       maxFiles: parsePositiveInt(flag(parsed, "max-files"), 20_000),
       maxFileBytes: parsePositiveInt(flag(parsed, "max-file-bytes"), 2 * 1024 * 1024),
+      maxTotalBytes: parsePositiveInt(flag(parsed, "max-total-bytes"), 64 * 1024 * 1024),
       timeoutMs: parsePositiveInt(flag(parsed, "timeout-ms"), 120_000),
       persist: !booleanFlag(parsed, "no-persist"),
     }, baseline);

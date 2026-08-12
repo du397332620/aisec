@@ -4,6 +4,7 @@ import type { DetectorResult } from "./types.js";
 import type { ScanContext } from "../core/context.js";
 import type { Severity, Signal } from "../schema.js";
 import { createSignal, makeLocation } from "../core/utils.js";
+import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
 
 const TS_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
 
@@ -97,8 +98,15 @@ export async function runTypeScriptDataflow(context: ScanContext): Promise<Detec
   const signals: Signal[] = [];
   const files = context.inventory.files.filter((file) => TS_EXTENSIONS.has(extname(file.relativePath).toLowerCase()));
   let filesWithParseErrors = 0;
+  let truncated = false;
+
+  const add = (signal: Signal): void => {
+    if (signals.length >= MAX_SIGNALS_PER_DETECTOR) truncated = true;
+    else signals.push(signal);
+  };
 
   for (const file of files) {
+    if (truncated) break;
     const source = ts.createSourceFile(file.relativePath, file.content, ts.ScriptTarget.Latest, true, scriptKind(file.relativePath));
     const parseDiagnostics = (source as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
     if (parseDiagnostics.length > 0) filesWithParseErrors += 1;
@@ -110,6 +118,7 @@ export async function runTypeScriptDataflow(context: ScanContext): Promise<Detec
     const isModelTainted = (expression: ts.Expression): boolean => directModelOutput(expression, modelObjects) || expressionHasIdentifier(expression, modelTainted);
 
     const visit = (node: ts.Node): void => {
+      if (truncated) return;
       if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
         const initText = node.initializer.getText();
         if (isUserTainted(node.initializer)) userTainted.add(node.name.text);
@@ -127,7 +136,7 @@ export async function runTypeScriptDataflow(context: ScanContext): Promise<Detec
         if (first && isUserTainted(first)) {
           if (["query", "execute", "exec", "run", "$queryRawUnsafe", "$executeRawUnsafe"].includes(name)
             && /(?:select|insert|update|delete|sql|query|`|\+)/i.test(first.getText())) {
-            signals.push(makeFlowSignal(source, file.relativePath, node, {
+            add(makeFlowSignal(source, file.relativePath, node, {
               ruleId: "dataflow.sql-injection",
               title: "Request data reaches a database query without a visible parameter boundary",
               description: "The local data-flow analyzer traced request-controlled data into a query-like sink.",
@@ -136,7 +145,7 @@ export async function runTypeScriptDataflow(context: ScanContext): Promise<Detec
             }));
           }
           if (["exec", "execSync", "spawn", "spawnSync", "system", "eval", "Function"].includes(name)) {
-            signals.push(makeFlowSignal(source, file.relativePath, node, {
+            add(makeFlowSignal(source, file.relativePath, node, {
               ruleId: "dataflow.command-injection",
               title: "Request data reaches code or command execution",
               description: "Request-controlled data flows into an execution primitive.",
@@ -145,7 +154,7 @@ export async function runTypeScriptDataflow(context: ScanContext): Promise<Detec
             }));
           }
           if (["fetch", "request", "get", "post"].includes(name) && /(?:url|uri|href|req|request|params|query)/i.test(first.getText())) {
-            signals.push(makeFlowSignal(source, file.relativePath, node, {
+            add(makeFlowSignal(source, file.relativePath, node, {
               ruleId: "dataflow.ssrf",
               title: "Request-controlled URL reaches a server-side network client",
               description: "An attacker-controlled URL may let the server contact internal or privileged services.",
@@ -155,7 +164,7 @@ export async function runTypeScriptDataflow(context: ScanContext): Promise<Detec
           }
         }
         if (first && isModelTainted(first) && ["exec", "execSync", "spawn", "spawnSync", "system", "eval", "Function", "query", "execute"].includes(name)) {
-          signals.push(makeFlowSignal(source, file.relativePath, node, {
+          add(makeFlowSignal(source, file.relativePath, node, {
             ruleId: "ai.model-output-dangerous-sink",
             title: "Model output reaches a privileged execution sink",
             description: "Untrusted model output flows into command, code, or database execution. Prompt injection can turn this into remote code execution or data loss.",
@@ -167,7 +176,7 @@ export async function runTypeScriptDataflow(context: ScanContext): Promise<Detec
 
       if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
         && /(?:innerHTML|outerHTML)$/.test(node.left.getText()) && isUserTainted(node.right)) {
-        signals.push(makeFlowSignal(source, file.relativePath, node, {
+        add(makeFlowSignal(source, file.relativePath, node, {
           ruleId: "dataflow.dom-xss",
           title: "Untrusted data is assigned to an HTML execution sink",
           description: "Request-controlled data reaches innerHTML or outerHTML.",
@@ -178,7 +187,7 @@ export async function runTypeScriptDataflow(context: ScanContext): Promise<Detec
 
       if (ts.isJsxAttribute(node) && node.name.getText() === "dangerouslySetInnerHTML" && node.initializer
         && expressionHasIdentifier(node.initializer, userTainted)) {
-        signals.push(makeFlowSignal(source, file.relativePath, node, {
+        add(makeFlowSignal(source, file.relativePath, node, {
           ruleId: "dataflow.react-xss",
           title: "Untrusted data reaches dangerouslySetInnerHTML",
           description: "A tainted value is rendered as raw HTML in React.",
@@ -186,7 +195,7 @@ export async function runTypeScriptDataflow(context: ScanContext): Promise<Detec
           remediation: "Avoid raw HTML; otherwise sanitize with a strict allowlist before creating the __html object.",
         }));
       }
-      ts.forEachChild(node, visit);
+      if (!truncated) ts.forEachChild(node, visit);
     };
     visit(source);
   }
@@ -196,9 +205,11 @@ export async function runTypeScriptDataflow(context: ScanContext): Promise<Detec
     coverage: {
       domain: "js-ts-dataflow",
       engine: "aisec-typescript",
-      status: files.length > 0 ? (filesWithParseErrors > 0 ? "partial" : "complete") : "not_run",
+      status: files.length > 0 ? (filesWithParseErrors > 0 || truncated ? "partial" : "complete") : "not_run",
       required: context.profile.languages.some((language) => ["JavaScript", "TypeScript"].includes(language)),
-      reason: files.length > 0 ? (filesWithParseErrors > 0 ? `${filesWithParseErrors} source file(s) had parser diagnostics` : undefined) : "No JavaScript or TypeScript source files detected",
+      reason: files.length > 0
+        ? [filesWithParseErrors > 0 ? `${filesWithParseErrors} source file(s) had parser diagnostics` : undefined, truncated ? `finding output reached the ${MAX_SIGNALS_PER_DETECTOR} signal safety limit` : undefined].filter(Boolean).join("; ") || undefined
+        : "No JavaScript or TypeScript source files detected",
       durationMs: Date.now() - started,
     },
   };

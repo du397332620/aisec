@@ -78,6 +78,14 @@ doesn't execute project code, but optional scanner engines have their own parser
 attack surfaces. AIsec's resource bounds reduce risk; they do not prove parser
 safety.
 
+The default source inventory accepts at most 20,000 text files, 2 MiB per file
+and reads at most 64 MiB of aggregate candidate input. Every detector/adapter
+emits at most 2,000 signals, and at most 10 APK/IPA paths are accepted. Supported
+CLI overrides have hard ceilings; reaching a limit is reported as partial or
+failed coverage rather than a clean result. The synthetic resource benchmark
+checks broad time/RSS budgets, but repository shape and third-party parser
+behavior can still vary.
+
 AIsec passes local rule/configuration paths and disables supported update checks;
 Trivy is invoked in explicit offline mode. These application flags are not a
 kernel-level egress control. Restrict scanner network access at the OS or CI

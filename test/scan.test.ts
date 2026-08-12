@@ -321,7 +321,7 @@ test("every external adapter fails closed on process failure, malformed output a
           let behavior = "printf 'engine failed\\n' >&2\nexit 2";
           if (mode === "timeout") behavior = "while :; do :; done";
           if (mode === "malformed" && name === "gitleaks") {
-            behavior = "report=''\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = \"--report-path\" ]; then shift; report=\"$1\"; break; fi\n  shift\ndone\nprintf 'not-json' > \"$report\"\nexit 0";
+            behavior = "printf 'not-json'\nexit 0";
           } else if (mode === "malformed" && name === "trivy") {
             behavior = "printf '{\"SchemaVersion\":2,\"Results\":\"not-an-array\"}\\n'\nexit 0";
           } else if (mode === "malformed") {

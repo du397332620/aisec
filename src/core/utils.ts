@@ -123,8 +123,9 @@ export function assertPathInside(root: string, candidate: string): void {
 
 export function parsePositiveInt(value: string | undefined, fallback: number): number {
   if (value === undefined) return fallback;
-  const parsed = Number.parseInt(value, 10);
-  if (!Number.isFinite(parsed) || parsed <= 0) throw new Error(`Expected a positive integer, received: ${value}`);
+  if (!/^[1-9][0-9]*$/.test(value)) throw new Error(`Expected a positive integer, received: ${value}`);
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) throw new Error(`Expected a positive integer, received: ${value}`);
   return parsed;
 }
 

@@ -33,6 +33,8 @@ jobs:
         run: npm test
       - name: Run bootstrap benchmark
         run: npm run benchmark
+      - name: Run resource regression benchmark
+        run: npm run benchmark:resources
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=moderate --registry=https://registry.npmjs.org
       - name: Verify publish contents

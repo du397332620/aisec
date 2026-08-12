@@ -29,9 +29,10 @@
     "check": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/src/cli.js",
     "benchmark": "npm run build && node dist/src/benchmark.js",
+    "benchmark:resources": "npm run build && node scripts/resource-benchmark.mjs",
     "release:build": "npm run build && node scripts/build-release.mjs",
     "release:verify": "node scripts/verify-release.mjs",
-    "prepublishOnly": "npm test && npm run benchmark && npm run test:package && npm run test:release"
+    "prepublishOnly": "npm test && npm run benchmark && npm run benchmark:resources && npm run test:package && npm run test:release"
   },
   "main": "dist/src/index.js",
   "types": "dist/src/index.d.ts",

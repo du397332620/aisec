@@ -1,5 +1,7 @@
+import type { Signal } from "../schema.js";
 import type { Detector } from "./types.js";
 import { createSignal, makeLocation } from "../core/utils.js";
+import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
 
 interface SecretPattern {
   id: string;
@@ -23,13 +25,19 @@ export const secretDetector: Detector = {
   name: "native-secrets",
   async run(context) {
     const started = Date.now();
-    const signals = [];
+    const signals: Signal[] = [];
+    let truncated = false;
+    const add = (signal: ReturnType<typeof createSignal>): boolean => {
+      if (signals.length >= MAX_SIGNALS_PER_DETECTOR) { truncated = true; return false; }
+      signals.push(signal);
+      return true;
+    };
     for (const file of context.inventory.files) {
       for (const definition of PATTERNS) {
         definition.pattern.lastIndex = 0;
         for (const match of file.content.matchAll(definition.pattern)) {
           const inTest = TEST_PATH.test(file.relativePath);
-          signals.push(createSignal({
+          if (!add(createSignal({
             engine: "aisec-native",
             ruleId: definition.id,
             title: definition.title,
@@ -44,13 +52,14 @@ export const secretDetector: Detector = {
             owasp: ["A02:2021"],
             tags: definition.tags,
             remediation: "Revoke the credential, remove it from source and history, and load a least-privileged replacement from a server-side secret store.",
-          }));
+          }))) break;
         }
+        if (truncated) break;
       }
 
       const publicSecret = /\b((?:NEXT_PUBLIC|VITE|EXPO_PUBLIC|REACT_APP)_[A-Z0-9_]*(?:SECRET|SERVICE_ROLE|PRIVATE|ADMIN|PASSWORD)[A-Z0-9_]*)\s*=\s*([^\s#]+)/g;
-      for (const match of file.content.matchAll(publicSecret)) {
-        signals.push(createSignal({
+      for (const match of truncated ? [] : file.content.matchAll(publicSecret)) {
+        if (!add(createSignal({
           engine: "aisec-native",
           ruleId: "secret.client-public-privileged-variable",
           title: "Privileged value exposed through a client-public environment variable",
@@ -64,11 +73,11 @@ export const secretDetector: Detector = {
           tags: ["secret", "client", "baas"],
           remediation: "Move privileged operations to a server-side route and expose only an anonymous/public client key to the application bundle.",
           metadata: { variable: match[1] ?? "unknown" },
-        }));
+        }))) break;
       }
       const publicSecretReference = /(?:process\.env\.|import\.meta\.env\.)(?:NEXT_PUBLIC|VITE|EXPO_PUBLIC|REACT_APP)_[A-Z0-9_]*(?:SECRET|SERVICE_ROLE|PRIVATE|ADMIN|PASSWORD)[A-Z0-9_]*/g;
-      for (const match of file.content.matchAll(publicSecretReference)) {
-        signals.push(createSignal({
+      for (const match of truncated ? [] : file.content.matchAll(publicSecretReference)) {
+        if (!add(createSignal({
           engine: "aisec-native",
           ruleId: "secret.client-public-privileged-reference",
           title: "Client code references a public-prefixed privileged variable",
@@ -81,12 +90,13 @@ export const secretDetector: Detector = {
           owasp: ["A02:2021"],
           tags: ["secret", "client", "configuration"],
           remediation: "Rename and move the privileged value to a server-only environment variable, then expose a narrow authenticated server operation to the client.",
-        }));
+        }))) break;
       }
+      if (truncated) break;
     }
     return {
       signals,
-      coverage: { domain: "secrets", engine: "aisec-native", status: "complete", required: true, durationMs: Date.now() - started },
+      coverage: { domain: "secrets", engine: "aisec-native", status: truncated ? "partial" : "complete", required: true, reason: truncated ? `finding output reached the ${MAX_SIGNALS_PER_DETECTOR} signal safety limit` : undefined, durationMs: Date.now() - started },
     };
   },
 };

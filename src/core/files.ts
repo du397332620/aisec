@@ -13,6 +13,7 @@ export interface ProjectFile {
 
 export interface FileInventory {
   files: ProjectFile[];
+  totalBytes: number;
   skippedFiles: number;
   skippedReasons: Record<string, number>;
 }
@@ -27,12 +28,16 @@ function isTextCandidate(name: string): boolean {
 
 export async function collectProjectFiles(
   root: string,
-  options: { maxFiles: number; maxFileBytes: number },
+  options: { maxFiles: number; maxFileBytes: number; maxTotalBytes: number },
 ): Promise<FileInventory> {
   const files: ProjectFile[] = [];
+  let totalBytes = 0;
   let skippedFiles = 0;
   let entriesSeen = 0;
+  let fileLimitReached = false;
   let entryLimitReached = false;
+  let totalBytesLimitReached = false;
+  const entryLimit = Math.min(100_000, options.maxFiles * 5);
   const skippedReasons: Record<string, number> = {};
 
   const skip = (reason: string): void => {
@@ -41,7 +46,7 @@ export async function collectProjectFiles(
   };
 
   async function walk(directory: string, depth = 0): Promise<void> {
-    if (entryLimitReached) return;
+    if (fileLimitReached || entryLimitReached || totalBytesLimitReached) return;
     if (depth > 64) {
       skip("directory_depth");
       return;
@@ -54,20 +59,20 @@ export async function collectProjectFiles(
       return;
     }
     const entries = [];
-    for await (const entry of handle) entries.push(entry);
+    for await (const entry of handle) {
+      if (entriesSeen >= entryLimit) {
+        entryLimitReached = true;
+        skip("entry_limit");
+        break;
+      }
+      entriesSeen += 1;
+      entries.push(entry);
+    }
+    if (entryLimitReached) return;
     entries.sort((a, b) => a.name.localeCompare(b.name));
 
     for (const entry of entries) {
-      entriesSeen += 1;
-      if (entriesSeen > options.maxFiles * 5) {
-        entryLimitReached = true;
-        skip("entry_limit");
-        return;
-      }
-      if (files.length >= options.maxFiles) {
-        skip("file_limit");
-        continue;
-      }
+      if (fileLimitReached || entryLimitReached || totalBytesLimitReached) return;
       if (DEFAULT_EXCLUDES.has(entry.name)) {
         skip("excluded_directory");
         continue;
@@ -78,10 +83,24 @@ export async function collectProjectFiles(
         continue;
       }
       if (entry.isDirectory()) {
+        if (files.length >= options.maxFiles) {
+          fileLimitReached = true;
+          skip("file_limit");
+          return;
+        }
         await walk(absolutePath, depth + 1);
         continue;
       }
-      if (!entry.isFile() || !isTextCandidate(entry.name)) continue;
+      if (!entry.isFile()) {
+        skip("non_regular_file");
+        continue;
+      }
+      if (!isTextCandidate(entry.name)) continue;
+      if (files.length >= options.maxFiles) {
+        fileLimitReached = true;
+        skip("file_limit");
+        return;
+      }
 
       let fileHandle: Awaited<ReturnType<typeof open>> | undefined;
       try {
@@ -100,7 +119,34 @@ export async function collectProjectFiles(
           skip("oversized_file");
           continue;
         }
-        const content = await fileHandle.readFile("utf8");
+        if (totalBytes + fileStat.size > options.maxTotalBytes) {
+          totalBytesLimitReached = true;
+          skip("total_bytes_limit");
+          return;
+        }
+        const chunks: Buffer[] = [];
+        let bytesReadTotal = 0;
+        while (bytesReadTotal <= options.maxFileBytes) {
+          const chunk = Buffer.allocUnsafe(Math.min(64 * 1024, options.maxFileBytes + 1 - bytesReadTotal));
+          const { bytesRead } = await fileHandle.read(chunk, 0, chunk.length, null);
+          if (bytesRead === 0) break;
+          bytesReadTotal += bytesRead;
+          chunks.push(chunk.subarray(0, bytesRead));
+        }
+        if (bytesReadTotal > options.maxFileBytes) {
+          skip("oversized_file");
+          continue;
+        }
+        if (totalBytes + bytesReadTotal > options.maxTotalBytes) {
+          totalBytesLimitReached = true;
+          skip("total_bytes_limit");
+          return;
+        }
+        // Count every inspected candidate byte, including files later rejected
+        // as binary. Otherwise an attacker could bypass the aggregate I/O bound
+        // with many NUL-containing files that use a supported source extension.
+        totalBytes += bytesReadTotal;
+        const content = Buffer.concat(chunks, bytesReadTotal).toString("utf8");
         if (content.includes("\u0000")) {
           skip("binary_file");
           continue;
@@ -108,7 +154,7 @@ export async function collectProjectFiles(
         files.push({
           absolutePath: realPath,
           relativePath: normalizeRelative(root, absolutePath),
-          size: fileStat.size,
+          size: bytesReadTotal,
           content,
         });
       } catch (error) {
@@ -123,7 +169,7 @@ export async function collectProjectFiles(
   }
 
   await walk(root);
-  return { files, skippedFiles, skippedReasons };
+  return { files, totalBytes, skippedFiles, skippedReasons };
 }
 
 export function findFile(files: ProjectFile[], name: string): ProjectFile | undefined {

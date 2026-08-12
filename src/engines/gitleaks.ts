@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { DetectorResult } from "../detectors/types.js";
@@ -9,6 +9,7 @@ import { runProcess } from "./process.js";
 import { externalSignal, isOptionalFiniteNumber, isOptionalString, isRecord } from "./common.js";
 import { resolveEngineCommand, sanitizedEngineEnv } from "./manager.js";
 import { inspectEngineCompatibility } from "./compatibility.js";
+import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
 
 interface GitleaksFinding {
   Description?: string;
@@ -42,13 +43,12 @@ export async function runGitleaks(context: ScanContext): Promise<DetectorResult>
     return { signals: [], coverage: { domain: "secrets-history", engine: "gitleaks", status: "failed", required: !context.options.nativeOnly, version: compatibility.rawVersion, reason: compatibility.reason, durationMs: Date.now() - started } };
   }
   const temporary = await mkdtemp(join(tmpdir(), "aisec-gitleaks-"));
-  const reportPath = join(temporary, "report.json");
   try {
     const configPath = join(temporary, "gitleaks.toml");
     const ignorePath = join(temporary, "gitleaksignore");
     await writeFile(configPath, "title = \"AIsec trusted defaults\"\n[extend]\nuseDefault = true\n", { mode: 0o600 });
     await writeFile(ignorePath, "# AIsec intentionally accepts no target-controlled suppressions.\n", { mode: 0o600 });
-    const args = ["detect", "--source", context.root, "--config", configPath, "--gitleaks-ignore-path", ignorePath, "--ignore-gitleaks-allow", "--report-format", "json", "--report-path", reportPath, "--redact", "--no-banner"];
+    const args = ["detect", "--source", context.root, "--config", configPath, "--gitleaks-ignore-path", ignorePath, "--ignore-gitleaks-allow", "--report-format", "json", "--report-path", "-", "--redact", "--no-banner"];
     if (!context.options.includeGitHistory) args.push("--no-git");
     const result = await runProcess(command, args, { timeoutMs: context.options.timeoutMs, maxOutputBytes: 2 * 1024 * 1024, env: sanitizedEngineEnv("gitleaks") });
     if (result.timedOut || result.truncated) return { signals: [], coverage: { domain: "secrets-history", engine: "gitleaks", status: "failed", required: !context.options.nativeOnly, reason: result.timedOut ? "gitleaks timed out" : "gitleaks output exceeded safety limit", durationMs: result.durationMs } };
@@ -56,12 +56,8 @@ export async function runGitleaks(context: ScanContext): Promise<DetectorResult>
       return { signals: [], coverage: { domain: "secrets-history", engine: "gitleaks", status: "failed", required: !context.options.nativeOnly, reason: redactSnippet(result.stderr || `gitleaks exited ${result.exitCode}`), durationMs: result.durationMs } };
     }
     let parsed: GitleaksFinding[] = [];
-    let reportText: string | undefined;
-    try { reportText = await readFile(reportPath, "utf8"); } catch {
-      return { signals: [], coverage: { domain: "secrets-history", engine: "gitleaks", status: "failed", required: !context.options.nativeOnly, reason: "gitleaks did not produce a JSON report", durationMs: result.durationMs } };
-    }
     let value: unknown;
-    try { value = JSON.parse(reportText); } catch {
+    try { value = JSON.parse(result.stdout); } catch {
       return { signals: [], coverage: { domain: "secrets-history", engine: "gitleaks", status: "failed", required: !context.options.nativeOnly, reason: "gitleaks produced invalid JSON", durationMs: result.durationMs } };
     }
     if (!Array.isArray(value) || !value.every(isGitleaksFinding)) {
@@ -71,7 +67,8 @@ export async function runGitleaks(context: ScanContext): Promise<DetectorResult>
     if (result.exitCode === 1 && parsed.length === 0) {
       return { signals: [], coverage: { domain: "secrets-history", engine: "gitleaks", status: "failed", required: !context.options.nativeOnly, reason: "gitleaks did not produce a valid JSON report", durationMs: result.durationMs } };
     }
-    const signals = parsed.map((finding) => externalSignal({
+    const signalsTruncated = parsed.length > MAX_SIGNALS_PER_DETECTOR;
+    const signals = parsed.slice(0, MAX_SIGNALS_PER_DETECTOR).map((finding) => externalSignal({
       engine: "gitleaks",
       ruleId: finding.RuleID || "gitleaks.secret",
       title: finding.Description || "Secret detected by Gitleaks",
@@ -86,7 +83,7 @@ export async function runGitleaks(context: ScanContext): Promise<DetectorResult>
       tags: ["secret", "gitleaks", finding.Commit ? "git-history" : "working-tree"],
       remediation: "Revoke the credential, remove it from source and history, then provision a least-privileged replacement.",
     }));
-    return { signals, coverage: { domain: "secrets-history", engine: "gitleaks", status: "complete", required: !context.options.nativeOnly, version: compatibility.rawVersion, durationMs: result.durationMs } };
+    return { signals, coverage: { domain: "secrets-history", engine: "gitleaks", status: signalsTruncated ? "partial" : "complete", required: !context.options.nativeOnly, version: compatibility.rawVersion, reason: signalsTruncated ? `finding output reached the ${MAX_SIGNALS_PER_DETECTOR} signal safety limit` : undefined, durationMs: result.durationMs } };
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

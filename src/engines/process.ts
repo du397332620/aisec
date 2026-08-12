@@ -26,26 +26,33 @@ export async function runProcess(
       stdio: ["ignore", "pipe", "pipe"],
       env: options.env ?? process.env,
     });
-    let stdout: Buffer<ArrayBufferLike> = Buffer.alloc(0);
-    let stderr: Buffer<ArrayBufferLike> = Buffer.alloc(0);
+    const stdoutChunks: Buffer<ArrayBufferLike>[] = [];
+    const stderrChunks: Buffer<ArrayBufferLike>[] = [];
+    let stdoutBytes = 0;
+    let stderrBytes = 0;
+    let capturedBytes = 0;
     let truncated = false;
     let timedOut = false;
 
-    const append = (current: Buffer<ArrayBufferLike>, chunk: Buffer<ArrayBufferLike>): Buffer<ArrayBufferLike> => {
-      if (current.length >= limit) {
+    const append = (destination: Buffer<ArrayBufferLike>[], chunk: Buffer<ArrayBufferLike>, stream: "stdout" | "stderr"): void => {
+      const remaining = limit - capturedBytes;
+      if (remaining <= 0) {
         truncated = true;
         child.kill("SIGKILL");
-        return current;
+        return;
       }
-      const remaining = limit - current.length;
       if (chunk.length > remaining) {
         truncated = true;
         child.kill("SIGKILL");
       }
-      return Buffer.concat([current, chunk.subarray(0, remaining)]);
+      const captured = chunk.subarray(0, remaining);
+      destination.push(captured);
+      capturedBytes += captured.length;
+      if (stream === "stdout") stdoutBytes += captured.length;
+      else stderrBytes += captured.length;
     };
-    child.stdout.on("data", (chunk: Buffer) => { stdout = append(stdout, chunk); });
-    child.stderr.on("data", (chunk: Buffer) => { stderr = append(stderr, chunk); });
+    child.stdout.on("data", (chunk: Buffer) => { append(stdoutChunks, chunk, "stdout"); });
+    child.stderr.on("data", (chunk: Buffer) => { append(stderrChunks, chunk, "stderr"); });
 
     const timer = setTimeout(() => {
       timedOut = true;
@@ -63,8 +70,8 @@ export async function runProcess(
         command,
         args,
         exitCode,
-        stdout: stdout.toString("utf8"),
-        stderr: stderr.toString("utf8"),
+        stdout: Buffer.concat(stdoutChunks, stdoutBytes).toString("utf8"),
+        stderr: Buffer.concat(stderrChunks, stderrBytes).toString("utf8"),
         timedOut,
         truncated,
         durationMs: Date.now() - started,

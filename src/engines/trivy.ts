@@ -2,6 +2,7 @@ import { isAbsolute, join } from "node:path";
 import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import type { DetectorResult } from "../detectors/types.js";
+import type { Signal } from "../schema.js";
 import type { ScanContext } from "../core/context.js";
 import { normalizeRelative, redactSnippet } from "../core/utils.js";
 import { runProcess } from "./process.js";
@@ -9,6 +10,7 @@ import { externalSignal, isOptionalArrayOf, isOptionalFiniteNumber, isOptionalSt
 import { resolveEngineCommand, sanitizedEngineEnv } from "./manager.js";
 import { inspectEngineCompatibility } from "./compatibility.js";
 import { trivyCacheDir, trivyDatabaseStatus } from "./trivy-db.js";
+import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
 
 interface TrivyVulnerability {
   VulnerabilityID?: string;
@@ -124,41 +126,47 @@ export async function runTrivy(context: ScanContext): Promise<DetectorResult> {
     return { signals: [], coverage: { domain: "dependencies-iac", engine: "trivy", status: "failed", required: !context.options.nativeOnly, reason: "trivy returned an unexpected JSON schema", durationMs: result.durationMs } };
   }
   const parsed = value as { Results?: TrivyResult[] };
-  const signals = [];
-  for (const target of parsed.Results ?? []) {
+  const signals: Signal[] = [];
+  let signalsTruncated = false;
+  const add = (signal: ReturnType<typeof externalSignal>): boolean => {
+    if (signals.length >= MAX_SIGNALS_PER_DETECTOR) { signalsTruncated = true; return false; }
+    signals.push(signal);
+    return true;
+  };
+  targets: for (const target of parsed.Results ?? []) {
     const path = target.Target ? (isAbsolute(target.Target) ? normalizeRelative(context.root, target.Target) : target.Target) : ".";
     for (const vuln of target.Vulnerabilities ?? []) {
-      signals.push(externalSignal({
+      if (!add(externalSignal({
         engine: "trivy", ruleId: vuln.VulnerabilityID ?? "trivy.vulnerability", title: vuln.Title ?? `${vuln.VulnerabilityID ?? "Vulnerability"} in ${vuln.PkgName ?? "dependency"}`,
         description: vuln.Description ?? "A dependency matches a known vulnerability advisory.", severity: normalizeSeverity(vuln.Severity), locations: [{ path }],
         tags: ["sca", "dependency", vuln.PkgName ?? "unknown"], remediation: vuln.FixedVersion ? `Upgrade ${vuln.PkgName ?? "the package"} to ${vuln.FixedVersion} or later after compatibility testing.` : "Remove, isolate, or replace the dependency; no fixed version was reported.",
         metadata: { package: vuln.PkgName ?? "unknown", installedVersion: vuln.InstalledVersion ?? "unknown", fixedVersion: vuln.FixedVersion ?? "unknown", advisory: vuln.PrimaryURL ?? "" },
-      }));
+      }))) break targets;
     }
     for (const misconfig of target.Misconfigurations ?? []) {
-      signals.push(externalSignal({
+      if (!add(externalSignal({
         engine: "trivy", ruleId: misconfig.ID ?? "trivy.misconfiguration", title: misconfig.Title ?? misconfig.ID ?? "Infrastructure misconfiguration",
         description: misconfig.Message ?? misconfig.Description ?? "Trivy detected an infrastructure configuration risk.", severity: normalizeSeverity(misconfig.Severity),
         locations: [{ path, line: misconfig.CauseMetadata?.StartLine, endLine: misconfig.CauseMetadata?.EndLine, snippet: redactSnippet((misconfig.CauseMetadata?.Code?.Lines ?? []).map((line) => line.Content ?? "").join("\n")) }],
         tags: ["iac", "misconfiguration"], remediation: misconfig.Resolution,
-      }));
+      }))) break targets;
     }
     for (const secret of target.Secrets ?? []) {
-      signals.push(externalSignal({
+      if (!add(externalSignal({
         engine: "trivy", ruleId: secret.RuleID ?? "trivy.secret", title: secret.Title ?? secret.Category ?? "Secret detected by Trivy",
         description: "Trivy detected credential-shaped material. AIsec redacts the raw value.", severity: normalizeSeverity(secret.Severity, "high"),
         locations: [{ path, line: secret.StartLine, endLine: secret.EndLine, snippet: secret.Match ? redactSnippet(secret.Match) : "[REDACTED]" }],
         cwe: ["CWE-798"], tags: ["secret", "trivy"], remediation: "Revoke the credential and move the replacement into an appropriate secret store.",
-      }));
+      }))) break targets;
     }
   }
   return { signals, coverage: {
     domain: "dependencies-iac",
     engine: "trivy",
-    status: targetInlineSuppressions > 0 ? "partial" : "complete",
+    status: targetInlineSuppressions > 0 || signalsTruncated ? "partial" : "complete",
     required: !context.options.nativeOnly,
     version: compatibility.rawVersion,
-    reason: targetInlineSuppressions > 0 ? `${targetInlineSuppressions} target-controlled trivy:ignore directive(s) may suppress engine results` : undefined,
+    reason: [targetInlineSuppressions > 0 ? `${targetInlineSuppressions} target-controlled trivy:ignore directive(s) may suppress engine results` : undefined, signalsTruncated ? `finding output reached the ${MAX_SIGNALS_PER_DETECTOR} signal safety limit` : undefined].filter(Boolean).join("; ") || undefined,
     durationMs: result.durationMs,
   } };
 }

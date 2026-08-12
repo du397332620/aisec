@@ -208,6 +208,7 @@ export interface ScanOptions {
   includeGitHistory: boolean;
   maxFiles: number;
   maxFileBytes: number;
+  maxTotalBytes: number;
   timeoutMs: number;
   persist: boolean;
 }

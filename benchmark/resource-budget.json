@@ -1,0 +1,32 @@
+{
+  "schemaVersion": 1,
+  "description": "Synthetic resource-regression budget. These ceilings detect large regressions and are not throughput claims for arbitrary repositories.",
+  "cases": [
+    {
+      "id": "typical-project",
+      "fileCount": 500,
+      "fileBytes": 1024,
+      "maxElapsedMs": 15000,
+      "maxRssBytes": 536870912,
+      "expectedDecision": "no_blockers_found"
+    },
+    {
+      "id": "large-project",
+      "fileCount": 5000,
+      "fileBytes": 2048,
+      "maxElapsedMs": 60000,
+      "maxRssBytes": 805306368,
+      "expectedDecision": "no_blockers_found"
+    },
+    {
+      "id": "truncated-project",
+      "fileCount": 1200,
+      "fileBytes": 512,
+      "maxFiles": 200,
+      "maxElapsedMs": 15000,
+      "maxRssBytes": 536870912,
+      "expectedDecision": "incomplete",
+      "expectedInventoryReason": "file_limit"
+    }
+  ]
+}

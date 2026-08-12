@@ -47,6 +47,7 @@ test("CI and release workflows retain the supported matrix and least-privilege r
   assert.deepEqual(ci.permissions, { contents: "read" });
   assert.deepEqual(ci.jobs?.test?.strategy?.matrix, { os: ["ubuntu-24.04", "macos-15"], node: [22, 24] });
   assert.ok(ci.jobs?.test?.steps?.some((step) => step.run === "npm run test:release"));
+  assert.ok(ci.jobs?.test?.steps?.some((step) => step.run === "npm run benchmark:resources"));
 
   const release = await loadWorkflow("release.yml");
   assert.deepEqual(release.permissions, { contents: "read" });
@@ -58,6 +59,7 @@ test("CI and release workflows retain the supported matrix and least-privilege r
   });
   const releaseNode = release.jobs?.build?.steps?.find((step) => step.uses?.startsWith("actions/setup-node@"));
   assert.equal(releaseNode?.with?.["node-version"], "24.19.0");
+  assert.ok(release.jobs?.build?.steps?.some((step) => step.run?.includes("npm run benchmark:resources")));
   assert.deepEqual(release.jobs?.publish?.permissions, { contents: "write" });
   assert.equal(release.jobs?.publish?.if, "github.ref_type == 'tag'");
   assert.ok(release.jobs?.publish?.steps?.some((step) => step.run?.includes("gh release create") && step.run.includes("--verify-tag")));
