@@ -1,8 +1,10 @@
 import type { FixContract, ScanReport } from "../schema.js";
 import { SCHEMA_VERSION } from "../schema.js";
 import { newId } from "./utils.js";
+import { validateFixContract, validateScanReport } from "./schema-validation.js";
 
 export function createFixContract(report: ScanReport, findingReference: string): FixContract {
+  validateScanReport(report);
   const finding = report.findings.find((item) => item.id === findingReference || item.fingerprint === findingReference);
   if (!finding) throw new Error(`Finding not found in ${report.scanId}: ${findingReference}`);
   const signals = finding.signalIds.map((id) => report.signals.find((signal) => signal.id === id)).filter((signal) => signal !== undefined);
@@ -25,7 +27,7 @@ export function createFixContract(report: ScanReport, findingReference: string):
     "Do not add blanket suppressions. If a false positive is proven, record a narrow suppression with a reason and expiry.",
     "The fix must not introduce new high or critical findings.",
   ];
-  return {
+  return validateFixContract({
     schemaVersion: SCHEMA_VERSION,
     contractId: newId("fix"),
     scanId: report.scanId,
@@ -53,5 +55,5 @@ export function createFixContract(report: ScanReport, findingReference: string):
       ...requiredTests.map((test) => `- ${test}`),
       `After the change run: ${rescanCommand}`,
     ].join("\n"),
-  };
+  });
 }

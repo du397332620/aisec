@@ -32,9 +32,9 @@
 
 AIsec 是面向 AI 辅助开发项目的、本地优先的安全验收 CLI 与 MCP 服务。它把待扫描项目视为不可信输入，识别资产和攻击面，运行确定性的原生检测与可选第三方扫描器，关联证据形成攻击路径，并输出覆盖状态、发布决策和受约束的修复合同。
 
-当前仓库已经形成可运行的 `0.1.0` Beta 基础：CLI、原生检测、报告、基线复扫、修复合同、MCP、受控被动 Web 验证和 CI 配置均已落地。默认测试当前为 24/24 通过、0 跳过；真实引擎套件为 2/2 通过；生产依赖审计为 0 个已知漏洞，启动语料基准为 9 TP / 0 FP / 0 FN。
+当前仓库已经形成可运行的 `0.1.0` Beta 基础：CLI、原生检测、报告、基线复扫、修复合同、MCP、受控被动 Web 验证和 CI 配置均已落地。默认测试当前为 30/30 通过、0 跳过；真实引擎套件为 2/2 通过；生产依赖审计为 0 个已知漏洞，启动语料基准为 9 TP / 0 FP / 0 FN。
 
-这还不是公开发布就绪状态。P0-01 与 P0-02 已关闭：Git 基线、公开远程仓库和首次 Ubuntu/Node.js 20 CI 运行均已建立，Gitleaks `8.30.1`、Opengrep `1.26.0`、Trivy `0.73.0` 也已完成真实二进制端到端验收。当前最大的证据缺口转为：公开基准仍过小；尚未建立 macOS/Linux CI 矩阵；没有发布 provenance 或正式安全报告渠道。
+这还不是公开发布就绪状态。P0-01、P0-02 与 P0-04 已关闭：Git 基线、公开远程仓库、首次 Ubuntu/Node.js 20 CI、真实第三方引擎矩阵，以及三类公开数据契约的运行时门禁均已建立。当前最大的证据缺口转为：公开基准仍过小；尚未建立 macOS/Linux CI 矩阵；没有发布 provenance 或正式安全报告渠道。
 
 ### 与现有开源工具的关系
 
@@ -141,7 +141,7 @@ AIsec 提供一个本地编排与证据归一层：
 | FR-11 | 只读型 MCP stdio 集成 | P0 | 已完成 | 工具暴露面和协议协商有端到端 stdio 测试 |
 | FR-12 | 显式授权的被动 Web 验证 | P0 | 已完成 | 非沙箱复验确认本地回环、请求上限和跨源重定向拒绝测试通过 |
 | FR-13 | 环境诊断和散列固定的本地引擎管理 | P0 | 已完成 | 安装、二次校验与篡改失效测试通过 |
-| FR-14 | JSON Schema 契约 | P0 | 部分完成 | 三份 schema 已存在；字段定义仍偏宽，缺完整运行时 schema 校验与兼容测试 |
+| FR-14 | JSON Schema 契约 | P0 | 已完成 | 三份 Draft 2020-12 Schema 已完整定义嵌套对象；生成、序列化、保存、读取、修复合同、授权清单和 MCP 边界均运行时校验 |
 | FR-15 | CI、依赖审计和发布包检查 | P0 | 部分完成 | 固定 Action 的 Ubuntu/Node.js 20 远程工作流已成功运行；尚缺 macOS/Node 矩阵和打包安装 smoke |
 
 ### 7.2 非功能需求
@@ -172,6 +172,7 @@ AIsec 提供一个本地编排与证据归一层：
 - MCP 不暴露 Web 验证入口，避免 Agent 自主向目标发送网络请求。
 - 修复动作交给既有编码 Agent；AIsec 只给出证据、约束、测试要求和复扫命令。
 - 报告用稳定 schema 版本和稳定退出码接入 CI；覆盖不完整不能等价于通过。
+- 公开 Schema 是运行时数据契约的唯一事实源；未知版本、未知字段和无效嵌套值在 CLI/MCP/持久化边界 fail closed。
 
 ## 9. 测试与验收决策
 
@@ -192,13 +193,13 @@ AIsec 提供一个本地编排与证据归一层：
 
 | 检查 | 结果 | 结论 |
 | --- | --- | --- |
-| `npm test` | 24 通过 / 0 失败 / 0 跳过 | 原生、MCP、被动 Web、引擎故障、Trivy 空报告契约与数据库测试全部通过；回环测试在获准的非沙箱环境复验 |
+| `npm test` | 30 通过 / 0 失败 / 0 跳过 | 原生、CLI/MCP、被动 Web、引擎故障、公开 Schema、持久化拒绝、Trivy 空报告契约与数据库测试全部通过 |
 | `npm run test:engines` | 2 通过 / 0 失败 / 0 跳过 | 三个真实引擎对恶意抑制 fixture 均产生预期发现，安全近似 fixture 三引擎均零告警 |
 | 引擎故障矩阵 | Gitleaks / Opengrep / Trivy 的 missing、成功、失败、超时、畸形输出、未验证版本均已覆盖 | 必需引擎异常统一产生 `failed`/`not_run` 覆盖和 `incomplete`，不能伪装为 clean |
 | `npm audit --omit=dev --audit-level=moderate --registry=https://registry.npmjs.org` | 0 vulnerabilities | 当前锁定的生产依赖未报告已知漏洞 |
 | `npm run benchmark` | 9 TP / 0 FP / 0 FN | 只证明两个启动 fixture 可重复；不能代表真实世界准确率 |
-| `npm pack --dry-run --json` | 156 files，104,563 bytes（解包 411,453 bytes） | 发布文件集合可生成；包含进度文档、新引擎模块和隔离 fixture，仍需最终安装与多平台复验 |
-| 已打包 CLI smoke test | 安全 fixture 为 `no_blockers_found`；脆弱 fixture 为 `block` | 包安装后的主要裁决路径已验证 |
+| `npm pack --dry-run --json` | 159 files，约 107 KB（解包约 427 KB） | 发布文件集合包含验证模块和三份公开 Schema，可从包内路径加载 |
+| 已打包 CLI smoke test | 新临时项目安装 tarball 后，安全 fixture 为 `no_blockers_found`；导出的验证函数拒绝残缺报告 | 包安装后的主要裁决路径和 Schema 运行时路径已验证 |
 | `engines prepare trivy` | schema `2`，状态 `ready`；记录 `updatedAt`、`downloadedAt`、`nextUpdate` | 数据库准备是显式联网动作，正常扫描离线；缺失、空、无效或过期均 fail closed |
 | `doctor --json` | Gitleaks `8.30.1`、Opengrep `1.26.0`、Trivy `0.73.0` 全部 compatible | Opengrep 托管二进制 SHA-256 为 `513ff8491f7254c9a672cf8421136a537eb53b2a8af748568bd697acdc59eefe` |
 | Git/CI | 首次基线 [`a308096`](https://github.com/du397332620/aisec/commit/a308096557d58b5c06ecea2804c35efc8a8a5c13) 已推送到公开仓库；提交身份为 `xiaobai <397332620@qq.com>` | GitHub Actions [run 31572675040](https://github.com/du397332620/aisec/actions/runs/31572675040) 在 Ubuntu / Node.js 20 成功 |
@@ -211,6 +212,7 @@ AIsec 提供一个本地编排与证据归一层：
 - [扫描端到端测试](../test/scan.test.ts)
 - [真实引擎端到端测试](../test/engines.integration.ts)
 - [MCP 端到端测试](../test/mcp.test.ts)
+- [Schema 契约测试](../test/schema-validation.test.ts)
 - [启动基准清单](../benchmark/manifest.json)
 - [CI 工作流](../.github/workflows/ci.yml)
 - [扫描报告 Schema](../schemas/scan-report.schema.json)
@@ -234,7 +236,7 @@ AIsec 提供一个本地编排与证据归一层：
 | P0-01 | 建立可追踪的 Git 基线和远程仓库 | 已完成 | 首次审查后提交；配置正式 remote；CI 可在提交上运行 | 保持 `main` 保护和 CI 绿灯；后续发布证据关联到提交 |
 | P0-02 | 真实第三方引擎兼容矩阵 | 已完成 | 固定受支持版本；三种引擎均有安装、缺失、成功、失败、超时、畸形输出测试 | 新版本仅在扩展真实 fixture 和故障矩阵后加入支持表 |
 | P0-03 | 扩充独立安全语料 | 部分完成 | 每个 P0 规则都有阳性、近似阴性和预期证据级别；按类别输出结果 | 先拆分当前跨栈 fixture，再增加独立审阅样本 |
-| P0-04 | 完整化并校验公开 schema | 部分完成 | 报告、修复合同、授权清单均可运行时校验；有向后兼容和无效输入测试 | 收紧宽泛字段并加入 schema 测试 |
+| P0-04 | 完整化并校验公开 schema | 已完成 | 报告、修复合同、授权清单均可运行时校验；有兼容和无效输入测试 | 破坏性字段变化必须发布新 Schema 版本并加入迁移测试 |
 | P0-05 | 跨平台 CI 和安装验收 | 部分完成 | Linux/macOS、约定 Node 版本均运行测试、基准、audit、pack/install smoke | 确定支持矩阵并增加 CI matrix |
 | P0-06 | 发布供应链 | 部分完成 | lockfile 构建可复现；生成 SBOM/provenance；Release 与包内容可追溯到提交 | 选择 npm 发布身份与签名方案 |
 | P0-07 | 正式安全报告渠道 | 待决策 | 私密漏洞报告入口、响应流程和支持版本写入安全政策 | 确定仓库所有者和安全联系渠道 |
@@ -312,10 +314,9 @@ AIsec 提供一个本地编排与证据归一层：
 
 ## 17. 建议的下一执行顺序
 
-1. 收紧三份公开 schema，并在 CLI/MCP/持久化边界加入运行时契约测试（P0-04）。
-2. 将启动 fixture 拆成按规则、按框架分类的阳性/近似阴性语料（P0-03）。
-3. 建立跨平台 CI matrix、真实打包安装和发布 provenance。
-4. 完成 npm 包身份、安全报告渠道和公开 Beta 文档走查。
+1. 将启动 fixture 拆成按规则、按框架分类的阳性/近似阴性语料（P0-03）。
+2. 建立跨平台 CI matrix、真实打包安装和发布 provenance。
+3. 完成 npm 包身份、安全报告渠道和公开 Beta 文档走查。
 
 ## 18. 更新模板
 
@@ -336,6 +337,9 @@ AIsec 提供一个本地编排与证据归一层：
 
 ### 2026-08-12
 
+- 完成 P0-04：三份公开 JSON Schema 已完整覆盖嵌套结构，并通过 Ajv 严格模式成为生成、序列化、持久化、CLI/MCP 读取、修复合同与授权清单边界的运行时门禁。
+- 新增有效对象、错误版本、未知字段、错误嵌套值、损坏存量报告、CLI/MCP 拒绝、可选字段、SemVer 预发布版本和日期型抑制兼容测试；默认套件提升为 30/30 通过。
+- 锁定 Ajv `8.20.0` 与 ajv-formats `3.0.1`，补充 MIT 许可证记录；生产依赖审计仍为 0 漏洞，真实打包安装可正确加载包内 Schema。
 - 完成 P0-01：首次基线提交 `a308096` 已推送至公开仓库 `du397332620/aisec`，GitHub Actions run `31572675040` 成功。
 - GitHub Push Protection 识别出 fixture 中形似 Stripe 凭据的静态测试值；未绕过保护，改为测试运行时在临时目录生成，完整测试、真实引擎测试与基准保持通过。
 - 完成 P0-02：固定并真实验收 Gitleaks `8.30.1`、Opengrep `1.26.0`、Trivy `0.73.0`。

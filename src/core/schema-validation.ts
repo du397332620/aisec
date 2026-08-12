@@ -1,0 +1,47 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
+import addFormatsModule from "ajv-formats";
+import type { AuthorizationManifest, FixContract, ScanReport } from "../schema.js";
+
+type PublicSchemaName = "ScanReport" | "FixContract" | "AuthorizationManifest";
+
+function loadSchema(filename: string): object {
+  const path = fileURLToPath(new URL(`../../../schemas/${filename}`, import.meta.url));
+  return JSON.parse(readFileSync(path, "utf8")) as object;
+}
+
+const ajv = new Ajv2020({ allErrors: true, strict: true });
+const addFormats = addFormatsModule as unknown as (instance: Ajv2020) => Ajv2020;
+addFormats(ajv);
+
+const scanReportValidator = ajv.compile(loadSchema("scan-report.schema.json"));
+const fixContractValidator = ajv.compile(loadSchema("fix-contract.schema.json"));
+const authorizationManifestValidator = ajv.compile(loadSchema("authorization-manifest.schema.json"));
+
+function describeError(error: ErrorObject): string {
+  const path = error.instancePath || "/";
+  if (error.keyword === "additionalProperties") {
+    const property = String((error.params as { additionalProperty?: unknown }).additionalProperty ?? "unknown");
+    return `${path} contains unsupported additional properties: ${JSON.stringify(property)}`;
+  }
+  return `${path} ${error.message ?? `failed ${error.keyword}`}`;
+}
+
+function assertSchema<T>(name: PublicSchemaName, validator: ValidateFunction, value: unknown): T {
+  if (validator(value)) return value as T;
+  const details = (validator.errors ?? []).slice(0, 8).map(describeError).join("; ");
+  throw new Error(`${name} does not match schema 1.0.0: ${details || "validation failed"}`);
+}
+
+export function validateScanReport(value: unknown): ScanReport {
+  return assertSchema<ScanReport>("ScanReport", scanReportValidator, value);
+}
+
+export function validateFixContract(value: unknown): FixContract {
+  return assertSchema<FixContract>("FixContract", fixContractValidator, value);
+}
+
+export function validateAuthorizationManifestSchema(value: unknown): AuthorizationManifest {
+  return assertSchema<AuthorizationManifest>("AuthorizationManifest", authorizationManifestValidator, value);
+}

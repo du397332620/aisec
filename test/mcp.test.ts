@@ -1,15 +1,22 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
-test("MCP stdio server advertises only local read-oriented tools", async () => {
+test("MCP stdio server advertises only local read-oriented tools", async (context) => {
+  const dataDirectory = await mkdtemp(join(tmpdir(), "aisec-mcp-schema-"));
+  context.after(() => rm(dataDirectory, { recursive: true, force: true }));
+  const corruptedScanId = "scan_00000000-0000-4000-8000-000000000001";
+  await mkdir(join(dataDirectory, "scans"), { recursive: true });
+  await writeFile(join(dataDirectory, "scans", `${corruptedScanId}.json`), JSON.stringify({ schemaVersion: "1.0.0", scanId: corruptedScanId }));
   const cli = join(here, "..", "src", "cli.js");
-  const child = spawn(process.execPath, [cli, "mcp"], { stdio: ["pipe", "pipe", "pipe"] });
+  const child = spawn(process.execPath, [cli, "mcp"], { env: { ...process.env, AISEC_DATA_DIR: dataDirectory }, stdio: ["pipe", "pipe", "pipe"] });
   let output = "";
   child.stdout.setEncoding("utf8");
   child.stdout.on("data", (chunk: string) => { output += chunk; });
@@ -18,6 +25,7 @@ test("MCP stdio server advertises only local read-oriented tools", async () => {
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 2, method: "tools/list", params: { _meta: meta } })}\n`);
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 3, method: "initialize", params: { protocolVersion: "2025-11-25", capabilities: {}, clientInfo: { name: "test", version: "1" } } })}\n`);
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 4, method: "tools/call", params: { _meta: meta, name: "get_report", arguments: { reference: "/etc/passwd" } } })}\n`);
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { _meta: meta, name: "get_report", arguments: { reference: corruptedScanId } } })}\n`);
   child.stdin.end();
   await once(child, "close");
   const responses = output.trim().split("\n").map((line) => JSON.parse(line));
@@ -32,4 +40,6 @@ test("MCP stdio server advertises only local read-oriented tools", async () => {
   assert.equal(responses[2].result.protocolVersion, "2025-11-25");
   assert.equal(responses[3].error.code, -32602);
   assert.match(responses[3].error.message, /not arbitrary file paths/);
+  assert.equal(responses[4].error.code, -32602);
+  assert.match(responses[4].error.message, /ScanReport does not match schema/);
 });

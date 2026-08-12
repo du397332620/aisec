@@ -195,6 +195,20 @@ suppressions:
 baseline rescan command. A finding closes only when it is rechecked and listed
 as resolved, with no new high/critical finding.
 
+## Versioned data contracts
+
+AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, fix
+contracts and web authorization manifests in [`schemas/`](schemas/). Version
+`1.0.0` is validated at runtime when a report is generated, serialized, saved
+or loaded, when a fix contract is generated, and before authorization semantics
+are evaluated. Unknown fields, unsupported schema versions and malformed nested
+values fail closed instead of flowing into CLI or MCP output.
+
+The package also exports `validateScanReport`, `validateFixContract` and
+`validateAuthorizationManifestSchema` for integrations that consume these
+objects directly. Fields declared optional may be omitted by `1.0.0` producers;
+new fields or other contract changes require a new schema version.
+
 ## Scanner safety model
 
 - Files are read without following symlinks; dependency, build and VCS output

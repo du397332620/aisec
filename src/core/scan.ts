@@ -12,6 +12,7 @@ import { parseConfig } from "./config.js";
 import { buildFindings, decide, summarize } from "./findings.js";
 import { compareReports } from "./compare.js";
 import { loadReport, saveReport } from "./store.js";
+import { validateScanReport } from "./schema-validation.js";
 
 export const DEFAULT_SCAN_OPTIONS: ScanOptions = {
   profile: "predeploy",
@@ -99,6 +100,7 @@ export async function scanProject(
     disclaimer: "AIsec reports evidence found within executed coverage. no_blockers_found is not a guarantee, certification, or proof that the application is secure.",
   };
   if (baselineReference) report.comparison = compareReports(report, await loadReport(baselineReference));
+  validateScanReport(report);
   const storedAt = options.persist ? await saveReport(report) : undefined;
   return { report, storedAt };
 }

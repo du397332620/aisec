@@ -4,10 +4,12 @@ import type { ScanReport } from "../schema.js";
 import { renderHtml } from "./html.js";
 import { renderSarif } from "./sarif.js";
 import { renderTerminalReport } from "./terminal.js";
+import { validateScanReport } from "../core/schema-validation.js";
 
 export type OutputFormat = "terminal" | "json" | "html" | "sarif";
 
 export function serializeReport(report: ScanReport, format: OutputFormat): string {
+  validateScanReport(report);
   if (format === "json") return `${JSON.stringify(report, null, 2)}\n`;
   if (format === "html") return renderHtml(report);
   if (format === "sarif") return `${JSON.stringify(renderSarif(report), null, 2)}\n`;

@@ -3,18 +3,58 @@
   "$id": "https://aisec.dev/schemas/fix-contract-1.0.0.json",
   "title": "AIsec FixContract 1.0.0",
   "type": "object",
+  "additionalProperties": false,
   "required": ["schemaVersion", "contractId", "scanId", "findingFingerprint", "title", "evidence", "objective", "constraints", "requiredTests", "rescan", "agentPrompt"],
   "properties": {
     "schemaVersion": { "const": "1.0.0" },
-    "contractId": { "type": "string", "pattern": "^fix_" },
-    "scanId": { "type": "string", "pattern": "^scan_" },
-    "findingFingerprint": { "type": "string" },
-    "title": { "type": "string" },
-    "evidence": { "type": "array", "minItems": 1 },
-    "objective": { "type": "string", "minLength": 1 },
-    "constraints": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-    "requiredTests": { "type": "array", "minItems": 1, "items": { "type": "string" } },
-    "rescan": { "type": "object" },
-    "agentPrompt": { "type": "string", "minLength": 1 }
+    "contractId": { "type": "string", "pattern": "^fix_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "scanId": { "type": "string", "pattern": "^scan_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "findingFingerprint": { "$ref": "#/$defs/fingerprint" },
+    "title": { "$ref": "#/$defs/nonEmptyString" },
+    "evidence": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["ruleId", "level", "locations", "description"],
+        "properties": {
+          "ruleId": { "$ref": "#/$defs/nonEmptyString" },
+          "level": { "$ref": "#/$defs/evidenceLevel" },
+          "locations": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/sourceLocation" } },
+          "description": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "objective": { "$ref": "#/$defs/nonEmptyString" },
+    "constraints": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/nonEmptyString" } },
+    "requiredTests": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/nonEmptyString" } },
+    "rescan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["command", "closeWhen"],
+      "properties": {
+        "command": { "$ref": "#/$defs/nonEmptyString" },
+        "closeWhen": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/nonEmptyString" } }
+      }
+    },
+    "agentPrompt": { "$ref": "#/$defs/nonEmptyString" }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "evidenceLevel": { "enum": ["verified", "static_confirmed", "inferred"] },
+    "sourceLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "$ref": "#/$defs/nonEmptyString" },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "snippet": { "type": "string" }
+      }
+    }
   }
 }

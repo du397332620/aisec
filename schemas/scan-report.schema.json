@@ -3,39 +3,282 @@
   "$id": "https://aisec.dev/schemas/scan-report-1.0.0.json",
   "title": "AIsec ScanReport 1.0.0",
   "type": "object",
-  "required": ["schemaVersion", "toolVersion", "scanId", "profile", "coverage", "signals", "findings", "decision", "summary", "disclaimer"],
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "toolVersion",
+    "scanId",
+    "startedAt",
+    "completedAt",
+    "target",
+    "profileName",
+    "profile",
+    "assetGraph",
+    "coverage",
+    "signals",
+    "attackPaths",
+    "findings",
+    "decision",
+    "decisionReasons",
+    "summary",
+    "disclaimer"
+  ],
   "properties": {
     "schemaVersion": { "const": "1.0.0" },
-    "toolVersion": { "type": "string" },
-    "scanId": { "type": "string", "pattern": "^scan_" },
-    "profile": { "type": "object" },
-    "assetGraph": { "type": "object" },
+    "toolVersion": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$" },
+    "scanId": { "$ref": "#/$defs/scanId" },
+    "startedAt": { "$ref": "#/$defs/dateTime" },
+    "completedAt": { "$ref": "#/$defs/dateTime" },
+    "target": { "$ref": "#/$defs/nonEmptyString" },
+    "profileName": { "enum": ["predeploy", "native"] },
+    "profile": { "$ref": "#/$defs/projectProfile" },
+    "assetGraph": { "$ref": "#/$defs/assetGraph" },
     "coverage": { "type": "array", "items": { "$ref": "#/$defs/coverage" } },
     "signals": { "type": "array", "items": { "$ref": "#/$defs/signal" } },
-    "attackPaths": { "type": "array" },
-    "findings": { "type": "array" },
+    "attackPaths": { "type": "array", "items": { "$ref": "#/$defs/attackPath" } },
+    "findings": { "type": "array", "items": { "$ref": "#/$defs/finding" } },
     "decision": { "enum": ["block", "incomplete", "review", "no_blockers_found"] },
-    "summary": { "type": "object" },
-    "disclaimer": { "type": "string", "minLength": 1 }
+    "decisionReasons": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/nonEmptyString" } },
+    "summary": { "$ref": "#/$defs/summary" },
+    "comparison": { "$ref": "#/$defs/comparison" },
+    "disclaimer": { "$ref": "#/$defs/nonEmptyString" }
   },
   "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "scanId": { "type": "string", "pattern": "^scan_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
+    "evidenceLevel": { "enum": ["verified", "static_confirmed", "inferred"] },
+    "stringArray": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "sourceLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "$ref": "#/$defs/nonEmptyString" },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "snippet": { "type": "string" }
+      }
+    },
+    "projectProfile": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "root",
+        "projectId",
+        "detectedAt",
+        "languages",
+        "frameworks",
+        "packageManagers",
+        "baas",
+        "mobilePlatforms",
+        "llmProviders",
+        "manifests",
+        "artifacts",
+        "routes",
+        "fileCount",
+        "skippedFiles"
+      ],
+      "properties": {
+        "root": { "$ref": "#/$defs/nonEmptyString" },
+        "projectId": { "type": "string", "pattern": "^project_[0-9a-f]{16}$" },
+        "detectedAt": { "$ref": "#/$defs/dateTime" },
+        "languages": { "$ref": "#/$defs/stringArray" },
+        "frameworks": { "$ref": "#/$defs/stringArray" },
+        "packageManagers": { "$ref": "#/$defs/stringArray" },
+        "baas": { "$ref": "#/$defs/stringArray" },
+        "mobilePlatforms": { "$ref": "#/$defs/stringArray" },
+        "llmProviders": { "$ref": "#/$defs/stringArray" },
+        "manifests": { "$ref": "#/$defs/stringArray" },
+        "artifacts": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["path", "type"],
+            "properties": {
+              "path": { "$ref": "#/$defs/nonEmptyString" },
+              "type": { "enum": ["apk", "ipa"] }
+            }
+          }
+        },
+        "routes": { "$ref": "#/$defs/stringArray" },
+        "fileCount": { "type": "integer", "minimum": 0 },
+        "skippedFiles": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "metadataValue": {
+      "oneOf": [
+        { "type": "string" },
+        { "type": "number" },
+        { "type": "boolean" },
+        { "type": "array", "items": { "type": "string" } }
+      ]
+    },
+    "assetNode": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "kind", "label"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^asset_[0-9a-f]{16}$" },
+        "kind": { "enum": ["project", "client", "server", "api_route", "database", "auth", "mobile_app", "artifact", "ci", "llm"] },
+        "label": { "$ref": "#/$defs/nonEmptyString" },
+        "metadata": { "type": "object", "additionalProperties": { "$ref": "#/$defs/metadataValue" } }
+      }
+    },
+    "assetEdge": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["from", "to", "relation"],
+      "properties": {
+        "from": { "type": "string", "pattern": "^asset_[0-9a-f]{16}$" },
+        "to": { "type": "string", "pattern": "^asset_[0-9a-f]{16}$" },
+        "relation": { "$ref": "#/$defs/nonEmptyString" },
+        "evidence": { "type": "array", "items": { "$ref": "#/$defs/sourceLocation" } }
+      }
+    },
+    "assetGraph": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nodes", "edges"],
+      "properties": {
+        "nodes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/assetNode" } },
+        "edges": { "type": "array", "items": { "$ref": "#/$defs/assetEdge" } }
+      }
+    },
     "coverage": {
       "type": "object",
+      "additionalProperties": false,
       "required": ["domain", "engine", "status", "required"],
       "properties": {
-        "domain": { "type": "string" },
-        "engine": { "type": "string" },
+        "domain": { "$ref": "#/$defs/nonEmptyString" },
+        "engine": { "$ref": "#/$defs/nonEmptyString" },
         "status": { "enum": ["complete", "partial", "not_run", "failed"] },
-        "required": { "type": "boolean" }
+        "required": { "type": "boolean" },
+        "version": { "$ref": "#/$defs/nonEmptyString" },
+        "reason": { "$ref": "#/$defs/nonEmptyString" },
+        "durationMs": { "type": "number", "minimum": 0 }
       }
     },
     "signal": {
       "type": "object",
-      "required": ["id", "fingerprint", "engine", "ruleId", "title", "severity", "evidenceLevel", "locations"],
+      "additionalProperties": false,
+      "required": ["id", "fingerprint", "engine", "ruleId", "title", "description", "severity", "evidenceLevel", "confidence", "locations", "tags"],
       "properties": {
-        "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
-        "evidenceLevel": { "enum": ["verified", "static_confirmed", "inferred"] },
-        "locations": { "type": "array" }
+        "id": { "type": "string", "pattern": "^sig_[0-9a-f]{16}$" },
+        "fingerprint": { "$ref": "#/$defs/fingerprint" },
+        "engine": { "$ref": "#/$defs/nonEmptyString" },
+        "ruleId": { "$ref": "#/$defs/nonEmptyString" },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "description": { "$ref": "#/$defs/nonEmptyString" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "evidenceLevel": { "$ref": "#/$defs/evidenceLevel" },
+        "confidence": { "enum": ["high", "medium", "low"] },
+        "locations": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/sourceLocation" } },
+        "cwe": { "$ref": "#/$defs/stringArray" },
+        "owasp": { "$ref": "#/$defs/stringArray" },
+        "tags": { "type": "array", "minItems": 1, "items": { "type": "string", "minLength": 1 } },
+        "remediation": { "$ref": "#/$defs/nonEmptyString" },
+        "metadata": { "type": "object", "additionalProperties": { "$ref": "#/$defs/metadataValue" } }
+      }
+    },
+    "attackPathStep": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["assetId", "action", "signalIds"],
+      "properties": {
+        "assetId": { "type": "string", "pattern": "^asset_[0-9a-f]{16}$" },
+        "action": { "$ref": "#/$defs/nonEmptyString" },
+        "signalIds": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^sig_[0-9a-f]{16}$" } }
+      }
+    },
+    "attackPath": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "fingerprint", "title", "summary", "severity", "evidenceLevel", "signalIds", "steps", "remediation"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^path_[0-9a-f]{16}$" },
+        "fingerprint": { "$ref": "#/$defs/fingerprint" },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "summary": { "$ref": "#/$defs/nonEmptyString" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "evidenceLevel": { "$ref": "#/$defs/evidenceLevel" },
+        "signalIds": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^sig_[0-9a-f]{16}$" } },
+        "steps": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/attackPathStep" } },
+        "remediation": { "$ref": "#/$defs/nonEmptyString" }
+      }
+    },
+    "suppression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reason", "expires"],
+      "properties": {
+        "reason": { "$ref": "#/$defs/nonEmptyString" },
+        "expires": {
+          "type": "string",
+          "oneOf": [
+            { "format": "date" },
+            { "format": "date-time" }
+          ]
+        }
+      }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "fingerprint", "title", "severity", "evidenceLevel", "status", "signalIds"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^finding_[0-9a-f]{16}$" },
+        "fingerprint": { "$ref": "#/$defs/fingerprint" },
+        "title": { "$ref": "#/$defs/nonEmptyString" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "evidenceLevel": { "$ref": "#/$defs/evidenceLevel" },
+        "status": { "enum": ["open", "suppressed"] },
+        "signalIds": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^sig_[0-9a-f]{16}$" } },
+        "attackPathId": { "type": "string", "pattern": "^path_[0-9a-f]{16}$" },
+        "suppression": { "$ref": "#/$defs/suppression" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "status": { "const": "suppressed" } }, "required": ["status"] },
+          "then": { "properties": { "suppression": true }, "required": ["suppression"] }
+        },
+        {
+          "if": { "properties": { "status": { "const": "open" } }, "required": ["status"] },
+          "then": { "not": { "required": ["suppression"] } }
+        }
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["critical", "high", "medium", "low", "info", "attackPaths", "suppressed"],
+      "properties": {
+        "critical": { "type": "integer", "minimum": 0 },
+        "high": { "type": "integer", "minimum": 0 },
+        "medium": { "type": "integer", "minimum": 0 },
+        "low": { "type": "integer", "minimum": 0 },
+        "info": { "type": "integer", "minimum": 0 },
+        "attackPaths": { "type": "integer", "minimum": 0 },
+        "suppressed": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baselineScanId", "new", "remaining", "resolved", "notRechecked"],
+      "properties": {
+        "baselineScanId": { "$ref": "#/$defs/scanId" },
+        "new": { "type": "array", "items": { "$ref": "#/$defs/fingerprint" } },
+        "remaining": { "type": "array", "items": { "$ref": "#/$defs/fingerprint" } },
+        "resolved": { "type": "array", "items": { "$ref": "#/$defs/fingerprint" } },
+        "notRechecked": { "type": "array", "items": { "$ref": "#/$defs/fingerprint" } }
       }
     }
   }

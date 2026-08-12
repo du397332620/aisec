@@ -14,5 +14,7 @@ records the exact executable version whenever it can be determined.
 
 Runtime libraries distributed through npm:
 
+- Ajv — MIT
+- ajv-formats — MIT
 - TypeScript — Apache-2.0
 - yaml — ISC
