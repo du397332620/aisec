@@ -35,30 +35,64 @@ use WSL for the beta.
 | Ubuntu 24.04 | x64 | 22, 24 |
 | macOS 15 | arm64 | 22, 24 |
 
+`0.1.0` has not been published to npm yet. Install the current beta from its
+source checkout; do not expect `npm install -g @aisec/cli` to work until a
+tagged release and package identity are announced. An unregistered package name
+does not imply that the current maintainer controls its npm scope.
+
 ```bash
-npm install
+git clone https://github.com/du397332620/aisec.git
+cd aisec
+npm ci --ignore-scripts --registry=https://registry.npmjs.org
 npm run build
-node dist/src/cli.js doctor
+npm exec --no -- aisec doctor
 
 # Fast, deterministic first-party checks only
-node dist/src/cli.js scan /path/to/project --native-only
+npm exec --no -- aisec scan /path/to/project --profile native
 
-# Deployment scan with optional installed engines
-node dist/src/cli.js scan /path/to/project \
+# Deployment scan with all three verified external engines prepared
+npm exec --no -- aisec scan /path/to/project \
   --artifact /path/to/app.apk \
   --format html --output aisec-report.html
 ```
+
+`npm exec --no --` selects the locally built `aisec` binary and forbids npm
+from downloading a missing package. The target path may be outside the AIsec
+checkout. A source update uses `git pull`, then repeats `npm ci --ignore-scripts`
+and `npm run build`. The remaining examples use `aisec` as shorthand; from a
+source checkout, prefix those commands with `npm exec --no --`.
 
 Exit codes are stable: `0` means `no_blockers_found` or `review`, `1` means
 `block`, `2` means `incomplete`, and `64` means invalid usage or execution
 failure. A missing required scanner therefore cannot silently become a clean
 result.
 
+### First-run check
+
+The repository includes synthetic fixtures with no real credentials. These
+commands verify both sides of the decision contract:
+
+```bash
+# Expected exit 0 and decision no_blockers_found
+npm exec --no -- aisec scan test/fixtures/safe \
+  --profile native --no-persist --format terminal
+
+# Expected exit 1 and decision block
+npm exec --no -- aisec scan test/fixtures/vulnerable \
+  --profile native --no-persist --format terminal
+```
+
+The default `predeploy` profile requires all three verified engines, a ready
+Trivy database and, when a mobile project is detected, an APK/IPA. Missing or
+incompatible prerequisites produce exit `2` / `incomplete`; that is the
+intended fail-closed result, not an installation failure. Run `aisec doctor`
+before treating a pre-deploy result as complete.
+
 ## Commands
 
 ```text
 aisec inspect [path]
-aisec scan [path] [--native-only] [--artifact app.apk]
+aisec scan [path] [--profile predeploy|native] [--native-only] [--artifact app.apk]
 aisec rescan [path] --baseline <scan-id|report.json>
 aisec report <scan-id|report.json> --format terminal|json|html|sarif
 aisec fix-contract --scan <scan-id> --finding <id> --format json
@@ -70,12 +104,17 @@ aisec engines install <name> --from <binary> --sha256 <digest>
 aisec mcp
 ```
 
+Scan options include `--profile predeploy|native`, repeatable `--artifact`,
+`--git-history`, `--native-only`, `--no-persist`, `--max-files`,
+`--max-file-bytes`, `--max-total-bytes` and `--timeout-ms`. Run `aisec --help`
+for defaults and hard-bound behavior.
+
 Reports are stored outside the scanned project. By default this is
 `~/Library/Application Support/aisec` on macOS and
 `$XDG_DATA_HOME/aisec` (or `~/.local/share/aisec`) on Linux. Override it with
 `AISEC_DATA_DIR` in tests or automation.
 
-### Optional scanner engines
+### External scanner engines
 
 AIsec searches, in order, for an explicit `AISEC_<ENGINE>_PATH`, a locally
 managed and hash-pinned binary, then the normal `PATH`. It never downloads a
@@ -84,13 +123,18 @@ unknown engine versions instead of assuming output compatibility:
 
 | Engine | Verified Beta version | Coverage |
 | --- | --- | --- |
-| Gitleaks | `8.30.1` | working tree and optional Git-history secrets |
-| Opengrep | `1.26.0` | general SAST with AIsec-owned rules |
-| Trivy | `0.73.0` | dependency vulnerabilities, IaC and secrets |
+| [Gitleaks](https://github.com/gitleaks/gitleaks/releases/tag/v8.30.1) | `8.30.1` | working tree and optional Git-history secrets |
+| [Opengrep](https://github.com/opengrep/opengrep/releases/tag/v1.26.0) | `1.26.0` | general SAST with AIsec-owned rules |
+| [Trivy](https://github.com/aquasecurity/trivy/releases/tag/v0.73.0) | `0.73.0` | dependency vulnerabilities, IaC and secrets |
 
 `doctor` reports the discovered command, exact version, compatibility and
 managed-binary digest. A version upgrade must first extend the compatibility
 fixtures and matrix.
+
+Use the exact linked upstream release, authenticate its signature/checksum by
+the upstream process, and avoid a floating `latest` download. AIsec accepts an
+explicit executable path, a managed hash-pinned copy, or the exact compatible
+version on `PATH`; it does not install these engines for you.
 
 To install an already downloaded release binary into AIsec's managed directory:
 
@@ -145,6 +189,80 @@ The MCP surface contains only local, read-oriented tools:
 available over MCP, so an agent cannot autonomously send probes to a target.
 The stdio server supports the current stateless MCP `2026-07-28` discovery
 envelope and legacy `initialize` negotiation through `2025-11-25`.
+
+## CI integration
+
+Until a tagged package exists, check out AIsec beside the target repository and
+pin it to a reviewed 40-character commit. Keeping the directories separate
+prevents the tool's own source from entering the target inventory:
+
+```yaml
+name: aisec-native
+on: [pull_request]
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out the target
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          path: target
+          persist-credentials: false
+      - name: Check out reviewed AIsec source
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          repository: du397332620/aisec
+          ref: <40-character-reviewed-aisec-commit>
+          path: aisec
+          persist-credentials: false
+      - name: Use Node.js 22
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020
+        with:
+          node-version: 22
+          package-manager-cache: false
+      - name: Install and build AIsec
+        working-directory: aisec
+        run: |
+          npm ci --ignore-scripts --registry=https://registry.npmjs.org
+          npm run build
+      - name: Run the source-only gate
+        working-directory: aisec
+        run: npm exec --no -- aisec scan ../target --profile native --no-persist --format sarif --output ../aisec.sarif
+```
+
+Exit `1` or `2` fails the job. Replace the placeholder with a reviewed commit;
+do not use a branch name as a security-tool pin. A full `predeploy` CI gate must
+also provision the exact three compatible engine versions, authenticate their
+binaries and prepare the Trivy database before scanning.
+
+## Beta capability matrix
+
+| Capability | Mode / engine | Beta behavior and boundary |
+| --- | --- | --- |
+| Project inventory and stack map | Native | Local read only; supported text candidates and manifests, no dependency installation or project execution |
+| Secrets in selected source files | Native | Deterministic patterns; working tree only, not Git history |
+| JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
+| Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; some findings are explicitly `inferred` and require review |
+| Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |
+| General SAST | Opengrep `1.26.0` | Required in pre-deploy mode; uses AIsec-owned rules and suppression controls |
+| Dependency, IaC and secondary secret checks | Trivy `0.73.0` | Required in pre-deploy mode; requires an explicitly prepared, fresh schema-v2 database and scans offline |
+| APK/IPA static resources | Native archive adapter | Optional input; required for pre-deploy mobile artifact coverage when a mobile project/artifact is expected; no extraction or runtime instrumentation |
+| Passive test/staging Web checks | `verify-web` | Explicit authorization plus `--confirm`; bounded GET/header/cookie checks only, no auth/IDOR/injection testing |
+| Agent integration | stdio MCP | Local read-oriented inspection, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
+| Reports and release decisions | CLI / JSON / HTML / SARIF | Coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; never certification |
+
+`--profile native` is the deterministic source-only first pass: external and
+artifact domains are non-required. The default `predeploy` profile is the
+acceptance path: Gitleaks, Opengrep and Trivy are required, and APK/IPA coverage
+is required when a mobile project is detected. `--native-only` explicitly
+disables the three external engines without changing that artifact policy.
+Missing, partial or failed required coverage prevents a clean result. APK/IPA
+analysis examines selected static resources only; mobile runtime behavior
+remains out of scope.
 
 ## Authorized passive web verification
 
@@ -254,6 +372,7 @@ From a source checkout:
 npm test
 npm run benchmark
 npm run benchmark:resources
+npm run test:docs
 npm run test:package
 npm run test:release
 

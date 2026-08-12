@@ -35,6 +35,8 @@ jobs:
         run: npm run benchmark
       - name: Run resource regression benchmark
         run: npm run benchmark:resources
+      - name: Reproduce the documented first-run path
+        run: npm run test:docs
       - name: Audit production dependencies
         run: npm audit --omit=dev --audit-level=moderate --registry=https://registry.npmjs.org
       - name: Verify publish contents

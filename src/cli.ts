@@ -18,7 +18,7 @@ const HELP = `AIsec ${TOOL_VERSION} — local-first security acceptance for AI-b
 
 Usage:
   aisec inspect [path] [--artifact app.apk]
-  aisec scan [path] [--native-only] [--artifact app.apk] [--format terminal|json|html|sarif] [--output file]
+  aisec scan [path] [--profile predeploy|native] [--native-only] [--artifact app.apk] [--format terminal|json|html|sarif] [--output file]
   aisec rescan [path] --baseline <scan-id|report.json> [scan options]
   aisec report <scan-id|report.json> [--format terminal|json|html|sarif] [--output file]
   aisec fix-contract --scan <scan-id|report.json> --finding <id|fingerprint> [--format terminal|json] [--output file]
@@ -31,10 +31,22 @@ Usage:
 
 Scan safety:
   Project files are read only. AIsec never runs package installation, build scripts,
-  repository executables, Gradle, or CocoaPods. External scanners are optional;
-  use --native-only for deterministic first-party checks without them.
+  repository executables, Gradle, or CocoaPods. External scanners are not bundled.
+  Use --profile native for a source-only first pass. --native-only disables external
+  engines without changing the selected profile's artifact policy.
   Defaults: --max-files 20000, --max-file-bytes 2097152,
   --max-total-bytes 67108864, --timeout-ms 120000, at most 10 artifacts.
+
+Scan options:
+  --profile predeploy|native  Acceptance scan (default) or source-only first pass
+  --native-only              Disable Gitleaks, Opengrep and Trivy for this scan
+  --artifact <apk|ipa>       Repeatable; at most 10 mobile artifacts
+  --git-history              Include Git history in Gitleaks coverage
+  --max-files <count>        Selected text-file limit (default 20000)
+  --max-file-bytes <bytes>   Per-file read limit (default 2097152)
+  --max-total-bytes <bytes>  Aggregate candidate-input limit (default 67108864)
+  --timeout-ms <ms>          External engine/artifact timeout (default 120000)
+  --no-persist               Do not store the generated report
 
 Decision exit codes:
   0 no_blockers_found/review, 1 block, 2 incomplete, 64 invalid usage/error

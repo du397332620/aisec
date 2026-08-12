@@ -11,8 +11,8 @@
 | 当前版本 | `0.1.0` |
 | 文档状态 | Living document（持续更新） |
 | 最后更新 | 2026-08-12 |
-| 当前阶段 | Beta 基础能力已实现；公开 Beta 尚未达到发布门槛 |
-| 当前主线 | `main`；公开仓库 `du397332620/aisec`，首次基线已推送且 GitHub Actions 已通过 |
+| 当前阶段 | Beta 技术与文档门禁已实现；公开 Beta 仅剩发布身份与正式发布决策 |
+| 当前主线 | `main`；公开仓库 `du397332620/aisec`，最新 P0-08 四组合 GitHub Actions 已通过 |
 | 进度事实源 | 本文档；暂未接入 GitHub Issues |
 
 ### 状态定义
@@ -32,9 +32,9 @@
 
 AIsec 是面向 AI 辅助开发项目的、本地优先的安全验收 CLI 与 MCP 服务。它把待扫描项目视为不可信输入，识别资产和攻击面，运行确定性的原生检测与可选第三方扫描器，关联证据形成攻击路径，并输出覆盖状态、发布决策和受约束的修复合同。
 
-当前仓库已经形成可运行的 `0.1.0` Beta 基础：CLI、原生检测、报告、基线复扫、修复合同、MCP、受控被动 Web 验证和 CI 配置均已落地。默认套件当前包含 40 个测试；本地受限沙箱为 39 通过、1 个回环网络测试跳过；真实引擎套件为 2/2 通过；生产依赖审计为 0 个已知漏洞。公开合成语料包含 22 个独立用例，覆盖全部 31 条确定性原生 Beta 规则，结果为 31 TP / 0 FP / 0 FN / 0 证据等级偏差。正式 Beta 运行矩阵为 Ubuntu 24.04 x64 与 macOS 15 arm64，分别使用仍受维护的 Node.js 22、24 LTS。
+当前仓库已经形成可运行的 `0.1.0` Beta 基础：CLI、原生检测、报告、基线复扫、修复合同、MCP、受控被动 Web 验证和 CI 配置均已落地。默认套件当前包含 40 个测试；本地受限沙箱为 39 通过、1 个回环网络测试跳过；真实引擎套件为 2/2 通过；生产依赖审计为 0 个已知漏洞。公开合成语料包含 22 个独立用例，覆盖全部 31 条确定性原生 Beta 规则，结果为 31 TP / 0 FP / 0 FN / 0 证据等级偏差。源码安装和首次使用流程已经在独立远程浅克隆中复现，并由 `test:docs` 持续保护。正式 Beta 运行矩阵为 Ubuntu 24.04 x64 与 macOS 15 arm64，分别使用仍受维护的 Node.js 22、24 LTS。
 
-这还不是公开发布就绪状态。P0-01 至 P0-05、P0-07 和 P0-08 已关闭；P0-06 的确定性产物、SBOM、校验清单和 GitHub Sigstore 证明已实现并通过无标签演练，正式版本标签、GitHub Release 与 npm 发布仍未执行。GitHub 私密漏洞报告已启用，资源/对抗基准已进入 CI。当前最大的证据缺口转为：语料仍是小型合成集合，尚不能代表真实世界效能；npm 包身份尚未决定，发布文档仍需在全新环境走查。
+这还不是公开发布就绪状态。P0-01 至 P0-05、P0-07、P0-08 和 P0-09 已关闭；P0-06 的确定性产物、SBOM、校验清单和 GitHub Sigstore 证明已实现并通过无标签演练，正式版本标签、GitHub Release 与 npm 发布仍未执行。GitHub 私密漏洞报告已启用，资源/对抗和文档复现门禁已进入 CI。当前最大的发布缺口是 npm 包身份和维护者批准的首个标签/Release；语料仍是小型合成集合，不能代表真实世界效能。
 
 ### 与现有开源工具的关系
 
@@ -199,13 +199,15 @@ AIsec 提供一个本地编排与证据归一层：
 | `npm audit --omit=dev --audit-level=moderate --registry=https://registry.npmjs.org` | 0 vulnerabilities | 当前锁定的生产依赖未报告已知漏洞 |
 | `npm run benchmark` | 31 TP / 0 FP / 0 FN / 0 证据等级偏差 | 22 个独立合成用例覆盖秘密、数据流、应用、BaaS、移动源码和移动产物六类；不代表真实世界准确率 |
 | `npm run benchmark:resources` | macOS arm64 / Node 22：500 文件约 70 ms / 132 MiB RSS；5,000 文件约 507 ms / 163 MiB RSS；200 文件截断约 38 ms / 127 MiB RSS并裁决 `incomplete` | 运行时生成不含秘密的合成项目；CI 门禁为典型 15 s/512 MiB、大型 60 s/768 MiB、截断 15 s/512 MiB，属于回归上限而非通用性能承诺 |
-| `npm pack --dry-run --json` | 190 files，约 124 KB（解包约 502 KB） | 发布文件集合包含分类/资源基准、验证模块和三份公开 Schema |
+| `npm run test:docs` | 独立远程浅克隆复现后固化为烟测：版本、doctor、安全/脆弱 fixture、缺失引擎 `incomplete`、报告存储、修复合同、MCP 工具发现均通过 | README 明确源码安装、未发布 npm、`native`/`predeploy` 语义、固定引擎版本、平台与能力边界；烟测进入四组合 CI 和发布门禁 |
+| `npm pack --dry-run --json` | 190 files，127,198 bytes（解包 512,812 bytes） | 发布文件集合包含分类/资源基准、验证模块和三份公开 Schema；文档烟测脚本仅用于源码/CI，不进入运行时包 |
+| `npm view @aisec/cli version --registry=https://registry.npmjs.org` | 官方 registry 返回 `E404` | 截至本次走查尚无已发布版本；这不证明当前维护者拥有 `@aisec` scope，P0-06 仍需先决定并验证 npm 发布身份 |
 | `npm run test:package` | 从 tarball 向空临时项目禁用 scripts 安装；安装后二进制版本正确，安全 fixture 为 `no_blockers_found`、脆弱 fixture 为 `block`，包内基准为 31/0/0/0 | 本地 macOS arm64 / Node 22 通过；脚本设有超时并始终清理临时目录 |
 | `npm run test:release` | 同一环境的两次产物逐字节相同；错误标签、已有输出目录、篡改内容、多余文件和 CI ref 漂移均被拒绝 | tarball、CycloneDX SBOM、manifest 与 `SHA256SUMS` 构成唯一允许的发布集合；下载后可在匹配源码提交上离线复验 |
 | GitHub Release 演练 | [`88a80e5`](https://github.com/du397332620/aisec/commit/88a80e5d9b8099e3e9bac86cadd745db104f9f34) 的 [run 31585652584](https://github.com/du397332620/aisec/actions/runs/31585652584) 构建任务成功，发布任务按无标签条件跳过 | Ubuntu 24.04 / Node 24.19.0 生成并上传 4 文件产物；provenance 与 CycloneDX attestation 均按 signer workflow、source digest 和 `refs/heads/main` 严格验证通过 |
 | `engines prepare trivy` | schema `2`，状态 `ready`；记录 `updatedAt`、`downloadedAt`、`nextUpdate` | 数据库准备是显式联网动作，正常扫描离线；缺失、空、无效或过期均 fail closed |
 | `doctor --json` | Gitleaks `8.30.1`、Opengrep `1.26.0`、Trivy `0.73.0` 全部 compatible | Opengrep 托管二进制 SHA-256 为 `513ff8491f7254c9a672cf8421136a537eb53b2a8af748568bd697acdc59eefe` |
-| Git/CI | P0-05 提交 [`482c223`](https://github.com/du397332620/aisec/commit/482c22312b6341b2374f2a9d6f0abb6002bcac97) 已推送；提交身份为 `xiaobai <397332620@qq.com>` | GitHub Actions [run 31579898657](https://github.com/du397332620/aisec/actions/runs/31579898657) 的四个 OS/Node job 全部成功，annotations 为 0 |
+| Git/CI | P0-08 提交 [`6966b94`](https://github.com/du397332620/aisec/commit/6966b94dcf8901bc06d305674573ae660d9b180c) 已推送；提交身份为 `xiaobai <397332620@qq.com>` | GitHub Actions [run 31590880594](https://github.com/du397332620/aisec/actions/runs/31590880594) 的四个 OS/Node job 全部成功，资源基准、audit、打包安装和可复现发布均通过 |
 
 证据入口：
 
@@ -215,6 +217,7 @@ AIsec 提供一个本地编排与证据归一层：
 - [扫描端到端测试](../test/scan.test.ts)
 - [真实引擎端到端测试](../test/engines.integration.ts)
 - [MCP 端到端测试](../test/mcp.test.ts)
+- [文档路径烟测](../scripts/docs-smoke.mjs)
 - [Schema 契约测试](../test/schema-validation.test.ts)
 - [启动基准清单](../benchmark/manifest.json)
 - [资源基准预算](../benchmark/resource-budget.json)
@@ -246,7 +249,7 @@ AIsec 提供一个本地编排与证据归一层：
 | P0-06 | 发布供应链 | 部分完成 | 确定性 tarball/SBOM/manifest/checksum 与最小权限 GitHub provenance、SBOM attestation 已实现并演练通过；标签可自动创建可追溯 Release | 决定 npm 包身份与 trusted publisher；经维护者确认后创建首个正式标签和 Release |
 | P0-07 | 正式安全报告渠道 | 已完成 | GitHub Private Vulnerability Reporting 已启用；安全政策写明支持版本、私密入口、响应时限、协调披露与研究边界 | 定期演练入口；正式版本发布后更新支持版本表 |
 | P0-08 | 规模与恶意输入基准 | 已完成 | 运行时生成 500/5,000 文件及截断 fixture，隔离记录耗时/RSS；资源预算进入 CI；目录/字节/发现/输出/归档对抗测试均 fail closed | 根据真实项目反馈校准预算；新增解析器事故样本时不得提交真实秘密 |
-| P0-09 | 发布文档与能力矩阵 | 部分完成 | 安装、CI、MCP、引擎版本、平台限制和覆盖边界可由新用户独立复现 | 在真实干净环境完成文档走查 |
+| P0-09 | 发布文档与能力矩阵 | 已完成 | 远程浅克隆从锁定依赖安装到 CLI/MCP/修复合同/测试/资源与发布 smoke 全部复现；README 明确未发布 npm、源码命令、精确引擎入口、`native`/`predeploy` 语义和能力边界；`test:docs` 纳入 CI/发布门禁 | 正式 npm/Release 存在后，用产物安装路径替换源码安装主路径并复验 |
 
 ### P1：公开 Beta 后的质量与覆盖
 
@@ -319,9 +322,9 @@ AIsec 提供一个本地编排与证据归一层：
 
 ## 17. 建议的下一执行顺序
 
-1. 确认 npm 包身份，执行首个正式标签/Release（P0-06）。
-2. 在全新环境完成公开 Beta 文档走查（P0-09）。
-3. 所有 P0 证据稳定后标记 M2 公开 Beta 就绪。
+1. 确认 npm 包身份与长期维护归属（P0-06）。
+2. 经维护者明确批准后执行首个正式标签/Release，并验证下载产物与证明。
+3. P0-06 关闭后标记 M2 公开 Beta 就绪；在此之前不发布标签或 npm 包。
 
 ## 18. 更新模板
 
@@ -342,6 +345,9 @@ AIsec 提供一个本地编排与证据归一层：
 
 ### 2026-08-12
 
+- 完成 P0-09：从公开 GitHub 做独立远程浅克隆，按文档复现 Node/npm 版本检查、禁用 lifecycle scripts 的锁定依赖安装、构建、doctor、安全/脆弱 fixture、完整扫描 fail-closed、修复合同、MCP 工具发现、40 项测试、资源基准和发布复现。
+- README 明确 `0.1.0` 尚未发布 npm，源码检出使用 `npm exec --no -- aisec` 防止 npm 意外下载同名包；新增第一运行验收、固定版本官方引擎入口、按提交固定且目录隔离的 GitHub Actions 示例和集中能力矩阵。
+- 正式公开 `--profile native` 作为源码首检语义，并澄清 `--native-only` 只关闭外部引擎、不改变 predeploy 的移动产物策略；新增 `test:docs` 防止安装、裁决、报告、修复合同和 MCP 文档漂移，并纳入 CI 与发布门禁。
 - 完成 P0-08：新增运行时生成的 500、5,000 文件和强制截断资源基准，分别设置跨平台耗时/RSS回归预算并纳入 CI 与发布门禁；本机测得约 70 ms/132 MiB、507 ms/163 MiB、38 ms/127 MiB。
 - 增加 64 MiB 默认候选输入预算与硬性扫描参数上限，最多 10 个 APK/IPA、每个检测器/适配器最多 2,000 个信号；子进程 stdout/stderr 共用输出预算且改用分块收集，Gitleaks 报告改为有界标准输出。
 - 加入目录条目/总字节截断、发现洪泛、子进程双流洪泛、ZIP 路径穿越和超大归档资源对抗测试；测试暴露并修复 `total_bytes_limit` 未进入不完整裁决的 fail-open 漏洞，归档候选资源截断/失败也不再误报完整覆盖。
