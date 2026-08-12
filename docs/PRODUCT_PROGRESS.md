@@ -12,7 +12,7 @@
 | 文档状态 | Living document（持续更新） |
 | 最后更新 | 2026-08-12 |
 | 当前阶段 | Beta 基础能力已实现；公开 Beta 尚未达到发布门槛 |
-| 当前主线 | `main`；已配置提交身份和 GitHub `origin`，正在创建并推送首次基线提交 |
+| 当前主线 | `main`；公开仓库 `du397332620/aisec`，首次基线已推送且 GitHub Actions 已通过 |
 | 进度事实源 | 本文档；暂未接入 GitHub Issues |
 
 ### 状态定义
@@ -34,7 +34,7 @@ AIsec 是面向 AI 辅助开发项目的、本地优先的安全验收 CLI 与 M
 
 当前仓库已经形成可运行的 `0.1.0` Beta 基础：CLI、原生检测、报告、基线复扫、修复合同、MCP、受控被动 Web 验证和 CI 配置均已落地。默认测试当前为 24/24 通过、0 跳过；真实引擎套件为 2/2 通过；生产依赖审计为 0 个已知漏洞，启动语料基准为 9 TP / 0 FP / 0 FN。
 
-这还不是公开发布就绪状态。Gitleaks `8.30.1`、Opengrep `1.26.0`、Trivy `0.73.0` 已完成真实二进制端到端验收，P0-02 已关闭。当前最大的证据缺口转为：公开基准仍过小；Git 仓库还没有正式基线提交；没有远程跨平台 CI 运行、发布 provenance 或正式安全报告渠道。
+这还不是公开发布就绪状态。P0-01 与 P0-02 已关闭：Git 基线、公开远程仓库和首次 Ubuntu/Node.js 20 CI 运行均已建立，Gitleaks `8.30.1`、Opengrep `1.26.0`、Trivy `0.73.0` 也已完成真实二进制端到端验收。当前最大的证据缺口转为：公开基准仍过小；尚未建立 macOS/Linux CI 矩阵；没有发布 provenance 或正式安全报告渠道。
 
 ### 与现有开源工具的关系
 
@@ -142,7 +142,7 @@ AIsec 提供一个本地编排与证据归一层：
 | FR-12 | 显式授权的被动 Web 验证 | P0 | 已完成 | 非沙箱复验确认本地回环、请求上限和跨源重定向拒绝测试通过 |
 | FR-13 | 环境诊断和散列固定的本地引擎管理 | P0 | 已完成 | 安装、二次校验与篡改失效测试通过 |
 | FR-14 | JSON Schema 契约 | P0 | 部分完成 | 三份 schema 已存在；字段定义仍偏宽，缺完整运行时 schema 校验与兼容测试 |
-| FR-15 | CI、依赖审计和发布包检查 | P0 | 部分完成 | 工作流已编写且 action 固定到提交；尚无远程 CI 运行记录 |
+| FR-15 | CI、依赖审计和发布包检查 | P0 | 部分完成 | 固定 Action 的 Ubuntu/Node.js 20 远程工作流已成功运行；尚缺 macOS/Node 矩阵和打包安装 smoke |
 
 ### 7.2 非功能需求
 
@@ -152,7 +152,7 @@ AIsec 提供一个本地编排与证据归一层：
 | NFR-02 | 防止目标配置和环境静默削弱第三方扫描 | 已完成 | AIsec 控制配置/忽略文件与环境；真实 fixture 证明 Gitleaks allow、Opengrep ignore/nosemgrep、Trivy 配置不能绕过 |
 | NFR-03 | 子进程和归档处理有资源边界 | 已完成 | 无 shell、超时、输出上限、有限归档条目读取、不落盘解压 |
 | NFR-04 | 本地优先和数据最小化 | 已完成 | 只传本地规则并禁用更新，Trivy 显式离线；报告位于目标外且秘密脱敏；硬性断网由 OS/CI 出站策略保证 |
-| NFR-05 | macOS/Linux 可重复运行，Node.js 20+ | 部分完成 | 当前仅在 macOS arm64 / Node 22 复验；Linux CI 尚无远程运行记录 |
+| NFR-05 | macOS/Linux 可重复运行，Node.js 20+ | 部分完成 | macOS arm64 / Node 22 本地复验与 Ubuntu / Node.js 20 远程 CI 均成功；尚未形成正式矩阵 |
 | NFR-06 | 对大型或恶意仓库有已量化性能边界 | 部分完成 | 有文件、输出和超时边界；尚无规模化性能与对抗样本基准 |
 | NFR-07 | 可审计、可复现的发布供应链 | 部分完成 | lockfile、固定 Action 和 pack 检查已存在；尚无签名、SBOM、provenance 或正式 Release |
 | NFR-08 | 扫描器自身风险有公开威胁模型 | 已完成 | 已记录信任边界、限制和漏洞报告要求 |
@@ -197,11 +197,11 @@ AIsec 提供一个本地编排与证据归一层：
 | 引擎故障矩阵 | Gitleaks / Opengrep / Trivy 的 missing、成功、失败、超时、畸形输出、未验证版本均已覆盖 | 必需引擎异常统一产生 `failed`/`not_run` 覆盖和 `incomplete`，不能伪装为 clean |
 | `npm audit --omit=dev --audit-level=moderate --registry=https://registry.npmjs.org` | 0 vulnerabilities | 当前锁定的生产依赖未报告已知漏洞 |
 | `npm run benchmark` | 9 TP / 0 FP / 0 FN | 只证明两个启动 fixture 可重复；不能代表真实世界准确率 |
-| `npm pack --dry-run --json` | 156 files，104,109 bytes（解包 409,555 bytes） | 发布文件集合可生成；包含进度文档、新引擎模块和隔离 fixture，仍需最终安装与多平台复验 |
+| `npm pack --dry-run --json` | 156 files，104,563 bytes（解包 411,453 bytes） | 发布文件集合可生成；包含进度文档、新引擎模块和隔离 fixture，仍需最终安装与多平台复验 |
 | 已打包 CLI smoke test | 安全 fixture 为 `no_blockers_found`；脆弱 fixture 为 `block` | 包安装后的主要裁决路径已验证 |
 | `engines prepare trivy` | schema `2`，状态 `ready`；记录 `updatedAt`、`downloadedAt`、`nextUpdate` | 数据库准备是显式联网动作，正常扫描离线；缺失、空、无效或过期均 fail closed |
 | `doctor --json` | Gitleaks `8.30.1`、Opengrep `1.26.0`、Trivy `0.73.0` 全部 compatible | Opengrep 托管二进制 SHA-256 为 `513ff8491f7254c9a672cf8421136a537eb53b2a8af748568bd697acdc59eefe` |
-| Git/CI | GitHub 空仓库 `du397332620/aisec` 已配置为 `origin`，提交身份为 `xiaobai <397332620@qq.com>` | 正在创建并推送首次基线；远程 Actions 运行结果仍待验证 |
+| Git/CI | 首次基线 [`a308096`](https://github.com/du397332620/aisec/commit/a308096557d58b5c06ecea2804c35efc8a8a5c13) 已推送到公开仓库；提交身份为 `xiaobai <397332620@qq.com>` | GitHub Actions [run 31572675040](https://github.com/du397332620/aisec/actions/runs/31572675040) 在 Ubuntu / Node.js 20 成功 |
 
 证据入口：
 
@@ -231,7 +231,7 @@ AIsec 提供一个本地编排与证据归一层：
 
 | ID | 工作项 | 状态 | 完成条件 | 下一步 |
 | --- | --- | --- | --- | --- |
-| P0-01 | 建立可追踪的 Git 基线和远程仓库 | 进行中 | 首次审查后提交；配置正式 remote；CI 可在提交上运行 | 创建并推送首次提交，验证 GitHub Actions |
+| P0-01 | 建立可追踪的 Git 基线和远程仓库 | 已完成 | 首次审查后提交；配置正式 remote；CI 可在提交上运行 | 保持 `main` 保护和 CI 绿灯；后续发布证据关联到提交 |
 | P0-02 | 真实第三方引擎兼容矩阵 | 已完成 | 固定受支持版本；三种引擎均有安装、缺失、成功、失败、超时、畸形输出测试 | 新版本仅在扩展真实 fixture 和故障矩阵后加入支持表 |
 | P0-03 | 扩充独立安全语料 | 部分完成 | 每个 P0 规则都有阳性、近似阴性和预期证据级别；按类别输出结果 | 先拆分当前跨栈 fixture，再增加独立审阅样本 |
 | P0-04 | 完整化并校验公开 schema | 部分完成 | 报告、修复合同、授权清单均可运行时校验；有向后兼容和无效输入测试 | 收紧宽泛字段并加入 schema 测试 |
@@ -287,7 +287,7 @@ AIsec 提供一个本地编排与证据归一层：
 | 静态推断产生误报或漏报 | 降低信任或漏过风险 | 证据分级、近似阴性、抑制到期 | 按规则跟踪真实反馈和适用框架版本 |
 | Web 验证越权或形成 SSRF | 法律与基础设施风险 | 明确授权、非生产限制、DNS 固定、同源重定向 | 动态能力扩大前单独做威胁建模和安全评审 |
 | 发布包或 CI 供应链被篡改 | 用户执行恶意扫描器 | 固定 Action、lockfile、无 lifecycle scripts | 增加 provenance、SBOM、签名与最小权限发布 |
-| 远程 CI 尚未验证 | 无法证明 GitHub 环境中的跨平台验收 | 已配置空 GitHub 仓库和固定 Actions 工作流 | 推送首次提交并检查 GitHub Actions |
+| 跨平台 CI 矩阵尚未建立 | 当前只证明 Ubuntu/Node.js 20 远程运行与 macOS/Node 22 本地运行 | 首次 GitHub Actions 已成功，Action 固定到提交 | 增加 macOS/Linux 与约定 Node 版本矩阵和打包安装 smoke |
 
 ## 15. 当前不在范围内
 
@@ -303,7 +303,7 @@ AIsec 提供一个本地编排与证据归一层：
 
 | ID | 决策 | 为什么需要决定 |
 | --- | --- | --- |
-| D-01 | 正式 GitHub 组织、仓库可见性和 npm 包名 | 决定远程 CI、发布身份、安全报告和链接稳定性 |
+| D-01 | npm 包名与长期仓库归属 | 当前已采用公开仓库 `du397332620/aisec`；仍需决定 npm 发布身份及是否长期保留个人仓库归属 |
 | D-02 | 公开 Beta 的首要用户：个人开发者、Agent 平台还是团队 CI | 决定安装体验、报告入口和优先支持工作流 |
 | D-03 | 正式支持的 OS、CPU 和 Node 版本矩阵 | 决定 CI 成本和兼容承诺 |
 | D-04 | 第三方引擎采用自带、自动安装还是用户自管 | 影响许可证、供应链、离线体验和包体积 |
@@ -312,11 +312,10 @@ AIsec 提供一个本地编排与证据归一层：
 
 ## 17. 建议的下一执行顺序
 
-1. 配置 Git 提交邮箱，完成首次可追踪基线提交；随后确定 remote、可见性与仓库身份。
-2. 收紧三份公开 schema，并在 CLI/MCP/持久化边界加入运行时契约测试（P0-04）。
-3. 将启动 fixture 拆成按规则、按框架分类的阳性/近似阴性语料（P0-03）。
-4. 建立跨平台 CI matrix、真实打包安装和发布 provenance。
-5. 完成仓库/包身份、安全报告渠道和公开 Beta 文档走查。
+1. 收紧三份公开 schema，并在 CLI/MCP/持久化边界加入运行时契约测试（P0-04）。
+2. 将启动 fixture 拆成按规则、按框架分类的阳性/近似阴性语料（P0-03）。
+3. 建立跨平台 CI matrix、真实打包安装和发布 provenance。
+4. 完成 npm 包身份、安全报告渠道和公开 Beta 文档走查。
 
 ## 18. 更新模板
 
@@ -337,12 +336,14 @@ AIsec 提供一个本地编排与证据归一层：
 
 ### 2026-08-12
 
+- 完成 P0-01：首次基线提交 `a308096` 已推送至公开仓库 `du397332620/aisec`，GitHub Actions run `31572675040` 成功。
+- GitHub Push Protection 识别出 fixture 中形似 Stripe 凭据的静态测试值；未绕过保护，改为测试运行时在临时目录生成，完整测试、真实引擎测试与基准保持通过。
 - 完成 P0-02：固定并真实验收 Gitleaks `8.30.1`、Opengrep `1.26.0`、Trivy `0.73.0`。
 - 增加目标配置绕过 fixture、三适配器失败/超时/畸形输出矩阵、未知版本拒绝和托管引擎篡改测试。
 - 新增 `engines prepare trivy`，正常扫描只用 AIsec 控制的有效未过期离线数据库；`doctor` 输出兼容性和数据库 freshness。
 - 本轮复验默认测试 24/24 通过、0 跳过；真实引擎测试 2/2 通过。
 - 真实回归发现并修复 Trivy `0.73.0` 零发现报告可省略 `Results` 的兼容问题，已加入不依赖外部二进制的回归测试。
-- 已配置提交身份 `xiaobai <397332620@qq.com>` 和 GitHub `origin`；远端只读检查确认仓库为空，准备首次推送。
+- 已配置提交身份 `xiaobai <397332620@qq.com>` 和 HTTPS `origin`；`main` 正在跟踪 `origin/main`。
 - 建立首份 PRD、实现盘点、验收快照、里程碑和进度跟踪总表。
 - 将 `0.1.0` 定位为“Beta 基础已实现”，而不是“公开 Beta 已发布”。
 - 把真实第三方引擎联调、语料扩充、schema、跨平台 CI 和发布治理列为 P0。
