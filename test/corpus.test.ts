@@ -10,8 +10,8 @@ const repositoryRoot = join(here, "..", "..");
 
 test("the public corpus gives every native Beta rule a positive and near-miss with the expected evidence level", async () => {
   const result = await runBenchmark();
-  assert.deepEqual(result.catalog, { totalRules: 47, rulesWithPositive: 47, rulesWithNearMiss: 47 });
-  assert.equal(result.totals.truePositive, 48);
+  assert.deepEqual(result.catalog, { totalRules: 49, rulesWithPositive: 49, rulesWithNearMiss: 49 });
+  assert.equal(result.totals.truePositive, 50);
   assert.equal(result.totals.falsePositive, 0);
   assert.equal(result.totals.falseNegative, 0);
   assert.equal(result.totals.evidenceMismatches, 0);

@@ -10,12 +10,15 @@ export interface NodeApiRoute {
   framework: NodeApiFramework;
   method: string;
   path: string;
+  declaredPath: string;
   sourcePath: string;
   handlerName: string;
   handlerSource: string;
   location: SourceLocation;
   authenticationProtected: boolean;
   ownershipProtected: boolean;
+  roleProtected: boolean;
+  privilegedOperation: boolean;
   objectOperation: boolean;
   objectIdFields: string[];
   responseOwnerFields: string[];
@@ -77,6 +80,7 @@ interface ExpressRouteCandidate {
   handlerSource: string;
   location: SourceLocation;
   locallyAuthenticated: boolean;
+  locallyRoleProtected: boolean;
 }
 
 interface ExpressMiddleware {
@@ -85,6 +89,7 @@ interface ExpressMiddleware {
   offset: number;
   prefix: string;
   authenticated: boolean;
+  roleProtected: boolean;
 }
 
 interface ExpressMount {
@@ -94,6 +99,17 @@ interface ExpressMount {
   offset: number;
   prefix: string;
   authenticated: boolean;
+  roleProtected: boolean;
+}
+
+type NestVersion = string | null;
+
+interface NestRoutingConfig {
+  globalPrefix: string;
+  prefixExcludes: Set<string>;
+  uriVersioning: boolean;
+  defaultVersions: NestVersion[];
+  versionPrefix: string;
 }
 
 const NODE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
@@ -102,9 +118,12 @@ const HTTP_METHODS = new Set(["get", "post", "put", "patch", "delete", "options"
 const OWNER_FIELD = /^(?:owner_id|user_id|tenant_id|creator_id|created_by|account_id|organization_id|org_id|ownerId|userId|tenantId|creatorId|createdBy|accountId|organizationId|orgId)$/;
 const AUTH_GUARD_NAME = /(?:^|[._])(?:auth(?:Middleware|Guard)?|authenticate|authenticated|authentication(?:Middleware)?|requireAuth|requireUser|ensureAuthenticated|isAuthenticated|verifyToken|verifySession|jwtAuth(?:Guard)?|jwtGuard|sessionAuth(?:Guard)?|bearerAuth|protect|passport\.authenticate)(?:$|[.(])/i;
 const ACCESS_GUARD_NAME = /(?:^|[._])(?:require|verify|check|ensure|authorize|assert|can)[A-Za-z0-9_]*(?:access|owner|ownership|permission|policy|role|admin|tenant)|(?:owner|ownership|permission|policy|ability|role|admin|tenant)[A-Za-z0-9_]*(?:guard|check)(?:$|[.(])/i;
-const ID_OPERATION = /(?:^|\.)(?:findById|findByIdAndUpdate|findByIdAndDelete|findUnique|findUniqueOrThrow|findFirst|findFirstOrThrow|findOne|findMany|getById|getOne|loadById|detail|update|updateOne|updateMany|delete|deleteOne|deleteMany|remove|destroy|where)$/i;
+const ROLE_GUARD_NAME = /(?:^|[._])(?:require|verify|check|ensure|authorize|assert|can)[A-Za-z0-9_]*(?:permission|policy|role|admin)|(?:permission|policy|ability|role|admin)[A-Za-z0-9_]*(?:guard|check|only|middleware)(?:$|[.(])/i;
+const ID_OPERATION = /(?:^|\.)(?:findById|findByIdAndUpdate|findByIdAndDelete|findUnique|findUniqueOrThrow|findFirst|findFirstOrThrow|findOne|findMany|getById|getBy[A-Z][A-Za-z0-9_]*|getOne|loadById|detail|update|updateOne|updateMany|delete|deleteOne|deleteMany|remove|destroy|where)$/;
 const NEST_AUTH_GUARD_HINT = /(?:auth|jwt|session|identity|loggedIn|signedIn|user|role|permission|policy|ability|access|owner|admin)/i;
 const NEST_OWNERSHIP_GUARD_HINT = /(?:owner|ownership|tenant|role|permission|policy|ability|access|admin)/i;
+const PRIVILEGED_ROUTE_HINT = /(?:^|\/)(?:admin|administration|manage|management|permissions?|roles?)(?:\/|$)/i;
+const PRIVILEGED_HANDLER_HINT = /(?:admin|nonAdmin|allUsers?|manageUsers?|permissions?|roles?)/i;
 
 function scriptKind(path: string): ts.ScriptKind {
   const extension = extname(path).toLowerCase();
@@ -195,6 +214,8 @@ function moduleBindings(source: ts.SourceFile): {
       if (ts.isIdentifier(value)) exports.set("default", { local: value.text });
       else if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
         exports.set("default", { local: syntheticExportLocal("default") });
+      } else if (ts.isCallExpression(value)) {
+        exports.set("default", { local: syntheticExportLocal("default") });
       }
       continue;
     }
@@ -245,6 +266,8 @@ function moduleBindings(source: ts.SourceFile): {
     const value = unwrapExpression(statement.expression.right);
     if (ts.isIdentifier(value)) exports.set(exported, { local: value.text });
     else if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
+      exports.set(exported, { local: syntheticExportLocal(exported) });
+    } else if (ts.isCallExpression(value)) {
       exports.set(exported, { local: syntheticExportLocal(exported) });
     } else if (exported === "default" && ts.isObjectLiteralExpression(value)) {
       for (const property of value.properties) {
@@ -436,7 +459,10 @@ function explicitAuthentication(source: string): boolean {
   const identity = String.raw`(?:\b(?:req(?:uest)?|ctx|context)\s*(?:\?\.)?\.\s*(?:user|auth|session)\b|\b(?:currentUser|authenticatedUser|principal|identity)\b)`;
   const absentIdentity = String.raw`(?:!\s*${identity}|${identity}\s*(?:={2,3}|!={1,2})\s*(?:null|undefined|false))`;
   const denial = String.raw`(?:\b(?:Unauthorized|AuthenticationError|NotAuthenticated)\b|\.status\s*\(\s*401\s*\)|\bstatusCode\s*[:=]\s*401\b)`;
-  return new RegExp(`if\\s*\\(\\s*${absentIdentity}[\\s\\S]{0,120}?\\)[\\s\\S]{0,240}?${denial}`, "i").test(source);
+  const deniedWhenAbsent = new RegExp(`if\\s*\\(\\s*${absentIdentity}[\\s\\S]{0,120}?\\)[\\s\\S]{0,240}?${denial}`, "i").test(source);
+  const loginRedirect = String.raw`\.redirect\s*\(\s*["'][^"']*(?:login|log-in|sign-in)[^"']*["']`;
+  const continuesWhenPresent = new RegExp(`if\\s*\\(\\s*${identity}[\\s\\S]{0,120}?\\)[\\s\\S]{0,180}?\\bnext\\s*\\([\\s\\S]{0,240}?${loginRedirect}`, "i").test(source);
+  return deniedWhenAbsent || continuesWhenPresent;
 }
 
 function ownershipGuard(source: string): boolean {
@@ -447,6 +473,18 @@ function ownershipGuard(source: string): boolean {
   const comparison = new RegExp(`(?:\\.\\s*${owner}|\\b${owner}\\b)\\s*(?:===?|!==?)\\s*${identity}|${identity}\\s*(?:===?|!==?)\\s*(?:\\.\\s*${owner}|\\b${owner}\\b)`, "i");
   const roleDenial = new RegExp(`${identity}[\\s\\S]{0,180}?(?:role|isAdmin|permissions?|ability)[\\s\\S]{0,180}?(?:Forbidden|status\\s*\\(\\s*403|AccessDenied)`, "i");
   return directBinding.test(source) || comparison.test(source) || roleDenial.test(source);
+}
+
+function roleGuard(source: string): boolean {
+  if (ROLE_GUARD_NAME.test(source)) return true;
+  const role = /(?:isAdmin|admin|roles?|permissions?|policies|abilities|canAccess)/i;
+  const denial = /(?:Forbidden|AccessDenied|status\s*\(\s*403|sendStatus\s*\(\s*403|\.redirect\s*\(\s*["'][^"']*(?:login|log-in|sign-in))/i;
+  return role.test(source) && denial.test(source);
+}
+
+function privilegedOperation(path: string, handlerName: string, source: string): boolean {
+  return PRIVILEGED_ROUTE_HINT.test(path) || PRIVILEGED_HANDLER_HINT.test(handlerName)
+    || /(?:getAllNonAdminUsers|listAllUsers|updateUserRole|assignRole|grantPermission|revokePermission)/i.test(source);
 }
 
 function functionDeclarations(source: ts.SourceFile): Map<string, ts.FunctionLikeDeclaration> {
@@ -603,10 +641,30 @@ function isExpressFactoryCall(expression: ts.Expression, expressFactories: Set<s
   return undefined;
 }
 
+function expressFactoryChain(
+  expression: ts.Expression,
+  expressFactories: Set<string>,
+  routerFactories: Set<string>,
+): { kind: "app" | "router"; expressions: ts.Expression[] } | undefined {
+  const current = unwrapExpression(expression);
+  const direct = isExpressFactoryCall(current, expressFactories, routerFactories);
+  if (direct) return { kind: direct, expressions: [current] };
+  if (!ts.isCallExpression(current) || !ts.isPropertyAccessExpression(current.expression)) return undefined;
+  const parent = expressFactoryChain(current.expression.expression, expressFactories, routerFactories);
+  return parent ? { kind: parent.kind, expressions: [...parent.expressions, current] } : undefined;
+}
+
 function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unresolvedHandlers: number; unresolvedMounts: number } {
   const lookup = parsedSourceLookup(sources);
   const declarations = new Map(sources.map((parsed) => [parsed.file.relativePath, functionDeclarations(parsed.source)]));
+  const variableInitializers = new Map<string, { parsed: ParsedSource; expression: ts.Expression }>();
+  for (const parsed of sources) visit(parsed.source, (node) => {
+    if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+      variableInitializers.set(`${parsed.file.relativePath}\u0000${node.name.text}`, { parsed, expression: node.initializer });
+    }
+  });
   const receivers = new Map<string, "app" | "router">();
+  const expressionReceivers = new Map<ts.Expression, string>();
   const receiverKey = (parsed: ParsedSource, local: string): string => `${parsed.file.relativePath}\u0000${local}`;
   for (const parsed of sources) {
     const expressFactories = new Set<string>();
@@ -636,23 +694,118 @@ function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unres
       }
     }
     visit(parsed.source, (node) => {
-      if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name) || !node.initializer) return;
-      const kind = isExpressFactoryCall(node.initializer, expressFactories, routerFactories);
-      if (kind) receivers.set(receiverKey(parsed, node.name.text), kind);
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        const chain = expressFactoryChain(node.initializer, expressFactories, routerFactories);
+        if (chain) {
+          const key = receiverKey(parsed, node.name.text);
+          receivers.set(key, chain.kind);
+          for (const item of chain.expressions) expressionReceivers.set(item, key);
+        }
+        return;
+      }
+      let exported: string | undefined;
+      let expression: ts.Expression | undefined;
+      if (ts.isExportAssignment(node)) {
+        exported = "default";
+        expression = node.expression;
+      } else if (ts.isExpressionStatement(node) && ts.isBinaryExpression(node.expression)
+        && node.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+        exported = commonJsExportName(node.expression.left);
+        expression = node.expression.right;
+      }
+      if (!exported || !expression) return;
+      const chain = expressFactoryChain(expression, expressFactories, routerFactories);
+      if (!chain) return;
+      const key = receiverKey(parsed, syntheticExportLocal(exported));
+      receivers.set(key, chain.kind);
+      for (const item of chain.expressions) expressionReceivers.set(item, key);
     });
   }
   if (receivers.size === 0) return { routes: [], unresolvedHandlers: 0, unresolvedMounts: 0 };
 
   const resolvedReceiver = (parsed: ParsedSource, expression: ts.Expression): string | undefined => {
+    const current = unwrapExpression(expression);
+    const expressionReceiver = expressionReceivers.get(current);
+    if (expressionReceiver) return expressionReceiver;
     const symbol = resolveExpressionSymbol(parsed, expression, lookup);
     if (!symbol) return undefined;
     const key = receiverKey(symbol.parsed, symbol.local);
     return receivers.has(key) ? key : undefined;
   };
+  let receiversChanged = true;
+  while (receiversChanged) {
+    receiversChanged = false;
+    for (const parsed of sources) visit(parsed.source, (node) => {
+      if (!ts.isCallExpression(node)) return;
+      const target = resolveFunction(parsed, node.expression, lookup, declarations);
+      if (!target) return;
+      for (let index = 0; index < Math.min(node.arguments.length, target.declaration.parameters.length); index += 1) {
+        const argument = node.arguments[index];
+        const parameter = target.declaration.parameters[index];
+        if (!argument || !parameter || !ts.isIdentifier(parameter.name)) continue;
+        const argumentReceiver = resolvedReceiver(parsed, argument);
+        if (!argumentReceiver) continue;
+        const parameterKey = receiverKey(target.parsed, parameter.name.text);
+        if (receivers.has(parameterKey)) continue;
+        receivers.set(parameterKey, receivers.get(argumentReceiver)!);
+        receiversChanged = true;
+      }
+    });
+  }
+  const instances = new Map<string, ResolvedFunction>();
+  for (const [key, initializer] of variableInitializers) {
+    const current = unwrapExpression(initializer.expression);
+    if (!ts.isNewExpression(current)) continue;
+    const constructor = resolveFunction(initializer.parsed, current.expression, lookup, declarations);
+    if (constructor) instances.set(key, constructor);
+  }
+  const assignedInstanceFunction = (
+    instance: ResolvedFunction,
+    property: string,
+  ): ResolvedFunction | undefined => {
+    let resolved: ResolvedFunction | undefined;
+    visit(instance.declaration, (node) => {
+      if (resolved || !ts.isBinaryExpression(node)
+        || node.operatorToken.kind !== ts.SyntaxKind.EqualsToken
+        || !ts.isPropertyAccessExpression(node.left)
+        || node.left.expression.kind !== ts.SyntaxKind.ThisKeyword
+        || node.left.name.text !== property) return;
+      const value = unwrapExpression(node.right);
+      if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) resolved = { declaration: value, parsed: instance.parsed };
+      else resolved = resolveFunction(instance.parsed, value, lookup, declarations);
+    });
+    return resolved;
+  };
+  const resolveExpressFunction = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+    seen = new Set<string>(),
+  ): ResolvedFunction | undefined => {
+    const direct = resolveFunction(parsed, expression, lookup, declarations);
+    if (direct) return direct;
+    const current = unwrapExpression(expression);
+    const seenKey = `${parsed.file.relativePath}\u0000${current.getText(parsed.source)}`;
+    if (seen.has(seenKey)) return undefined;
+    const nextSeen = new Set(seen).add(seenKey);
+    if (ts.isIdentifier(current)) {
+      const initializer = variableInitializers.get(`${parsed.file.relativePath}\u0000${current.text}`);
+      return initializer && resolveExpressFunction(initializer.parsed, initializer.expression, nextSeen);
+    }
+    if (ts.isPropertyAccessExpression(current) && ts.isIdentifier(current.expression)) {
+      const instance = instances.get(`${parsed.file.relativePath}\u0000${current.expression.text}`);
+      return instance && assignedInstanceFunction(instance, current.name.text);
+    }
+    return undefined;
+  };
   const authenticatedExpression = (parsed: ParsedSource, expression: ts.Expression): boolean => {
     if (AUTH_GUARD_NAME.test(expressionName(expression))) return true;
-    const resolved = resolveFunction(parsed, expression, lookup, declarations);
+    const resolved = resolveExpressFunction(parsed, expression);
     return Boolean(resolved && explicitAuthentication(resolved.declaration.getText(resolved.parsed.source)));
+  };
+  const roleExpression = (parsed: ParsedSource, expression: ts.Expression): boolean => {
+    if (ROLE_GUARD_NAME.test(expressionName(expression))) return true;
+    const resolved = resolveExpressFunction(parsed, expression);
+    return Boolean(resolved && roleGuard(resolved.declaration.getText(resolved.parsed.source)));
   };
   const candidates: ExpressRouteCandidate[] = [];
   const middleware: ExpressMiddleware[] = [];
@@ -672,6 +825,7 @@ function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unres
         const child = childExpression ? resolvedReceiver(parsed, childExpression) : undefined;
         const guardExpressions = child ? expressions.slice(0, -1) : expressions;
         const authenticated = guardExpressions.some((expression) => authenticatedExpression(parsed, expression));
+        const roleProtected = guardExpressions.some((expression) => roleExpression(parsed, expression));
         if (child && child !== receiver) {
           const parentLocalPath = prefix || "/";
           mounts.push({
@@ -681,6 +835,7 @@ function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unres
             offset: node.getStart(parsed.source),
             prefix,
             authenticated,
+            roleProtected,
           });
           middleware.push({
             receiver,
@@ -688,9 +843,10 @@ function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unres
             offset: node.getStart(parsed.source),
             prefix: parentLocalPath,
             authenticated,
+            roleProtected,
           });
         } else {
-          middleware.push({ receiver, sourcePath: parsed.file.relativePath, offset: node.getStart(parsed.source), prefix, authenticated });
+          middleware.push({ receiver, sourcePath: parsed.file.relativePath, offset: node.getStart(parsed.source), prefix, authenticated, roleProtected });
           if (childExpression && prefix && /(?:router|routes?)/i.test(expressionName(childExpression))
             && !authenticatedExpression(parsed, childExpression)) unresolvedMounts += 1;
         }
@@ -701,7 +857,7 @@ function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unres
       if (rawPath === undefined) return;
       const path = normalizePath(rawPath);
       const handlerExpression = node.arguments.at(-1)!;
-      const resolvedHandler = resolveFunction(parsed, handlerExpression, lookup, declarations);
+      const resolvedHandler = resolveExpressFunction(parsed, handlerExpression);
       if (!resolvedHandler) unresolvedHandlers += 1;
       const handler = resolvedHandler?.declaration;
       const handlerParsed = resolvedHandler?.parsed ?? parsed;
@@ -709,6 +865,8 @@ function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unres
       const middlewareExpressions = node.arguments.slice(1, -1);
       const locallyAuthenticated = middlewareExpressions.some((expression) => authenticatedExpression(parsed, expression))
         || explicitAuthentication(handlerSource);
+      const locallyRoleProtected = middlewareExpressions.some((expression) => roleExpression(parsed, expression))
+        || roleGuard(handlerSource);
       const currentHandler = unwrapExpression(handlerExpression);
       const handlerName = ts.isIdentifier(currentHandler) ? currentHandler.text
         : ts.isPropertyAccessExpression(currentHandler) ? currentHandler.name.text
@@ -724,25 +882,32 @@ function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unres
         handlerSource,
         location: location(parsed, node),
         locallyAuthenticated,
+        locallyRoleProtected,
       });
     });
 
   const protectedByMiddleware = (receiver: string, path: string, before: number, sourcePath: string): boolean => middleware.some((item) => item.receiver === receiver
     && item.sourcePath === sourcePath && item.authenticated && item.offset < before
     && (!item.prefix || path === item.prefix || path.startsWith(`${item.prefix}/`)));
-  interface RouteVariant { path: string; inheritedAuthentication: boolean }
+  const roleProtectedByMiddleware = (receiver: string, path: string, before: number, sourcePath: string): boolean => middleware.some((item) => item.receiver === receiver
+    && item.sourcePath === sourcePath && item.roleProtected && item.offset < before
+    && (!item.prefix || path === item.prefix || path.startsWith(`${item.prefix}/`)));
+  interface RouteVariant { path: string; inheritedAuthentication: boolean; inheritedRoleProtection: boolean }
   const routeVariants = (receiver: string, path: string, seen = new Set<string>()): RouteVariant[] => {
-    if (seen.has(receiver)) return [{ path, inheritedAuthentication: false }];
+    if (seen.has(receiver)) return [{ path, inheritedAuthentication: false, inheritedRoleProtection: false }];
     const incoming = mounts.filter((mount) => mount.child === receiver);
-    if (incoming.length === 0) return [{ path, inheritedAuthentication: false }];
+    if (incoming.length === 0) return [{ path, inheritedAuthentication: false, inheritedRoleProtection: false }];
     const nextSeen = new Set(seen).add(receiver);
     return incoming.flatMap((mount) => {
       const mountedPath = joinPath(mount.prefix, path);
       const mountAuthentication = mount.authenticated
         || protectedByMiddleware(mount.parent, mount.prefix || "/", mount.offset, mount.sourcePath);
+      const mountRoleProtection = mount.roleProtected
+        || roleProtectedByMiddleware(mount.parent, mount.prefix || "/", mount.offset, mount.sourcePath);
       return routeVariants(mount.parent, mountedPath, nextSeen).map((parent) => ({
         path: parent.path,
         inheritedAuthentication: mountAuthentication || parent.inheritedAuthentication,
+        inheritedRoleProtection: mountRoleProtection || parent.inheritedRoleProtection,
       }));
     });
   };
@@ -754,6 +919,7 @@ function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unres
         framework: "Express",
         method: candidate.method,
         path: variant.path,
+        declaredPath: candidate.path,
         sourcePath: candidate.parsed.file.relativePath,
         handlerName: candidate.handlerName,
         handlerSource: candidate.handlerSource,
@@ -761,6 +927,9 @@ function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unres
         authenticationProtected: candidate.locallyAuthenticated || variant.inheritedAuthentication
           || protectedByMiddleware(candidate.receiver, candidate.path, candidate.offset, candidate.parsed.file.relativePath),
         ownershipProtected: ownershipGuard(candidate.handlerSource),
+        roleProtected: candidate.locallyRoleProtected || variant.inheritedRoleProtection
+          || roleProtectedByMiddleware(candidate.receiver, candidate.path, candidate.offset, candidate.parsed.file.relativePath),
+        privilegedOperation: privilegedOperation(variant.path, candidate.handlerName, candidate.handlerSource),
         objectOperation: hasObjectOperation(candidate.handler, fields),
         objectIdFields: fields,
         responseOwnerFields: responseOwnerFields(candidate.handler),
@@ -773,8 +942,16 @@ function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unres
 interface NestSecuritySemantics {
   authenticationGuards: Set<string>;
   ownershipGuards: Set<string>;
+  roleGuards: Set<string>;
   authenticationDecorators: Set<string>;
   ownershipDecorators: Set<string>;
+  roleDecorators: Set<string>;
+}
+
+interface NestGlobalSecurity {
+  authentication: boolean;
+  ownership: boolean;
+  role: boolean;
 }
 
 function semanticExpression(
@@ -802,8 +979,10 @@ function discoverNestSecurity(sources: ParsedSource[], lookup: Map<string, Parse
   const semantics: NestSecuritySemantics = {
     authenticationGuards: new Set(),
     ownershipGuards: new Set(),
+    roleGuards: new Set(),
     authenticationDecorators: new Set(),
     ownershipDecorators: new Set(),
+    roleDecorators: new Set(),
   };
   for (const parsed of sources) {
     for (const statement of parsed.source.statements) {
@@ -815,9 +994,11 @@ function discoverNestSecurity(sources: ParsedSource[], lookup: Map<string, Parse
       if (!canActivate && !inheritedAuthGuard) continue;
       const ownership = ownershipGuard(source)
         || (NEST_OWNERSHIP_GUARD_HINT.test(source) && /(?:ForbiddenException|AccessDenied|status\s*\(\s*403|canActivate[\s\S]{0,500}return)/i.test(source));
-      const authentication = inheritedAuthGuard || guardAuthentication(source) || ownership;
+      const role = roleGuard(source);
+      const authentication = inheritedAuthGuard || guardAuthentication(source) || ownership || role;
       if (authentication) semantics.authenticationGuards.add(statement.name.text);
       if (ownership) semantics.ownershipGuards.add(statement.name.text);
+      if (role) semantics.roleGuards.add(statement.name.text);
     }
   }
 
@@ -832,6 +1013,7 @@ function discoverNestSecurity(sources: ParsedSource[], lookup: Map<string, Parse
     for (const item of declarations) {
       let authentication = false;
       let ownership = false;
+      let role = false;
       visit(item.declaration, (node) => {
         if (!ts.isCallExpression(node)) return;
         const callName = expressionName(node.expression).split(".").pop() ?? "";
@@ -839,6 +1021,8 @@ function discoverNestSecurity(sources: ParsedSource[], lookup: Map<string, Parse
           || semanticExpression(item.parsed, node.expression, semantics.authenticationDecorators, lookup)) authentication = true;
         if (/^(?:Roles?|Permissions?|Policies|CheckPolicies|Authorize|RequireOwner|RequireAccess)$/i.test(callName)
           || semanticExpression(item.parsed, node.expression, semantics.ownershipDecorators, lookup)) ownership = true;
+        if (/^(?:Roles?|Permissions?|Policies|CheckPolicies|Authorize|RequireAdmin|AdminOnly)$/i.test(callName)
+          || semanticExpression(item.parsed, node.expression, semantics.roleDecorators, lookup)) role = true;
         if (callName === "UseGuards") {
           if (node.arguments.some((argument) => {
             const symbol = resolveExpressionSymbol(item.parsed, argument, lookup);
@@ -852,12 +1036,21 @@ function discoverNestSecurity(sources: ParsedSource[], lookup: Map<string, Parse
             return semanticExpression(item.parsed, argument, semantics.ownershipGuards, lookup)
               || (!known && NEST_OWNERSHIP_GUARD_HINT.test(argument.getText(item.parsed.source)));
           })) ownership = true;
+          if (node.arguments.some((argument) => {
+            const symbol = resolveExpressionSymbol(item.parsed, argument, lookup);
+            const known = symbol && (semantics.authenticationGuards.has(symbol.local)
+              || semantics.ownershipGuards.has(symbol.local) || semantics.roleGuards.has(symbol.local));
+            return semanticExpression(item.parsed, argument, semantics.roleGuards, lookup)
+              || (!known && /(?:role|permission|policy|ability|admin)/i.test(argument.getText(item.parsed.source)));
+          })) role = true;
         }
         if (callName === "SetMetadata") {
           const key = literalText(node.arguments[0]) ?? "";
           if (/^(?:roles?|permissions?|policies|abilities|ownership|tenant)$/i.test(key)) ownership = true;
+          if (/^(?:roles?|permissions?|policies|abilities)$/i.test(key)) role = true;
         }
       });
+      if (role) ownership = true;
       if (ownership) authentication = true;
       if (authentication && !semantics.authenticationDecorators.has(item.name)) {
         semantics.authenticationDecorators.add(item.name);
@@ -867,36 +1060,54 @@ function discoverNestSecurity(sources: ParsedSource[], lookup: Map<string, Parse
         semantics.ownershipDecorators.add(item.name);
         changed = true;
       }
+      if (role && !semantics.roleDecorators.has(item.name)) {
+        semantics.roleDecorators.add(item.name);
+        changed = true;
+      }
     }
   }
   return semantics;
 }
 
-function hasGlobalNestGuard(
+function globalNestSecurity(
   sources: ParsedSource[],
   semantics: NestSecuritySemantics,
   lookup: Map<string, ParsedSource>,
-): boolean {
-  let found = false;
+): NestGlobalSecurity {
+  const result: NestGlobalSecurity = { authentication: false, ownership: false, role: false };
+  const classify = (parsed: ParsedSource, expression: ts.Expression): void => {
+    let current = unwrapExpression(expression);
+    if (ts.isNewExpression(current) || ts.isCallExpression(current)) current = current.expression;
+    const symbol = resolveExpressionSymbol(parsed, current, lookup);
+    const known = Boolean(symbol && (semantics.authenticationGuards.has(symbol.local)
+      || semantics.ownershipGuards.has(symbol.local) || semantics.roleGuards.has(symbol.local)));
+    const source = expression.getText(parsed.source);
+    const role = semanticExpression(parsed, expression, semantics.roleGuards, lookup)
+      || (!known && /(?:role|permission|policy|ability|admin)/i.test(source));
+    const ownership = role || semanticExpression(parsed, expression, semantics.ownershipGuards, lookup)
+      || (!known && NEST_OWNERSHIP_GUARD_HINT.test(source));
+    const authentication = ownership || semanticExpression(parsed, expression, semantics.authenticationGuards, lookup)
+      || (!known && NEST_AUTH_GUARD_HINT.test(source));
+    result.authentication ||= authentication;
+    result.ownership ||= ownership;
+    result.role ||= role;
+  };
   for (const parsed of sources) {
     visit(parsed.source, (node) => {
-      if (found) return;
-      if (ts.isCallExpression(node) && /(?:^|\.)useGlobalGuards$/.test(expressionName(node.expression))
-        && node.arguments.some((argument) => semanticExpression(parsed, argument, semantics.authenticationGuards, lookup)
-          || NEST_AUTH_GUARD_HINT.test(argument.getText(parsed.source)))) found = true;
+      if (ts.isCallExpression(node) && /(?:^|\.)useGlobalGuards$/.test(expressionName(node.expression))) {
+        for (const argument of node.arguments) classify(parsed, argument);
+      }
       if (ts.isObjectLiteralExpression(node)) {
         const properties = new Map(node.properties.filter(ts.isPropertyAssignment)
           .map((property) => [propertyName(property.name), property.initializer]));
         const provide = properties.get("provide");
         const implementation = properties.get("useClass") ?? properties.get("useExisting") ?? properties.get("useValue");
         if (provide && ts.isIdentifier(unwrapExpression(provide)) && (unwrapExpression(provide) as ts.Identifier).text === "APP_GUARD"
-          && implementation && (semanticExpression(parsed, implementation, semantics.authenticationGuards, lookup)
-            || NEST_AUTH_GUARD_HINT.test(implementation.getText(parsed.source)))) found = true;
+          && implementation) classify(parsed, implementation);
       }
     });
-    if (found) break;
   }
-  return found;
+  return result;
 }
 
 function nestDecoratorAuthentication(
@@ -930,6 +1141,22 @@ function nestDecoratorOwnership(
   });
 }
 
+function nestDecoratorRole(
+  values: Array<{ name: string; arguments: readonly ts.Expression[] }>,
+  parsed: ParsedSource,
+  semantics: NestSecuritySemantics,
+  lookup: Map<string, ParsedSource>,
+): boolean {
+  return values.some((item) => {
+    if (/^(?:Roles?|Permissions?|Policies|CheckPolicies|Authorize|RequireAdmin|AdminOnly)$/i.test(item.name)) return true;
+    const local = resolveLocalSymbol(parsed, item.name, lookup);
+    if (semantics.roleDecorators.has(item.name) || (local && semantics.roleDecorators.has(local.local))) return true;
+    return item.name === "UseGuards"
+      && item.arguments.some((argument) => semanticExpression(parsed, argument, semantics.roleGuards, lookup)
+        || /(?:role|permission|policy|ability|admin)/i.test(argument.getText(parsed.source)));
+  });
+}
+
 function nestInputDetails(method: ts.MethodDeclaration): { roots: Set<string>; fields: Set<string> } {
   const roots = new Set<string>();
   const fields = new Set<string>();
@@ -948,11 +1175,121 @@ function nestInputDetails(method: ts.MethodDeclaration): { roots: Set<string>; f
   return { roots, fields };
 }
 
+function nestMethodSemanticSource(
+  method: ts.MethodDeclaration,
+  controller: ts.ClassDeclaration,
+  source: ts.SourceFile,
+): string {
+  const methods = new Map<string, ts.MethodDeclaration>();
+  for (const member of controller.members) {
+    if (ts.isMethodDeclaration(member) && member.body) {
+      const name = propertyName(member.name);
+      if (name) methods.set(name, member);
+    }
+  }
+  const collected: string[] = [];
+  const seen = new Set<ts.MethodDeclaration>();
+  const collect = (current: ts.MethodDeclaration, depth: number): void => {
+    if (seen.has(current) || depth > 3) return;
+    seen.add(current);
+    collected.push(current.getText(source));
+    visit(current, (node) => {
+      if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)
+        || node.expression.expression.kind !== ts.SyntaxKind.ThisKeyword) return;
+      const helper = methods.get(node.expression.name.text);
+      if (helper) collect(helper, depth + 1);
+    });
+  };
+  collect(method, 0);
+  return collected.join("\n");
+}
+
+function objectProperty(expression: ts.Expression | undefined, name: string): ts.Expression | undefined {
+  const current = expression && unwrapExpression(expression);
+  if (!current || !ts.isObjectLiteralExpression(current)) return undefined;
+  const property = current.properties.find((item): item is ts.PropertyAssignment => ts.isPropertyAssignment(item)
+    && propertyName(item.name) === name);
+  return property?.initializer;
+}
+
+function nestVersionValues(expression: ts.Expression | undefined): NestVersion[] {
+  if (!expression) return [];
+  const current = unwrapExpression(expression);
+  if (ts.isIdentifier(current) && current.text === "VERSION_NEUTRAL") return [null];
+  if (ts.isPropertyAccessExpression(current) && current.name.text === "VERSION_NEUTRAL") return [null];
+  const literal = literalText(current);
+  if (literal !== undefined) return [literal];
+  if (ts.isArrayLiteralExpression(current)) return current.elements.flatMap((item) => ts.isExpression(item) ? nestVersionValues(item) : []);
+  return [];
+}
+
+function nestRoutingConfig(sources: ParsedSource[]): NestRoutingConfig {
+  const config: NestRoutingConfig = {
+    globalPrefix: "",
+    prefixExcludes: new Set(),
+    uriVersioning: false,
+    defaultVersions: [],
+    versionPrefix: "v",
+  };
+  for (const parsed of sources) visit(parsed.source, (node) => {
+    if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return;
+    const name = node.expression.name.text;
+    if (name === "setGlobalPrefix") {
+      const prefix = literalText(node.arguments[0]);
+      if (prefix !== undefined) config.globalPrefix = prefix;
+      const exclude = objectProperty(node.arguments[1], "exclude");
+      const current = exclude && unwrapExpression(exclude);
+      if (current && ts.isArrayLiteralExpression(current)) {
+        for (const item of current.elements) {
+          if (!ts.isExpression(item)) continue;
+          const excludedPath = literalText(item) ?? literalText(objectProperty(item, "path"));
+          if (excludedPath !== undefined) config.prefixExcludes.add(normalizePath(excludedPath));
+        }
+      }
+    }
+    if (name !== "enableVersioning") return;
+    const options = node.arguments[0];
+    const type = objectProperty(options, "type");
+    if (!type || !/(?:^|\.)URI$/.test(expressionName(unwrapExpression(type)))) return;
+    config.uriVersioning = true;
+    config.defaultVersions = nestVersionValues(objectProperty(options, "defaultVersion"));
+    const prefix = objectProperty(options, "prefix");
+    if (prefix?.kind === ts.SyntaxKind.FalseKeyword) config.versionPrefix = "";
+    else {
+      const literalPrefix = literalText(prefix);
+      if (literalPrefix !== undefined) config.versionPrefix = literalPrefix;
+    }
+  });
+  return config;
+}
+
+function nestRoutePaths(
+  localPath: string,
+  methodDecorators: Array<{ name: string; arguments: readonly ts.Expression[] }>,
+  classDecorators: Array<{ name: string; arguments: readonly ts.Expression[] }>,
+  config: NestRoutingConfig,
+): string[] {
+  const methodVersion = methodDecorators.find((item) => item.name === "Version");
+  const classVersion = classDecorators.find((item) => item.name === "Version");
+  const explicitVersions = nestVersionValues(methodVersion?.arguments[0] ?? classVersion?.arguments[0]);
+  const versions = config.uriVersioning
+    ? (explicitVersions.length > 0 ? explicitVersions : config.defaultVersions)
+    : [];
+  const variants = versions.length > 0 ? versions : [null];
+  const excluded = config.prefixExcludes.has(normalizePath(localPath));
+  return variants.map((version) => joinPath(
+    excluded ? "" : config.globalPrefix,
+    version === null ? "" : `${config.versionPrefix}${version}`,
+    localPath,
+  ));
+}
+
 function nestRoutes(
   parsed: ParsedSource,
-  globalGuard: boolean,
+  globalSecurity: NestGlobalSecurity,
   semantics: NestSecuritySemantics,
   lookup: Map<string, ParsedSource>,
+  routing: NestRoutingConfig,
 ): NodeApiRoute[] {
   const routes: NodeApiRoute[] = [];
   for (const statement of parsed.source.statements) {
@@ -963,6 +1300,7 @@ function nestRoutes(
     const prefix = normalizePath(literalText(controller.arguments[0]) ?? "");
     const classAuthenticated = nestDecoratorAuthentication(classDecorators, parsed, semantics, lookup);
     const classOwnership = nestDecoratorOwnership(classDecorators, parsed, semantics, lookup);
+    const classRole = nestDecoratorRole(classDecorators, parsed, semantics, lookup);
     for (const member of statement.members) {
       if (!ts.isMethodDeclaration(member) || !member.body) continue;
       const methodDecorators = decorators(member).map(decoratorDetails);
@@ -970,25 +1308,34 @@ function nestRoutes(
       if (routeDecorators.length === 0) continue;
       const isPublic = methodDecorators.some((item) => /^(?:Public|AllowAnonymous)$/.test(item.name));
       const methodAuthenticated = nestDecoratorAuthentication(methodDecorators, parsed, semantics, lookup);
+      const methodRole = nestDecoratorRole(methodDecorators, parsed, semantics, lookup);
       const source = member.getText(parsed.source);
+      const semanticSource = nestMethodSemanticSource(member, statement, parsed.source);
       const inputs = nestInputDetails(member);
       for (const routeDecorator of routeDecorators) {
-        const path = joinPath(prefix, literalText(routeDecorator.arguments[0]) ?? "");
-        const fields = objectIdFields(member, path, inputs.roots, inputs.fields);
-        routes.push({
-          framework: "NestJS",
-          method: routeDecorator.name === "All" ? "ALL" : routeDecorator.name.toUpperCase(),
-          path,
-          sourcePath: parsed.file.relativePath,
-          handlerName: propertyName(member.name) ?? "anonymous",
-          handlerSource: source,
-          location: location(parsed, member),
-          authenticationProtected: methodAuthenticated || (!isPublic && (classAuthenticated || globalGuard)) || explicitAuthentication(source),
-          ownershipProtected: classOwnership || nestDecoratorOwnership(methodDecorators, parsed, semantics, lookup) || ownershipGuard(source),
-          objectOperation: hasObjectOperation(member, fields),
-          objectIdFields: fields,
-          responseOwnerFields: responseOwnerFields(member),
-        });
+        const localPath = joinPath(prefix, literalText(routeDecorator.arguments[0]) ?? "");
+        for (const path of nestRoutePaths(localPath, methodDecorators, classDecorators, routing)) {
+          const fields = objectIdFields(member, path, inputs.roots, inputs.fields);
+          routes.push({
+            framework: "NestJS",
+            method: routeDecorator.name === "All" ? "ALL" : routeDecorator.name.toUpperCase(),
+            path,
+            declaredPath: localPath,
+            sourcePath: parsed.file.relativePath,
+            handlerName: propertyName(member.name) ?? "anonymous",
+            handlerSource: source,
+            location: location(parsed, member),
+            authenticationProtected: methodAuthenticated
+              || (!isPublic && (classAuthenticated || globalSecurity.authentication)) || explicitAuthentication(semanticSource),
+            ownershipProtected: classOwnership || (!isPublic && globalSecurity.ownership)
+              || nestDecoratorOwnership(methodDecorators, parsed, semantics, lookup) || ownershipGuard(semanticSource),
+            roleProtected: classRole || methodRole || (!isPublic && globalSecurity.role) || roleGuard(semanticSource),
+            privilegedOperation: privilegedOperation(path, propertyName(member.name) ?? "anonymous", semanticSource),
+            objectOperation: hasObjectOperation(member, fields),
+            objectIdFields: fields,
+            responseOwnerFields: responseOwnerFields(member),
+          });
+        }
       }
     }
   }
@@ -1026,8 +1373,9 @@ export function analyzeNodeApi(files: ProjectFile[]): NodeApiAnalysis {
   if (detectedNest) {
     const lookup = parsedSourceLookup(parsed);
     const semantics = discoverNestSecurity(parsed, lookup);
-    const globalGuard = hasGlobalNestGuard(parsed, semantics, lookup);
-    for (const item of parsed) routes.push(...nestRoutes(item, globalGuard, semantics, lookup));
+    const globalSecurity = globalNestSecurity(parsed, semantics, lookup);
+    const routing = nestRoutingConfig(parsed);
+    for (const item of parsed) routes.push(...nestRoutes(item, globalSecurity, semantics, lookup, routing));
   }
   const deduplicated = [...new Map(routes.map((route) => [routeKey(route), route])).values()]
     .sort((left, right) => left.path.localeCompare(right.path) || left.method.localeCompare(right.method));

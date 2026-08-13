@@ -18,10 +18,23 @@ export class TenantScopeGuard implements CanActivate {
   }
 }
 
+@Injectable()
+export class AdminGuard implements CanActivate {
+  canActivate(context: ExecutionContext) {
+    const request = context.switchToHttp().getRequest();
+    if (request.user.role !== "admin") throw new ForbiddenException();
+    return true;
+  }
+}
+
 export function LoggedIn() {
   return applyDecorators(UseGuards(LoggedInGuard));
 }
 
 export function TenantAccess() {
   return applyDecorators(LoggedIn(), UseGuards(TenantScopeGuard));
+}
+
+export function AdminOnly() {
+  return applyDecorators(LoggedIn(), UseGuards(AdminGuard));
 }

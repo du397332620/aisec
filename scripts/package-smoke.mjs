@@ -107,8 +107,8 @@ try {
   });
   assert.ok(benchmarkOutput.trim(), "the installed benchmark entry point must produce a result");
   const benchmark = JSON.parse(benchmarkOutput);
-  assert.deepEqual(benchmark.catalog, { totalRules: 47, rulesWithPositive: 47, rulesWithNearMiss: 47 });
-  assert.equal(benchmark.totals.truePositive, 48);
+  assert.deepEqual(benchmark.catalog, { totalRules: 49, rulesWithPositive: 49, rulesWithNearMiss: 49 });
+  assert.equal(benchmark.totals.truePositive, 50);
   assert.equal(benchmark.totals.falsePositive, 0);
   assert.equal(benchmark.totals.falseNegative, 0);
   assert.equal(benchmark.totals.evidenceMismatches, 0);

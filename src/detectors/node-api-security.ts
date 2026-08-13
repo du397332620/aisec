@@ -6,19 +6,44 @@ import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
 import { createSignal } from "../core/utils.js";
 
 const EXPLICIT_PUBLIC_PATH = /(?:^|\/)(?:login|log-in|register|sign-up|signup|health|healthz|ready|readiness|live|liveness|favicon\.ico|docs|openapi(?:\.json)?|swagger)\/?$/i;
+const EXPLICIT_LOGIN_PATH = /(?:^|\/)(?:login|log-in|sign-in)\/?$/i;
 const SENSITIVE_PATH = /(?:^|\/)(?:admin|internal|manage|users?|permissions?|roles?|projects?|documents?|reports?|chapters?|templates?|knowledge|signatures?|chat|generate|review|uploads?|downloads?|tokens?|sessions?|billing|payments?)(?:\/|$)/i;
+const PRIVILEGED_PATH = /(?:^|\/)(?:admin|internal|manage|management|permissions?|roles?)(?:\/|$)/i;
 const AUTH_SESSION_ROUTE = /(?:^|\/)(?:login|logout|token|session\/current|me|profile)(?:\/|$)/i;
 const RULES = {
   expressAuth: { ruleId: "express.auth.sensitive-route-without-guard" },
   expressObjectAuthorization: { ruleId: "express.authorization.object-without-ownership-check" },
+  expressPrivilegedAuthorization: { ruleId: "express.authorization.privileged-operation-without-role-check" },
   nestAuth: { ruleId: "nestjs.auth.sensitive-route-without-guard" },
   nestObjectAuthorization: { ruleId: "nestjs.authorization.object-without-ownership-check" },
+  nestPrivilegedAuthorization: { ruleId: "nestjs.authorization.privileged-operation-without-role-check" },
 } as const;
 
-function isSensitiveRoute(route: NodeApiRoute): boolean {
+function isSensitiveRoute(route: NodeApiRoute, routes: NodeApiRoute[]): boolean {
+  if (PRIVILEGED_PATH.test(route.path) || PRIVILEGED_PATH.test(route.declaredPath)) {
+    return !EXPLICIT_LOGIN_PATH.test(route.path);
+  }
+  if (explicitPublicAuthEntry(route, routes)) return false;
   if (EXPLICIT_PUBLIC_PATH.test(route.path)) return false;
   if (["POST", "PUT", "PATCH", "DELETE", "ALL"].includes(route.method)) return true;
   return SENSITIVE_PATH.test(route.path);
+}
+
+function explicitPublicAuthEntry(route: NodeApiRoute, routes: NodeApiRoute[]): boolean {
+  if (PRIVILEGED_PATH.test(route.path) || PRIVILEGED_PATH.test(route.declaredPath)) return false;
+  const path = route.declaredPath;
+  const semantics = `${route.handlerName}\n${route.handlerSource}`;
+  if (route.method === "POST" && /^\/users?\/?$/i.test(path)) {
+    if (/(?:sign\s*up|signup|register)/i.test(semantics)) return true;
+    const hasAuthenticationSibling = routes.some((candidate) => candidate.framework === route.framework
+      && /(?:^|\/)(?:login|log-in|sign-in|auth\/anonymous)\/?$/i.test(candidate.declaredPath));
+    if (hasAuthenticationSibling && /createUser/i.test(semantics)) return true;
+  }
+  if (/^\/auth\/anonymous\/?$/i.test(path)
+    && /(?:accessTokenLogin|anonymousLogin|validateAnonymousLogin)/i.test(semantics)) return true;
+  if (/^\/auth\/webauthn\/(?:generate-authentication-options|verify-authentication)\/?$/i.test(path)
+    && /(?:generateAuthenticationOptions|verifyAuthentication)/i.test(semantics)) return true;
+  return false;
 }
 
 function frameworkId(route: NodeApiRoute): "express" | "nestjs" {
@@ -73,6 +98,28 @@ function bolaSignal(route: NodeApiRoute): Signal {
   });
 }
 
+function privilegedAuthorizationSignal(route: NodeApiRoute): Signal {
+  const framework = frameworkId(route);
+  const ruleId = route.framework === "Express"
+    ? RULES.expressPrivilegedAuthorization.ruleId
+    : RULES.nestPrivilegedAuthorization.ruleId;
+  return createSignal({
+    engine: "aisec-typescript",
+    ruleId,
+    title: `${route.framework} privileged operation has no visible role or permission check`,
+    description: `${route.method} ${route.path} is authenticated and exposes administrator, role, permission, or all-user management semantics, but no recognized role, permission, policy, ability, or administrator constraint is visible.`,
+    severity: "high",
+    evidenceLevel: "inferred",
+    confidence: "medium",
+    locations: [route.location],
+    cwe: ["CWE-862", "CWE-863"],
+    owasp: ["A01:2021", "API5:2023"],
+    tags: [framework, "nodejs", "api", "authorization", "role", "permission"],
+    remediation: "Enforce the required role or permission at the route boundary or in a centralized policy guard, then verify that an authenticated low-privilege account receives 403 or 404.",
+    metadata: { route: `${route.method} ${route.path}`, handler: route.handlerName, framework: route.framework },
+  });
+}
+
 export async function runNodeApiSecurity(context: ScanContext): Promise<DetectorResult> {
   const started = Date.now();
   const analysis = analyzeNodeApi(context.inventory.files);
@@ -98,10 +145,14 @@ export async function runNodeApiSecurity(context: ScanContext): Promise<Detector
   };
   for (const route of analysis.routes) {
     if (truncated) break;
-    if (isSensitiveRoute(route) && !route.authenticationProtected) add(unguardedSignal(route));
+    if (isSensitiveRoute(route, analysis.routes) && !route.authenticationProtected) add(unguardedSignal(route));
     if (truncated) break;
-    if (route.authenticationProtected && !route.ownershipProtected && route.objectOperation
+    if (route.authenticationProtected && !route.ownershipProtected && !route.roleProtected && route.objectOperation
       && !AUTH_SESSION_ROUTE.test(route.path)) add(bolaSignal(route));
+    if (truncated) break;
+    if (route.authenticationProtected && route.privilegedOperation && !route.roleProtected) {
+      add(privilegedAuthorizationSignal(route));
+    }
   }
 
   const detected = [analysis.detectedExpress ? "Express" : undefined, analysis.detectedNest ? "NestJS" : undefined].filter(Boolean).join(" and ");

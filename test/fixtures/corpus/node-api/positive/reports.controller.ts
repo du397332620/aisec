@@ -3,6 +3,12 @@ import { LoggedIn } from "./security/nest-security.js";
 
 @Controller("reports")
 export class ReportsController {
+  @Post("admin/reload")
+  reloadReports() {
+    return { queued: true };
+  }
+
+  @LoggedIn()
   @Post("admin/export")
   exportReports() {
     return { queued: true };

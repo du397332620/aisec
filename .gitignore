@@ -8,3 +8,4 @@ reports/
 *.tgz
 /release/
 /docs/
+/.scratch/

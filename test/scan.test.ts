@@ -252,6 +252,446 @@ exports.readReport = async function readReport(req, res) {
   }
 });
 
+test("Express analysis resolves a router exported from a chained mount", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-chained-router-"));
+  try {
+    await mkdir(join(temporary, "routes"));
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+import routes from "./routes/index.js";
+const app = express();
+app.use(routes);
+`);
+    await writeFile(join(temporary, "routes", "index.ts"), `
+import { Router } from "express";
+const reports = Router();
+reports.get("/reports", (_req, res) => res.json([]));
+const api = Router().use(reports);
+export default Router().use("/api", api);
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /api/reports"));
+    assert.ok(!report.profile.routes.includes("GET /reports"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Express analysis resolves an application passed to a CommonJS route registrar", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-registrar-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "4.18.1" } }));
+    await writeFile(join(temporary, "server.js"), `
+const express = require("express");
+const registerRoutes = require("./routes");
+const app = express();
+registerRoutes(app);
+`);
+    await writeFile(join(temporary, "routes.js"), `
+module.exports = (app) => {
+  app.post("/admin/reload", (_req, res) => res.json({ ok: true }));
+};
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("POST /admin/reload"));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "express.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "POST /admin/reload"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Express analysis follows constructed CommonJS handlers into an authenticated object lookup", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-instance-handler-"));
+  try {
+    await mkdir(join(temporary, "routes"));
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "4.18.1" } }));
+    await writeFile(join(temporary, "server.js"), `
+const express = require("express");
+const registerRoutes = require("./routes");
+const app = express();
+registerRoutes(app, {});
+`);
+    await writeFile(join(temporary, "routes", "index.js"), `
+const SessionHandler = require("./session");
+const AllocationsHandler = require("./allocations");
+module.exports = (app, db) => {
+  const sessionHandler = new SessionHandler(db);
+  const allocationsHandler = new AllocationsHandler(db);
+  const isLoggedIn = sessionHandler.isLoggedInMiddleware;
+  app.get("/allocations/:userId", isLoggedIn, allocationsHandler.displayAllocations);
+};
+`);
+    await writeFile(join(temporary, "routes", "session.js"), `
+function SessionHandler() {
+  this.isLoggedInMiddleware = (req, res, next) => {
+    if (req.session?.userId) return next();
+    return res.redirect("/login");
+  };
+}
+module.exports = SessionHandler;
+`);
+    await writeFile(join(temporary, "routes", "allocations.js"), `
+function AllocationsHandler(db) {
+  this.displayAllocations = (req, res) => {
+    const { userId } = req.params;
+    return db.allocations.getByUserIdAndThreshold(userId, req.query.threshold, (_error, rows) => res.json(rows));
+  };
+}
+module.exports = AllocationsHandler;
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /allocations/:userId"));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "express.authorization.object-without-ownership-check"
+      && signal.metadata?.route === "GET /allocations/:userId"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Express analysis reports an authenticated privileged operation without a role guard", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-privileged-handler-"));
+  try {
+    await mkdir(join(temporary, "routes"));
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "4.18.1" } }));
+    await writeFile(join(temporary, "server.js"), `
+const express = require("express");
+const registerRoutes = require("./routes");
+const app = express();
+registerRoutes(app, {});
+`);
+    await writeFile(join(temporary, "routes", "index.js"), `
+const SessionHandler = require("./session");
+const BenefitsHandler = require("./benefits");
+module.exports = (app, db) => {
+  const sessionHandler = new SessionHandler();
+  const benefitsHandler = new BenefitsHandler(db);
+  app.post("/benefits", sessionHandler.isLoggedInMiddleware, benefitsHandler.updateBenefits);
+};
+`);
+    await writeFile(join(temporary, "routes", "session.js"), `
+function SessionHandler() {
+  this.isLoggedInMiddleware = (req, res, next) => {
+    if (!req.session?.userId) return res.status(401).end();
+    return next();
+  };
+}
+module.exports = SessionHandler;
+`);
+    await writeFile(join(temporary, "routes", "benefits.js"), `
+function BenefitsHandler(db) {
+  this.updateBenefits = (req, res) => {
+    return db.benefits.updateBenefits(req.body.userId, req.body.startDate, () =>
+      db.users.getAllNonAdminUsers((_error, users) => res.json({ users, user: { isAdmin: true } })));
+  };
+}
+module.exports = BenefitsHandler;
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.signals.some((signal) => signal.ruleId === "express.authorization.privileged-operation-without-role-check"
+      && signal.metadata?.route === "POST /benefits"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Express analysis accepts a visible instance role guard on a privileged operation", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-privileged-guard-"));
+  try {
+    await mkdir(join(temporary, "routes"));
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "4.18.1" } }));
+    await writeFile(join(temporary, "server.js"), `
+const express = require("express");
+const registerRoutes = require("./routes");
+const app = express();
+registerRoutes(app, {});
+`);
+    await writeFile(join(temporary, "routes", "index.js"), `
+const SessionHandler = require("./session");
+const BenefitsHandler = require("./benefits");
+module.exports = (app, db) => {
+  const sessionHandler = new SessionHandler();
+  const benefitsHandler = new BenefitsHandler(db);
+  app.post(
+    "/benefits",
+    sessionHandler.isLoggedInMiddleware,
+    sessionHandler.isAdminUserMiddleware,
+    benefitsHandler.updateBenefits
+  );
+};
+`);
+    await writeFile(join(temporary, "routes", "session.js"), `
+function SessionHandler() {
+  this.isLoggedInMiddleware = (req, res, next) => {
+    if (!req.session?.userId) return res.status(401).end();
+    return next();
+  };
+  this.isAdminUserMiddleware = (req, res, next) => {
+    if (req.session?.role !== "admin") return res.sendStatus(403);
+    return next();
+  };
+}
+module.exports = SessionHandler;
+`);
+    await writeFile(join(temporary, "routes", "benefits.js"), `
+function BenefitsHandler(db) {
+  this.updateBenefits = (req, res) => {
+    return db.users.findById(req.body.userId, (_error, user) =>
+      db.benefits.updateBenefits(user.id, req.body.startDate, () => res.json({ user })));
+  };
+}
+module.exports = BenefitsHandler;
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("POST /benefits"));
+    assert.ok(!report.signals.some((signal) => signal.ruleId === "express.authorization.privileged-operation-without-role-check"));
+    assert.ok(!report.signals.some((signal) => signal.ruleId === "express.authorization.object-without-ownership-check"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Express analysis does not treat a tenant guard as an administrator role guard", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-express-tenant-not-admin-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+const app = express();
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+function tenantGuard(req, res, next) {
+  if (req.user.tenantId !== req.body.tenantId) return res.sendStatus(403);
+  return next();
+}
+app.post("/admin/export", requireSession, tenantGuard, (_req, res) => res.json({ ok: true }));
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.signals.some((signal) => signal.ruleId === "express.authorization.privileged-operation-without-role-check"
+      && signal.metadata?.route === "POST /admin/export"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Node API analysis accepts explicit public registration but keeps administrator user creation sensitive", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-public-registration-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0", "@nestjs/common": "11.1.6" } }));
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+const app = express();
+const router = express.Router();
+router.post("/users", async (req, res) => res.json(await createUser(req.body.user)));
+router.post("/users/login", async (req, res) => res.json(await login(req.body.user)));
+router.get("/users", async (_req, res) => res.json(await createUserPreview()));
+router.post("/admin/users", async (req, res) => res.json(await createUser(req.body.user)));
+router.post("/admin/login", async (req, res) => res.json(await login(req.body.user)));
+router.post("/admin/register", async (req, res) => res.json(await register(req.body.user)));
+app.use("/api", router);
+`);
+    await writeFile(join(temporary, "user.controller.ts"), `
+import { Controller, Post } from "@nestjs/common";
+@Controller("user")
+export class UserController {
+  @Post()
+  signupUser() { return this.userService.createUser(); }
+}
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(!report.signals.some((signal) => signal.metadata?.route === "POST /api/users"));
+    assert.ok(!report.signals.some((signal) => signal.metadata?.route === "POST /user"));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "express.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "POST /api/admin/users"));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "express.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "POST /api/admin/register"));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "express.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "GET /api/users"));
+    assert.ok(!report.signals.some((signal) => signal.metadata?.route === "POST /api/admin/login"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS analysis accepts authentication-entry handlers but keeps credential management sensitive", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-auth-entry-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { "@nestjs/common": "11.1.6" } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { VersioningType } from "@nestjs/common";
+app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" });
+app.setGlobalPrefix("api");
+`);
+    await writeFile(join(temporary, "auth.controller.ts"), `
+import { Controller, Post } from "@nestjs/common";
+@Controller("auth")
+export class AuthController {
+  @Post("anonymous")
+  accessTokenLogin() { return this.webAuthService.validateAnonymousLogin(); }
+
+  @Post("webauthn/generate-authentication-options")
+  generateAuthenticationOptions() { return this.webAuthService.generateAuthenticationOptions(); }
+
+  @Post("webauthn/verify-authentication")
+  verifyAuthentication() { return this.webAuthService.verifyAuthentication(); }
+
+  @Post("webauthn/generate-registration-options")
+  generateRegistrationOptions() { return this.webAuthService.generateRegistrationOptions(); }
+}
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const unguarded = report.signals.filter((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard");
+    assert.ok(!unguarded.some((signal) => signal.metadata?.route === "POST /api/v1/auth/anonymous"));
+    assert.ok(!unguarded.some((signal) => signal.metadata?.route === "POST /api/v1/auth/webauthn/generate-authentication-options"));
+    assert.ok(!unguarded.some((signal) => signal.metadata?.route === "POST /api/v1/auth/webauthn/verify-authentication"));
+    assert.ok(unguarded.some((signal) => signal.metadata?.route === "POST /api/v1/auth/webauthn/generate-registration-options"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS analysis follows a same-controller ownership helper", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-controller-helper-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { "@nestjs/common": "11.1.6", "@nestjs/passport": "11.0.5" } }));
+    await writeFile(join(temporary, "records.controller.ts"), `
+import { Controller, Delete, ForbiddenException, Param, Req, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+@Controller("records")
+export class RecordsController {
+  @Delete(":id")
+  @UseGuards(AuthGuard("jwt"))
+  async deleteRecord(@Param("id") id: string, @Req() request: any) {
+    const record = await this.records.findById(id);
+    this.validateOwnership(record, request);
+    return this.records.delete({ id });
+  }
+
+  private validateOwnership(record: any, request: any) {
+    if (record.userId !== request.user.id) throw new ForbiddenException();
+  }
+}
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("DELETE /records/:id"));
+    assert.ok(!report.signals.some((signal) => signal.ruleId === "nestjs.authorization.object-without-ownership-check"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS analysis does not treat a tenant guard as an administrator role guard", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-tenant-not-admin-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { "@nestjs/common": "11.1.6", "@nestjs/passport": "11.0.5" } }));
+    await writeFile(join(temporary, "admin.controller.ts"), `
+import { CanActivate, Controller, ExecutionContext, ForbiddenException, Injectable, Post, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+
+@Injectable()
+class TenantScopeGuard implements CanActivate {
+  canActivate(context: ExecutionContext) {
+    const request = context.switchToHttp().getRequest();
+    if (request.user.tenantId !== request.body.tenantId) throw new ForbiddenException();
+    return true;
+  }
+}
+
+@Controller("admin")
+export class AdminController {
+  @Post("export")
+  @UseGuards(AuthGuard("jwt"), TenantScopeGuard)
+  exportUsers() { return this.users.findMany(); }
+}
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.authorization.privileged-operation-without-role-check"
+      && signal.metadata?.route === "POST /admin/export"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS analysis accepts a visible global administrator guard", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-global-admin-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { "@nestjs/common": "11.1.6", "@nestjs/core": "11.1.6" } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { ForbiddenException, Injectable } from "@nestjs/common";
+@Injectable()
+class GlobalAdminGuard {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user?.isAdmin) throw new ForbiddenException();
+    return true;
+  }
+}
+app.useGlobalGuards(new GlobalAdminGuard());
+`);
+    await writeFile(join(temporary, "admin.controller.ts"), `
+import { Controller, Post } from "@nestjs/common";
+@Controller("admin")
+export class AdminController {
+  @Post("export")
+  exportUsers() { return this.users.findMany(); }
+}
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(!report.signals.some((signal) => signal.ruleId === "nestjs.authorization.privileged-operation-without-role-check"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS analysis composes global prefixes and URI versions into reported routes", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-routing-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { "@nestjs/common": "11.1.6", "@nestjs/core": "11.1.6" } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { VersioningType } from "@nestjs/common";
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" });
+  app.setGlobalPrefix("api", { exclude: ["health"] });
+}
+`);
+    await writeFile(join(temporary, "reports.controller.ts"), `
+import { Controller, Get, VERSION_NEUTRAL, Version } from "@nestjs/common";
+@Controller("reports")
+export class ReportsController {
+  @Get()
+  listReports() { return []; }
+
+  @Version("2")
+  @Get("export")
+  exportReports() { return []; }
+
+  @Version(VERSION_NEUTRAL)
+  @Get("callback")
+  callback() { return {}; }
+}
+
+@Controller()
+export class HealthController {
+  @Version(VERSION_NEUTRAL)
+  @Get("health")
+  health() { return { ok: true }; }
+}
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /api/v1/reports"));
+    assert.ok(report.profile.routes.includes("GET /api/v2/reports/export"));
+    assert.ok(report.profile.routes.includes("GET /api/reports/callback"));
+    assert.ok(report.profile.routes.includes("GET /health"));
+    assert.ok(!report.profile.routes.includes("GET /reports"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("Node API analysis ignores disabled route text and unresolved Nest APP_GUARD tokens", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-disabled-route-"));
   try {
@@ -282,6 +722,21 @@ class AdminController {
     assert.ok(report.signals.some((signal) => signal.ruleId === "express.auth.sensitive-route-without-guard"
       && signal.metadata?.route === "POST /admin/audit"));
     assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("project inspection does not interpret Angular page modules as Next.js API routes", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-angular-pages-api-"));
+  try {
+    await mkdir(join(temporary, "apps", "client", "src", "app", "pages", "api"), { recursive: true });
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { "@angular/core": "21.2.7" } }));
+    await writeFile(join(temporary, "apps", "client", "src", "app", "pages", "api", "api-page.component.ts"), `
+export class ApiPageComponent {}
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(!report.profile.routes.includes("/api/api-page.component"));
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
@@ -556,6 +1011,22 @@ test("Flutter source rules detect insecure storage, unrestricted WebView and dis
     assert.ok(rules.has("flutter.webview-unrestricted-javascript"));
     assert.ok(rules.has("flutter.accept-all-certificates"));
     assert.equal(report.decision, "block");
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("mobile source rules ignore cleartext URLs in a server-only project", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-server-http-context-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "server.ts"), `
+export const rootUrl = "http://api.internal.test:3000";
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.equal(report.coverage.find((item) => item.domain === "mobile-source-config")?.status, "not_run");
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("mobile.")
+      || signal.ruleId.startsWith("react-native.") || signal.ruleId.startsWith("flutter.")));
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

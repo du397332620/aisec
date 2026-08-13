@@ -26,8 +26,10 @@
     { "ruleId": "fastapi.authorization.object-without-ownership-check", "category": "api-security", "evidenceLevel": "inferred" },
     { "ruleId": "express.auth.sensitive-route-without-guard", "category": "api-security", "evidenceLevel": "inferred" },
     { "ruleId": "express.authorization.object-without-ownership-check", "category": "api-security", "evidenceLevel": "inferred" },
+    { "ruleId": "express.authorization.privileged-operation-without-role-check", "category": "api-security", "evidenceLevel": "inferred" },
     { "ruleId": "nestjs.auth.sensitive-route-without-guard", "category": "api-security", "evidenceLevel": "inferred" },
     { "ruleId": "nestjs.authorization.object-without-ownership-check", "category": "api-security", "evidenceLevel": "inferred" },
+    { "ruleId": "nestjs.authorization.privileged-operation-without-role-check", "category": "api-security", "evidenceLevel": "inferred" },
     { "ruleId": "python.dataflow.ssrf", "category": "api-security", "evidenceLevel": "static_confirmed" },
     { "ruleId": "python.dataflow.untrusted-file-path", "category": "api-security", "evidenceLevel": "static_confirmed" },
     { "ruleId": "python.dataflow.sql-injection", "category": "api-security", "evidenceLevel": "static_confirmed" },
@@ -200,8 +202,10 @@
       "expectedRuleIds": [
         "express.auth.sensitive-route-without-guard",
         "express.authorization.object-without-ownership-check",
+        "express.authorization.privileged-operation-without-role-check",
         "nestjs.auth.sensitive-route-without-guard",
-        "nestjs.authorization.object-without-ownership-check"
+        "nestjs.authorization.object-without-ownership-check",
+        "nestjs.authorization.privileged-operation-without-role-check"
       ]
     },
     {
@@ -214,8 +218,10 @@
       "nearMissRuleIds": [
         "express.auth.sensitive-route-without-guard",
         "express.authorization.object-without-ownership-check",
+        "express.authorization.privileged-operation-without-role-check",
         "nestjs.auth.sensitive-route-without-guard",
-        "nestjs.authorization.object-without-ownership-check"
+        "nestjs.authorization.object-without-ownership-check",
+        "nestjs.authorization.privileged-operation-without-role-check"
       ]
     },
     {

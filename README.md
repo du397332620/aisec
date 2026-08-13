@@ -14,7 +14,7 @@ Depth is intentionally concentrated in:
 
 - JavaScript/TypeScript, Next.js, React and Node.js
 - Python/FastAPI route, authentication, object-authorization and focused data-flow analysis
-- Express/NestJS route, authentication-boundary and object-authorization analysis
+- Express/NestJS route, authentication-boundary, object-authorization and privileged-operation analysis
 - Supabase and Firebase authorization configuration
 - React Native and common Android/iOS source configuration
 - APK/IPA recovery of embedded secrets, cleartext URLs and selected metadata
@@ -34,12 +34,16 @@ access tokens and production Compose publication of unguarded services are
 covered by focused configuration rules. These are lexical, bounded checks—not
 a complete Python semantic analysis or proof of exploitability.
 
-Express coverage resolves common ESM and CommonJS relative imports, nested
-`Router` mounts, external middleware and external route handlers. NestJS
-coverage recognizes common `CanActivate` guard implementations and composed
-decorator factories such as `applyDecorators(UseGuards(...))`. Package aliases,
-dynamic route registration, dependency-injected policy wrappers and external
-authorization engines remain partial static coverage and require review.
+Express coverage resolves common ESM and CommonJS relative imports, nested and
+chained `Router` mounts, route registrars that receive an app/router parameter,
+and selected handlers or middleware exposed by locally constructed instances.
+NestJS coverage recognizes common `CanActivate` guard implementations, composed
+decorator factories such as `applyDecorators(UseGuards(...))`, same-controller
+authorization helpers, static global prefixes and URI versions. Both analyzers
+distinguish visible object ownership/tenant constraints from role or permission
+checks on privileged operations. Package aliases, computed/dynamic route
+registration, dependency-injected policy wrappers and external authorization
+engines remain partial static coverage and require review.
 
 Other ecosystems receive baseline coverage when optional Opengrep, Gitleaks and
 Trivy engines are installed. A report explicitly records `complete`, `partial`,
@@ -271,7 +275,7 @@ binaries and prepare the Trivy database before scanning.
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; some findings are explicitly `inferred` and require review |
 | FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
-| Express/NestJS authentication and object authorization | Native TypeScript analyzer | Resolves relative-module Express Router mounts, external handlers and middleware plus NestJS controllers, custom guards and composed decorators; dynamic registrations, package aliases and external policy engines still require review |
+| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative-module and parameter-passed Express apps/routers, selected constructed handlers, and NestJS controllers, custom guards, composed decorators, same-controller helpers, global prefixes and URI versions; reports missing object ownership and privileged role/permission checks as inferred findings; dynamic registrations, package aliases and external policy engines still require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |
@@ -506,7 +510,7 @@ npm run test:engines
 ```
 
 The public synthetic corpus contains 32 isolated cases: 16 positive/near-miss
-pairs covering all 47 deterministic native Beta rules across secrets, data
+pairs covering all 49 deterministic native Beta rules across secrets, data
 flow, application configuration, FastAPI authentication and object
 authorization, Express/NestJS authentication and object authorization, Python API data flow/configuration, BaaS, mobile source and
 mobile artifacts. The

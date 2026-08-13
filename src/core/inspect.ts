@@ -32,13 +32,15 @@ function packages(files: ProjectFile[]): Set<string> {
   return result;
 }
 
-function inferRoutes(files: ProjectFile[]): string[] {
+function inferRoutes(files: ProjectFile[], dependencies: Set<string>): string[] {
   const routes: string[] = [];
   for (const file of files) {
     let match = file.relativePath.match(/(?:^|\/)app\/(api\/.*?)\/route\.(?:js|jsx|ts|tsx)$/);
     if (match?.[1]) routes.push(`/${match[1].replace(/\[(?:\.\.\.)?([^\]]+)\]/g, ":$1")}`);
-    match = file.relativePath.match(/(?:^|\/)pages\/(api\/.*?)\.(?:js|jsx|ts|tsx)$/);
-    if (match?.[1]) routes.push(`/${match[1].replace(/\[(?:\.\.\.)?([^\]]+)\]/g, ":$1")}`);
+    if (dependencies.has("next")) {
+      match = file.relativePath.match(/(?:^|\/)pages\/(api\/.*?)\.(?:js|jsx|ts|tsx)$/);
+      if (match?.[1]) routes.push(`/${match[1].replace(/\[(?:\.\.\.)?([^\]]+)\]/g, ":$1")}`);
+    }
   }
   return unique(routes).sort();
 }
@@ -135,7 +137,7 @@ export async function inspectProject(
     manifests: manifests.sort(),
     artifacts: normalizedArtifacts,
     routes: unique([
-      ...inferRoutes(inventory.files),
+      ...inferRoutes(inventory.files, dependencies),
       ...fastApi.routes.map((route) => `${route.method} ${route.path}`),
       ...nodeApi.routes.map((route) => `${route.method} ${route.path}`),
     ]).sort(),

@@ -9,6 +9,20 @@ export const platformDetector: Detector = {
   name: "native-platform",
   async run(context) {
     const started = Date.now();
+    const relevant = context.profile.mobilePlatforms.length > 0;
+    if (!relevant) {
+      return {
+        signals: [],
+        coverage: {
+          domain: "mobile-source-config",
+          engine: "aisec-native",
+          status: "not_run",
+          required: false,
+          reason: "No supported mobile project detected",
+          durationMs: Date.now() - started,
+        },
+      };
+    }
     const signals: Signal[] = [];
     let truncated = false;
     const add = (signal: Signal): boolean => {
@@ -114,7 +128,6 @@ export const platformDetector: Detector = {
       }
     }
 
-    const relevant = context.profile.mobilePlatforms.length > 0;
     return {
       signals,
       coverage: {
