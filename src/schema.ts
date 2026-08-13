@@ -230,9 +230,14 @@ export interface BolaVerificationCase {
   otherAccount: string;
   body?: { [key: string]: JsonValue };
   expected: {
+    match?: "testDataLabel";
     statusCodes: number[];
     jsonPath: string;
     value: string;
+  } | {
+    match: "ownerIdentity";
+    statusCodes: number[];
+    jsonPath: string;
   };
 }
 

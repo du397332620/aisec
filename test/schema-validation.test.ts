@@ -165,6 +165,17 @@ test("BOLA authorization manifests use a separate strict public schema", () => {
   } as const;
   assert.equal(validateBolaAuthorizationManifestSchema(manifest), manifest);
   assert.equal(validateBolaAuthorization(manifest).cases[0]?.id, "project-detail");
+  const ownerIdentityManifest = {
+    ...manifest,
+    cases: [{
+      ...manifest.cases[0],
+      path: "/session/get",
+      body: { session_id: 42 },
+      expected: { match: "ownerIdentity", statusCodes: [200], jsonPath: "data.user_id" },
+    }],
+  } as const;
+  assert.equal(validateBolaAuthorizationManifestSchema(ownerIdentityManifest), ownerIdentityManifest);
+  assert.equal(validateBolaAuthorization(ownerIdentityManifest).cases[0]?.expected.match, "ownerIdentity");
   assert.throws(() => validateBolaAuthorization({ ...manifest, destructiveOverride: true }), /BolaAuthorizationManifest.*additional properties/);
 });
 

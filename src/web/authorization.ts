@@ -72,6 +72,12 @@ function containsJsonString(value: unknown, expected: string): boolean {
   return false;
 }
 
+function containsJsonProperty(value: unknown, expected: string): boolean {
+  if (Array.isArray(value)) return value.some((item) => containsJsonProperty(item, expected));
+  if (!value || typeof value !== "object") return false;
+  return Object.entries(value).some(([key, nested]) => key.toLowerCase() === expected.toLowerCase() || containsJsonProperty(nested, expected));
+}
+
 function mutatingBodyMarker(value: unknown): string | undefined {
   if (typeof value === "string") {
     const tokens = value.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
@@ -116,7 +122,9 @@ export function validateBolaAuthorization(value: unknown): BolaAuthorizationMani
     if (!item.testDataLabel.startsWith(`${manifest.dataPrefix}-`) && !item.testDataLabel.startsWith(`${manifest.dataPrefix}_`)) {
       throw new Error(`BOLA case ${item.id} testDataLabel must begin with dataPrefix`);
     }
-    if (item.expected.value !== item.testDataLabel) throw new Error(`BOLA case ${item.id} expected.value must exactly equal testDataLabel`);
+    if (item.expected.match !== "ownerIdentity" && item.expected.value !== item.testDataLabel) {
+      throw new Error(`BOLA case ${item.id} expected.value must exactly equal testDataLabel`);
+    }
     const parsedPath = pathTokens(item.path, manifest.targetBaseUrl);
     const mutatingMarker = [...BOLA_MUTATING_PATH_MARKERS].find((marker) => parsedPath.tokens.includes(marker));
     if (mutatingMarker) throw new Error(`BOLA case ${item.id} path has a state-changing marker: ${mutatingMarker}`);
@@ -127,8 +135,17 @@ export function validateBolaAuthorization(value: unknown): BolaAuthorizationMani
     if (item.method === "GET" && item.body !== undefined) throw new Error(`BOLA case ${item.id} GET cannot contain a body`);
     const bodyMarker = mutatingBodyMarker(item.body);
     if (bodyMarker) throw new Error(`BOLA case ${item.id} body has a state-changing marker: ${bodyMarker}`);
-    if (parsedPath.decoded.toLowerCase().includes(item.expected.value.toLowerCase()) || containsJsonString(item.body, item.expected.value)) {
+    if (item.expected.match !== "ownerIdentity"
+      && (parsedPath.decoded.toLowerCase().includes(item.expected.value.toLowerCase()) || containsJsonString(item.body, item.expected.value))) {
       throw new Error(`BOLA case ${item.id} response marker must not be supplied in the request`);
+    }
+    if (item.expected.match === "ownerIdentity") {
+      const ownerField = item.expected.jsonPath.split(".").at(-1)!;
+      const querySuppliesOwnerField = [...new URL(item.path, manifest.targetBaseUrl).searchParams.keys()]
+        .some((key) => key.toLowerCase() === ownerField.toLowerCase());
+      if (querySuppliesOwnerField || containsJsonProperty(item.body, ownerField)) {
+        throw new Error(`BOLA case ${item.id} owner identity evidence field must not be supplied in the request`);
+      }
     }
   }
   return manifest;

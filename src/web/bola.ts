@@ -64,17 +64,20 @@ function caseRequest(
 
 function verifiedBolaSignal(manifest: BolaAuthorizationManifest, item: BolaVerificationCase): Signal {
   const target = new URL(item.path, manifest.targetBaseUrl);
+  const ownerIdentityMatch = item.expected.match === "ownerIdentity";
   return createSignal({
     engine: "aisec-bola-verifier",
     ruleId: "web.bola.cross-account-object-access",
     title: "A second account can read another account's object",
-    description: `The owner baseline and the cross-account request both returned the configured marker for pre-created test data ${item.testDataLabel}. This verifies missing object-level authorization for this test case.`,
+    description: ownerIdentityMatch
+      ? `The owner baseline and the cross-account request both returned an object whose configured owner field matched the authenticated owner account for pre-created test data ${item.testDataLabel}. This verifies missing object-level authorization for this test case.`
+      : `The owner baseline and the cross-account request both returned the configured marker for pre-created test data ${item.testDataLabel}. This verifies missing object-level authorization for this test case.`,
     severity: "high",
     evidenceLevel: "verified",
     confidence: "high",
     locations: [{
       path: target.toString(),
-      snippet: `${item.method} ${target.pathname}: ${item.ownerAccount} and ${item.otherAccount} returned the configured test-object marker`,
+      snippet: `${item.method} ${target.pathname}: ${item.ownerAccount} and ${item.otherAccount} returned the configured ${ownerIdentityMatch ? "owner identity" : "test-object marker"}`,
     }],
     cwe: ["CWE-639"],
     owasp: ["A01:2021-Broken Access Control", "API1:2023-Broken Object Level Authorization"],
@@ -127,23 +130,39 @@ async function authenticate(
   return { label: account.label, token, identity: String(identity) };
 }
 
-function evaluateOwner(item: BolaVerificationCase, response: BoundedHttpResponse): { ok: true } | { ok: false; reason: string } {
+function exactIdentity(left: unknown, identity: string): boolean {
+  return (typeof left === "string" || typeof left === "number") && String(left) === identity;
+}
+
+function matchesExpected(item: BolaVerificationCase, value: unknown, ownerIdentity: string): boolean {
+  return item.expected.match === "ownerIdentity" ? exactIdentity(value, ownerIdentity) : exactPrimitive(value, item.expected.value);
+}
+
+function isComparableExpected(item: BolaVerificationCase, value: unknown): boolean {
+  return item.expected.match === "ownerIdentity"
+    ? typeof value === "string" || typeof value === "number"
+    : typeof value === "string";
+}
+
+function evaluateOwner(item: BolaVerificationCase, response: BoundedHttpResponse, ownerIdentity: string): { ok: true } | { ok: false; reason: string } {
   if (!item.expected.statusCodes.includes(response.status)) return { ok: false, reason: `owner baseline returned HTTP ${response.status}` };
   try {
     const marker = jsonAtPath(parseJson(response.body), item.expected.jsonPath);
-    if (!exactPrimitive(marker, item.expected.value)) return { ok: false, reason: "owner baseline did not return the configured test-object marker" };
+    if (!matchesExpected(item, marker, ownerIdentity)) {
+      return { ok: false, reason: `owner baseline did not return the configured ${item.expected.match === "ownerIdentity" ? "authenticated owner identity" : "test-object marker"}` };
+    }
     return { ok: true };
   } catch (error) {
     return { ok: false, reason: `owner baseline ${error instanceof Error ? error.message : String(error)}` };
   }
 }
 
-function evaluateOther(item: BolaVerificationCase, response: BoundedHttpResponse): Pick<BolaCaseResult, "status" | "reason"> {
+function evaluateOther(item: BolaVerificationCase, response: BoundedHttpResponse, ownerIdentity: string): Pick<BolaCaseResult, "status" | "reason"> {
   let marker: unknown;
   try {
     marker = jsonAtPath(parseJson(response.body), item.expected.jsonPath);
-    if (exactPrimitive(marker, item.expected.value)) {
-      return { status: "vulnerable", reason: `cross-account response exposed the owner's configured test-object marker with HTTP ${response.status}` };
+    if (matchesExpected(item, marker, ownerIdentity)) {
+      return { status: "vulnerable", reason: `cross-account response exposed the owner's configured ${item.expected.match === "ownerIdentity" ? "authenticated identity" : "test-object marker"} with HTTP ${response.status}` };
     }
   } catch {
     marker = undefined;
@@ -151,7 +170,7 @@ function evaluateOther(item: BolaVerificationCase, response: BoundedHttpResponse
   if ([401, 403, 404].includes(response.status)) return { status: "protected", reason: `cross-account request was denied with HTTP ${response.status}` };
   if (!item.expected.statusCodes.includes(response.status)) return { status: "inconclusive", reason: `cross-account request returned unexpected HTTP ${response.status}` };
   try {
-    if (marker !== undefined && (typeof marker === "string" || typeof marker === "number" || typeof marker === "boolean")) {
+    if (marker !== undefined && isComparableExpected(item, marker)) {
       return { status: "protected", reason: "cross-account response returned a different object marker" };
     }
     return { status: "inconclusive", reason: "cross-account response did not expose a comparable object marker" };
@@ -180,6 +199,7 @@ export async function executeBolaVerification(
   if (authenticated[0]!.token === authenticated[1]!.token) throw new Error("BOLA login returned the same token for both accounts; account separation cannot be verified");
   if (authenticated[0]!.identity.trim().toLowerCase() === authenticated[1]!.identity.trim().toLowerCase()) throw new Error("BOLA login resolved both credentials to the same account identity");
   const tokens = new Map(authenticated.map((account) => [account.label, account.token]));
+  const identities = new Map(authenticated.map((account) => [account.label, account.identity]));
   const cases: BolaCaseResult[] = [];
   const signals: Signal[] = [];
 
@@ -194,6 +214,7 @@ export async function executeBolaVerification(
     };
     const ownerToken = tokens.get(item.ownerAccount)!;
     const otherToken = tokens.get(item.otherAccount)!;
+    const ownerIdentity = identities.get(item.ownerAccount)!;
     let ownerResponse: BoundedHttpResponse;
     try {
       countRequest();
@@ -203,7 +224,7 @@ export async function executeBolaVerification(
       cases.push({ ...base, status: "inconclusive", reason: `owner request failed: ${error instanceof Error ? error.message : String(error)}` });
       continue;
     }
-    const owner = evaluateOwner(item, ownerResponse);
+    const owner = evaluateOwner(item, ownerResponse, ownerIdentity);
     if (!owner.ok) {
       cases.push({ ...base, status: "inconclusive", ownerStatus: ownerResponse.status, reason: owner.reason });
       continue;
@@ -217,7 +238,7 @@ export async function executeBolaVerification(
       cases.push({ ...base, status: "inconclusive", ownerStatus: ownerResponse.status, reason: `cross-account request failed: ${error instanceof Error ? error.message : String(error)}` });
       continue;
     }
-    const outcome = evaluateOther(item, otherResponse);
+    const outcome = evaluateOther(item, otherResponse, ownerIdentity);
     cases.push({ ...base, ...outcome, ownerStatus: ownerResponse.status, otherStatus: otherResponse.status });
     if (outcome.status === "vulnerable") signals.push(verifiedBolaSignal(manifest, item));
   }
@@ -242,7 +263,7 @@ export async function executeBolaVerification(
     cases,
     limitations: [
       "Only the exact preconfigured login and object-read requests were sent; object identifiers were not enumerated or mutated.",
-      "Each cross-account request was sent only after the owner account returned the configured pre-created test-object marker.",
+      "Each cross-account request was sent only after the owner account returned the configured object evidence: either the exact synthetic marker or an owner field matching the authenticated owner identity.",
       "This verifies only listed cases and does not establish that other routes, roles, tenants or object types enforce authorization.",
       "Credentials and bearer tokens are read from environment variables and are never included in the report.",
       "The verifier cannot independently prove that the declared accounts are low privilege; account role and fixture isolation remain the operator's responsibility.",

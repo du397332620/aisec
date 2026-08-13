@@ -343,13 +343,26 @@ to distinct identities, and sends a cross-account request only after the owner
 baseline succeeds. It never guesses or enumerates object identifiers, creates
 test data, follows redirects, or sends mutation methods.
 
-An owner response must first return the exact configured synthetic marker (for
-example `data.project_name: aisec-local-project-a`), and that value must equal
-the case's `testDataLabel`. A high-severity verified BOLA signal is emitted only
-when the second account also receives that same marker. HTTP 401/403/404, or a
-different returned object marker, is recorded as protected. Ambiguous 200 error
-envelopes, missing owner fixtures, network failures and non-comparable responses
-produce partial coverage and exit `2`; they are never reported as a clean pass.
+Every case chooses one of two object-evidence modes:
+
+- The default `testDataLabel` mode requires the owner response to contain an
+  exact synthetic marker (for example
+  `data.project_name: aisec-local-project-a`) equal to the case's
+  `testDataLabel`.
+- `match: ownerIdentity` is for read responses that expose a stable,
+  server-derived object-owner or tenant field instead of a synthetic string.
+  The owner baseline must return a field equal to the identity obtained from
+  the owner's login response; the second account must then receive that same
+  owner's identity. The identity value is never stored in the manifest or
+  report. The evidence field must not be supplied in the request.
+
+A high-severity verified BOLA signal is emitted only when the second account
+receives the evidence established by the valid owner baseline. HTTP
+401/403/404, or a different comparable value, is recorded as protected.
+Ambiguous 200 error envelopes, missing owner fixtures, network failures and
+non-comparable responses produce partial coverage and exit `2`; they are never
+reported as a clean pass. Use `ownerIdentity` only for a field populated by the
+server from the stored object—not a field that echoes request or caller data.
 
 Start from [`examples/authorization.bola.local.yml`](examples/authorization.bola.local.yml).
 The example shape matches APIs such as `POST /user/login` returning
@@ -357,6 +370,16 @@ The example shape matches APIs such as `POST /user/login` returning
 `POST /project/detail` request. Replace the placeholder object ID with a
 dedicated, pre-created fixture whose label starts with `dataPrefix`; do not use
 real customer data.
+
+For an endpoint such as `POST /session/get` whose response contains the stored
+owner at `data.user_id`, its case can instead use:
+
+```yaml
+expected:
+  match: ownerIdentity
+  statusCodes: [200]
+  jsonPath: data.user_id
+```
 
 ```bash
 export AISEC_BOLA_OWNER_USERNAME='aisec_fixture_owner'

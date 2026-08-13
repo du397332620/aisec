@@ -44,6 +44,18 @@ const manifestValue = {
   acknowledgment: "I am authorized to test this non-production target with two low-privilege accounts and pre-created test data",
 } as const;
 
+const ownerIdentityManifestValue = {
+  ...manifestValue,
+  cases: [{
+    ...manifestValue.cases[0],
+    id: "ai-session-get",
+    path: "/knowledge/ai/session/get",
+    testDataLabel: "aisec-fixture-session-a",
+    body: { session_id: 777 },
+    expected: { match: "ownerIdentity", statusCodes: [200], jsonPath: "data.user_id" },
+  }],
+} as const;
+
 const credentials = {
   AISEC_BOLA_OWNER_USERNAME: "fixture_owner",
   AISEC_BOLA_OWNER_PASSWORD: "owner_password",
@@ -74,6 +86,7 @@ function requesterFor(otherResponse: { status: number; body: unknown }): { reque
 
 test("BOLA manifest rejects unsafe methods, mutation routes and ambiguous accounts", () => {
   assert.equal(validateBolaAuthorization(manifestValue).cases.length, 1);
+  assert.equal(validateBolaAuthorization(ownerIdentityManifestValue).cases[0]?.expected.match, "ownerIdentity");
   assert.throws(() => validateBolaAuthorization({ ...manifestValue, environment: "production" }), /BolaAuthorizationManifest.*environment/);
   assert.throws(() => validateBolaAuthorization({ ...manifestValue, maxRequests: 3 }), /maxRequests must be >= 4/);
   assert.throws(() => validateBolaAuthorization({ ...manifestValue, accounts: [manifestValue.accounts[0], manifestValue.accounts[0]] }), /distinct account labels/);
@@ -117,6 +130,17 @@ test("BOLA manifest rejects unsafe methods, mutation routes and ambiguous accoun
     ...manifestValue,
     cases: [{ ...manifestValue.cases[0], body: { project_id: 12345, action: "delete" } }],
   }), /body has a state-changing marker: delete/);
+  assert.throws(() => validateBolaAuthorization({
+    ...ownerIdentityManifestValue,
+    cases: [{
+      ...ownerIdentityManifestValue.cases[0],
+      expected: { ...ownerIdentityManifestValue.cases[0].expected, value: "aisec-fixture-session-a" },
+    }],
+  }), /BolaAuthorizationManifest.*expected/);
+  assert.throws(() => validateBolaAuthorization({
+    ...ownerIdentityManifestValue,
+    cases: [{ ...ownerIdentityManifestValue.cases[0], body: { session_id: 777, user_id: 101 } }],
+  }), /owner identity evidence field must not be supplied in the request/);
 });
 
 test("BOLA verifier reports verified cross-account object access without leaking credentials or tokens", async () => {
@@ -132,6 +156,81 @@ test("BOLA verifier reports verified cross-account object access without leaking
   assert.equal(seen[3]?.authorization, "Bearer other-token");
   const serialized = JSON.stringify(report);
   for (const secret of [...Object.values(credentials), "owner-token", "other-token", "owner data"]) assert.ok(!serialized.includes(secret));
+});
+
+test("BOLA verifier can use a response owner field without storing account identities", async () => {
+  const manifest = validateBolaAuthorization(ownerIdentityManifestValue);
+  const seen: Array<{ authorization?: string }> = [];
+  const requester: BolaRequester = async (input) => {
+    seen.push({ authorization: input.headers?.authorization });
+    if (input.url.endsWith("/user/login")) {
+      const login = JSON.parse(input.body ?? "{}") as { username?: string };
+      const owner = login.username === "fixture_owner";
+      return jsonResponse(input.url, 200, { data: {
+        access_token: owner ? "owner-token" : "other-token",
+        user_id: owner ? "owner-private-identity" : "other-private-identity",
+      } });
+    }
+    return jsonResponse(input.url, 200, { data: { id: 777, user_id: "owner-private-identity" } });
+  };
+
+  const report = await executeBolaVerification(manifest, credentials, requester);
+  assert.equal(report.requestCount, 4);
+  assert.equal(report.coverage[0]?.status, "complete");
+  assert.equal(report.cases[0]?.status, "vulnerable");
+  assert.equal(report.signals[0]?.ruleId, "web.bola.cross-account-object-access");
+  assert.equal(report.signals[0]?.evidenceLevel, "verified");
+  assert.deepEqual(seen.map((item) => item.authorization), [undefined, undefined, "Bearer owner-token", "Bearer other-token"]);
+  const serialized = JSON.stringify(report);
+  for (const secret of [
+    ...Object.values(credentials),
+    "owner-token",
+    "other-token",
+    "owner-private-identity",
+    "other-private-identity",
+  ]) assert.ok(!serialized.includes(secret));
+});
+
+test("owner identity evidence requires a valid owner baseline and recognizes explicit denial", async () => {
+  const manifest = validateBolaAuthorization(ownerIdentityManifestValue);
+  const requester = (ownerIdentity: string, otherStatus: number, otherIdentity?: string): BolaRequester => async (input) => {
+    if (input.url.endsWith("/user/login")) {
+      const login = JSON.parse(input.body ?? "{}") as { username?: string };
+      const owner = login.username === "fixture_owner";
+      return jsonResponse(input.url, 200, { data: {
+        access_token: owner ? "owner-token" : "other-token",
+        user_id: owner ? "owner-private-identity" : "other-private-identity",
+      } });
+    }
+    if (input.headers?.authorization === "Bearer owner-token") {
+      return jsonResponse(input.url, 200, { data: { id: 777, user_id: ownerIdentity } });
+    }
+    return jsonResponse(input.url, otherStatus, otherIdentity === undefined ? { detail: "forbidden" } : { data: { id: 777, user_id: otherIdentity } });
+  };
+
+  const invalidBaseline = await executeBolaVerification(manifest, credentials, requester("not-the-owner", 200, "owner-private-identity"));
+  assert.equal(invalidBaseline.requestCount, 3, "the cross-account request is skipped when owner evidence does not match the authenticated owner");
+  assert.equal(invalidBaseline.cases[0]?.status, "inconclusive");
+  assert.equal(invalidBaseline.coverage[0]?.status, "partial");
+
+  const denied = await executeBolaVerification(manifest, credentials, requester("owner-private-identity", 403));
+  assert.equal(denied.requestCount, 4);
+  assert.equal(denied.cases[0]?.status, "protected");
+  assert.equal(denied.coverage[0]?.status, "complete");
+  assert.equal(denied.signals.length, 0);
+
+  const differentOwner = await executeBolaVerification(manifest, credentials, requester("owner-private-identity", 200, "other-private-identity"));
+  assert.equal(differentOwner.cases[0]?.status, "protected");
+  assert.equal(differentOwner.coverage[0]?.status, "complete");
+
+  const wrongTypeRequester: BolaRequester = async (input) => {
+    if (input.url.endsWith("/user/login")) return requester("owner-private-identity", 200, "ignored")(input);
+    if (input.headers?.authorization === "Bearer owner-token") return jsonResponse(input.url, 200, { data: { user_id: "owner-private-identity" } });
+    return jsonResponse(input.url, 200, { data: { user_id: false } });
+  };
+  const nonComparable = await executeBolaVerification(manifest, credentials, wrongTypeRequester);
+  assert.equal(nonComparable.cases[0]?.status, "inconclusive");
+  assert.equal(nonComparable.coverage[0]?.status, "partial");
 });
 
 test("BOLA verifier distinguishes explicit denial from inconclusive responses", async () => {
