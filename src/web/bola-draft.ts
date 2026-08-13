@@ -40,11 +40,24 @@ function requestBodyTemplate(method: string, objectIdFields: string[]): Record<s
   return Object.fromEntries(objectIdFields.map((field) => [field, `<SET_PRECREATED_OWNER_${field.toUpperCase()}>`]));
 }
 
+function ownerIdentityFieldCandidates(signal: Signal, objectIdFields: string[]): string[] {
+  const candidates = stringArray(signal.metadata?.ownerIdentityFields);
+  const requestFields = new Set(objectIdFields.map((field) => field.toLowerCase()));
+  return candidates.filter((field) => !requestFields.has(field.toLowerCase()));
+}
+
 function candidateFromSignal(signal: Signal): BolaDraftCandidate | undefined {
   const route = routeFromSignal(signal);
   if (!route) return undefined;
   const classification = classifyBolaStaticRoute(route.method, route.path);
   const objectIdFields = stringArray(signal.metadata?.objectIdFields);
+  const ownerFields = classification.classification === "read_candidate"
+    ? ownerIdentityFieldCandidates(signal, objectIdFields)
+    : [];
+  const suggestedEvidenceMode = ownerFields.length > 0 ? "ownerIdentity" : "testDataLabel";
+  const evidenceSuggestionReason = suggestedEvidenceMode === "ownerIdentity"
+    ? `Static response evidence contains possible server-derived ownership field(s): ${ownerFields.join(", ")}. Confirm the field and response envelope before use.`
+    : "No distinct response ownership field was identified with sufficient confidence; use an exact synthetic test-data marker unless manual review establishes ownerIdentity evidence.";
   const handler = typeof signal.metadata?.handler === "string" ? signal.metadata.handler : "unknown";
   const source = sourceLocation(signal);
   const id = stableId("bola_candidate", signal.fingerprint, route.method, route.path);
@@ -56,6 +69,9 @@ function candidateFromSignal(signal: Signal): BolaDraftCandidate | undefined {
     path: route.path,
     handler,
     objectIdFields,
+    suggestedEvidenceMode,
+    ownerIdentityFieldCandidates: ownerFields,
+    evidenceSuggestionReason,
     source: {
       signalId: signal.id,
       ruleId: signal.ruleId,
@@ -71,11 +87,17 @@ function candidateFromSignal(signal: Signal): BolaDraftCandidate | undefined {
           ? {}
           : { body: requestBodyTemplate(route.method, objectIdFields) }),
       },
-      expectedTemplate: {
-        statusCodes: [200],
-        jsonPath: "<SET_JSON_PATH_TO_SYNTHETIC_MARKER>",
-        value: `aisec-draft-${candidateSlug(route.path)}`,
-      },
+      expectedTemplate: suggestedEvidenceMode === "ownerIdentity"
+        ? {
+            match: "ownerIdentity",
+            statusCodes: [200],
+            jsonPath: "<REVIEW_JSON_PATH_TO_SERVER_DERIVED_OWNER_FIELD>",
+          }
+        : {
+            statusCodes: [200],
+            jsonPath: "<SET_JSON_PATH_TO_SYNTHETIC_MARKER>",
+            value: `aisec-draft-${candidateSlug(route.path)}`,
+          },
     } : {}),
   };
 }
@@ -116,7 +138,8 @@ export function createBolaDraftPlan(report: ScanReport): BolaDraftPlan {
       "Select no more than nine read_candidate entries per authorization manifest.",
       "Create two distinct low-privilege test accounts and a dedicated synthetic object owned by the owner account.",
       "Replace every request placeholder with the exact pre-created object identifier; never enumerate identifiers.",
-      "Set expected.jsonPath to a primitive response field containing the exact synthetic aisec-* marker.",
+      "Choose the evidence mode after reviewing the response: use a primitive synthetic aisec-* marker, or accept suggested ownerIdentity only when the field is server-derived from the stored object and matches the login identity.",
+      "For ownerIdentity suggestions, replace the JSON-path placeholder after confirming the exact response envelope; never use a request-supplied or caller-echoed field.",
       "Review the completed authorization manifest before running verify-bola --confirm.",
     ],
     nextCommand: "aisec verify-bola --authorization <reviewed-manifest.yml> --confirm",

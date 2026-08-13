@@ -283,6 +283,7 @@ export interface BolaVerificationReport {
 }
 
 export type BolaDraftClassification = "read_candidate" | "mutation_excluded" | "manual_review";
+export type BolaDraftEvidenceMode = "testDataLabel" | "ownerIdentity";
 
 export interface BolaDraftCandidate {
   id: string;
@@ -292,6 +293,9 @@ export interface BolaDraftCandidate {
   path: string;
   handler: string;
   objectIdFields: string[];
+  suggestedEvidenceMode?: BolaDraftEvidenceMode;
+  ownerIdentityFieldCandidates?: string[];
+  evidenceSuggestionReason?: string;
   source: {
     signalId: string;
     ruleId: string;
@@ -305,9 +309,14 @@ export interface BolaDraftCandidate {
     body?: Record<string, string>;
   };
   expectedTemplate?: {
+    match?: "testDataLabel";
     statusCodes: [200];
     jsonPath: "<SET_JSON_PATH_TO_SYNTHETIC_MARKER>";
     value: string;
+  } | {
+    match: "ownerIdentity";
+    statusCodes: [200];
+    jsonPath: "<REVIEW_JSON_PATH_TO_SERVER_DERIVED_OWNER_FIELD>";
   };
 }
 

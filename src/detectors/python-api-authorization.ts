@@ -52,7 +52,12 @@ function bolaSignal(route: FastApiRoute): Signal {
     owasp: ["A01:2021", "API1:2023"],
     tags: ["fastapi", "api", "authorization", "bola", "idor", "ownership"],
     remediation: "Bind the requested object to the authenticated subject, tenant, or an explicit privileged role in the database query or a centralized access-check helper. Verify with two low-privilege accounts that cross-account identifiers receive 403 or 404.",
-    metadata: { route: `${route.method} ${route.path}`, handler: route.handlerName, objectIdFields: objectIdFields(route) },
+    metadata: {
+      route: `${route.method} ${route.path}`,
+      handler: route.handlerName,
+      objectIdFields: objectIdFields(route),
+      ownerIdentityFields: route.responseOwnerFields,
+    },
   });
 }
 

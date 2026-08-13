@@ -23,9 +23,13 @@ test("BOLA draft turns an open static read finding into a non-executable review 
   assert.equal(candidate?.method, "POST");
   assert.equal(candidate?.path, "/document/detail");
   assert.deepEqual(candidate?.objectIdFields, ["report_id"]);
+  assert.equal(candidate?.suggestedEvidenceMode, "ownerIdentity");
+  assert.deepEqual(candidate?.ownerIdentityFieldCandidates, ["user_id"]);
+  assert.match(candidate?.evidenceSuggestionReason ?? "", /server-derived ownership field/);
   assert.deepEqual(candidate?.requestTemplate?.body, { report_id: "<SET_PRECREATED_OWNER_REPORT_ID>" });
-  assert.equal(candidate?.expectedTemplate?.jsonPath, "<SET_JSON_PATH_TO_SYNTHETIC_MARKER>");
-  assert.match(candidate?.expectedTemplate?.value ?? "", /^aisec-draft-/);
+  assert.equal(candidate?.expectedTemplate?.match, "ownerIdentity");
+  assert.equal(candidate?.expectedTemplate?.jsonPath, "<REVIEW_JSON_PATH_TO_SERVER_DERIVED_OWNER_FIELD>");
+  assert.ok(!("value" in (candidate?.expectedTemplate ?? {})));
   assert.equal(draft.status, "review_required");
   assert.match(draft.disclaimer, /performs no network requests/);
   assert.doesNotThrow(() => validateBolaDraftPlan(draft));
@@ -42,6 +46,8 @@ test("BOLA draft excludes mutation routes and never emits request templates for 
   const candidate = draft.candidates[0];
   assert.equal(candidate?.classification, "mutation_excluded");
   assert.equal(candidate?.path, "/document/delete");
+  assert.equal(candidate?.suggestedEvidenceMode, "testDataLabel");
+  assert.deepEqual(candidate?.ownerIdentityFieldCandidates, []);
   assert.equal(candidate?.requestTemplate, undefined);
   assert.equal(candidate?.expectedTemplate, undefined);
   assert.match(candidate?.reason ?? "", /state-changing marker delete/);
@@ -63,6 +69,37 @@ test("BOLA draft considers only open BOLA findings", async () => {
   assert.deepEqual(draft.candidates, []);
 });
 
+test("BOLA draft falls back to a synthetic marker when no response owner field is visible", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "fastapi-authorization", "positive-read"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const signal = report.signals.find((item) => item.ruleId === "fastapi.authorization.object-without-ownership-check");
+  assert.ok(signal);
+  signal.metadata = { ...signal.metadata, ownerIdentityFields: [] };
+  const candidate = createBolaDraftPlan(report).candidates[0];
+  assert.equal(candidate?.suggestedEvidenceMode, "testDataLabel");
+  assert.deepEqual(candidate?.ownerIdentityFieldCandidates, []);
+  assert.equal(candidate?.expectedTemplate?.jsonPath, "<SET_JSON_PATH_TO_SYNTHETIC_MARKER>");
+  assert.ok(candidate?.expectedTemplate && "value" in candidate.expectedTemplate);
+  if (candidate?.expectedTemplate && "value" in candidate.expectedTemplate) assert.match(candidate.expectedTemplate.value, /^aisec-draft-/);
+});
+
+test("BOLA draft does not recommend an ownership field also supplied as the object id", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "fastapi-authorization", "positive-read"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const signal = report.signals.find((item) => item.ruleId === "fastapi.authorization.object-without-ownership-check");
+  assert.ok(signal);
+  signal.metadata = { ...signal.metadata, objectIdFields: ["user_id"], ownerIdentityFields: ["user_id"] };
+  const candidate = createBolaDraftPlan(report).candidates[0];
+  assert.equal(candidate?.suggestedEvidenceMode, "testDataLabel");
+  assert.deepEqual(candidate?.ownerIdentityFieldCandidates, []);
+});
+
 test("BOLA draft schema rejects executable-looking read candidates without placeholders", async () => {
   const { report } = await scanProject(join(fixtures, "corpus", "fastapi-authorization", "positive-read"), {
     profile: "native",
@@ -73,4 +110,35 @@ test("BOLA draft schema rejects executable-looking read candidates without place
   const invalid = structuredClone(draft) as unknown as { candidates: Array<{ requestTemplate?: { body?: Record<string, string> } }> };
   invalid.candidates[0]!.requestTemplate!.body!.report_id = "42";
   assert.throws(() => validateBolaDraftPlan(invalid), /BolaDraftPlan.*body.*pattern/);
+
+  const invalidOwnerSuggestion = structuredClone(draft) as unknown as {
+    candidates: Array<{ ownerIdentityFieldCandidates?: string[] }>;
+  };
+  invalidOwnerSuggestion.candidates[0]!.ownerIdentityFieldCandidates = [];
+  assert.throws(() => validateBolaDraftPlan(invalidOwnerSuggestion), /BolaDraftPlan.*ownerIdentityFieldCandidates/);
+});
+
+test("BOLA draft schema remains compatible with previously stored synthetic-marker drafts", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "fastapi-authorization", "positive-read"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const legacy = structuredClone(createBolaDraftPlan(report)) as unknown as {
+    candidates: Array<{
+      suggestedEvidenceMode?: string;
+      ownerIdentityFieldCandidates?: string[];
+      evidenceSuggestionReason?: string;
+      expectedTemplate?: unknown;
+    }>;
+  };
+  delete legacy.candidates[0]!.suggestedEvidenceMode;
+  delete legacy.candidates[0]!.ownerIdentityFieldCandidates;
+  delete legacy.candidates[0]!.evidenceSuggestionReason;
+  legacy.candidates[0]!.expectedTemplate = {
+    statusCodes: [200],
+    jsonPath: "<SET_JSON_PATH_TO_SYNTHETIC_MARKER>",
+    value: "aisec-draft-document-detail",
+  };
+  assert.doesNotThrow(() => validateBolaDraftPlan(legacy));
 });

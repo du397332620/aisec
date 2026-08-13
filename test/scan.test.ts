@@ -90,6 +90,49 @@ test("FastAPI object authorization detects an authenticated ID operation without
   assert.equal(finding.evidenceLevel, "inferred");
   assert.equal(finding.metadata?.route, "POST /document/delete");
   assert.deepEqual(finding.metadata?.objectIdFields, ["report_id"]);
+  assert.deepEqual(finding.metadata?.ownerIdentityFields, []);
+});
+
+test("FastAPI object authorization records explicit response owner fields for BOLA planning", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "fastapi-authorization", "positive-read"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const finding = report.signals.find((signal) => signal.ruleId === "fastapi.authorization.object-without-ownership-check");
+  assert.ok(finding);
+  assert.equal(finding.metadata?.route, "POST /document/detail");
+  assert.deepEqual(finding.metadata?.ownerIdentityFields, ["user_id"]);
+});
+
+test("FastAPI object authorization resolves owner fields from a response model", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-fastapi-response-owner-"));
+  try {
+    await writeFile(join(temporary, "main.py"), `
+from fastapi import Depends, FastAPI
+from pydantic import BaseModel
+
+def get_current_user():
+    return {"id": 7}
+
+class DocumentResponse(BaseModel):
+    id: int
+    tenant_id: int
+
+app = FastAPI(dependencies=[Depends(get_current_user)])
+
+@app.get("/document/{document_id}", response_model=DocumentResponse)
+def document_detail(document_id: int, db=Depends(get_db)):
+    return db.get(Document, document_id)
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const finding = report.signals.find((signal) => signal.ruleId === "fastapi.authorization.object-without-ownership-check");
+    assert.ok(finding);
+    assert.equal(finding.metadata?.route, "GET /document/{document_id}");
+    assert.deepEqual(finding.metadata?.ownerIdentityFields, ["tenant_id"]);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
 });
 
 test("FastAPI object authorization accepts a centralized ownership guard", async () => {

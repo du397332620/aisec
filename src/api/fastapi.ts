@@ -11,6 +11,7 @@ export interface FastApiRoute {
   routerKey: string;
   handlerName: string;
   location: SourceLocation;
+  responseOwnerFields: string[];
   handlerSource: string;
   locallyProtected: boolean;
   ownershipProtected: boolean;
@@ -67,6 +68,7 @@ interface LocalRoute {
   sourcePath: string;
   handlerName: string;
   location: SourceLocation;
+  responseOwnerFields: string[];
   handlerSource: string;
   handlerProtected: boolean;
   ownershipProtected: boolean;
@@ -449,6 +451,76 @@ function classSource(text: string, className: string): string | undefined {
   return functionSource(text, match.index);
 }
 
+const RESPONSE_OWNER_FIELD = /^(?:owner_id|user_id|tenant_id|creator_id|created_by|account_id|organization_id|org_id)$/i;
+
+function keywordExpression(argumentsText: string, name: string): string | undefined {
+  const match = new RegExp(`\\b${name}\\s*=\\s*`).exec(argumentsText);
+  if (!match || match.index === undefined) return undefined;
+  const start = match.index + match[0].length;
+  let round = 0;
+  let square = 0;
+  let curly = 0;
+  let quote = "";
+  let escaped = false;
+  for (let index = start; index < argumentsText.length; index += 1) {
+    const character = argumentsText[index]!;
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = "";
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "(") round += 1;
+    else if (character === ")") round -= 1;
+    else if (character === "[") square += 1;
+    else if (character === "]") square -= 1;
+    else if (character === "{") curly += 1;
+    else if (character === "}") curly -= 1;
+    else if (character === "," && round === 0 && square === 0 && curly === 0) return argumentsText.slice(start, index).trim();
+  }
+  return argumentsText.slice(start).trim();
+}
+
+function ownerFieldsInClass(source: string | undefined): string[] {
+  if (!source) return [];
+  const fields = new Set<string>();
+  for (const match of source.matchAll(/^\s+([A-Za-z_]\w*)\s*:/gm)) {
+    if (match[1] && RESPONSE_OWNER_FIELD.test(match[1])) fields.add(match[1]);
+  }
+  return [...fields];
+}
+
+function responseOwnerFields(
+  argumentsText: string,
+  handlerSource: string,
+  parsed: ParsedFile,
+  parsedByModule: Map<string, ParsedFile>,
+): string[] {
+  const fields = new Set<string>();
+  const responses = keywordExpression(argumentsText, "responses") ?? "";
+  for (const match of responses.matchAll(/["']([A-Za-z_]\w*)["']\s*:/g)) {
+    if (match[1] && RESPONSE_OWNER_FIELD.test(match[1])) fields.add(match[1]);
+  }
+  for (const match of handlerSource.matchAll(/\breturn\b[^\n]{0,1000}?["']([A-Za-z_]\w*)["']\s*:/g)) {
+    if (match[1] && RESPONSE_OWNER_FIELD.test(match[1])) fields.add(match[1]);
+  }
+  const model = keywordExpression(argumentsText, "response_model");
+  if (model) {
+    const identifiers = model.match(/[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*/g) ?? [];
+    for (const identifier of identifiers) {
+      const target = resolveImportedSymbol(identifier, parsed);
+      const targetFile = target ? parsedByModule.get(target.module) : undefined;
+      const source = target && targetFile ? classSource(targetFile.file.content, target.symbol) : undefined;
+      for (const field of ownerFieldsInClass(source)) fields.add(field);
+    }
+  }
+  return [...fields].sort();
+}
+
 function routeKey(route: FastApiRoute): string {
   return [route.appKey, route.method, route.path, route.sourcePath, route.handlerName].join("\u0000");
 }
@@ -554,6 +626,7 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
       if (definitionPrefix === -1) continue;
       const definitionStart = closing + 1 + definition.index + definitionPrefix;
       const source = functionSource(text, definitionStart);
+      const responseFields = responseOwnerFields(argumentsText, source, parsed, parsedByModule);
       localRoutes.push({
         routerKey: `${parsed.module}:${match[1]}`,
         method: method.toUpperCase(),
@@ -561,6 +634,7 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         sourcePath: parsed.file.relativePath,
         handlerName: definition[1],
         location: makeLocation(parsed.file.relativePath, text, match.index ?? 0, match[0] + argumentsText.slice(0, 120)),
+        responseOwnerFields: responseFields,
         handlerSource: source,
         handlerProtected: hasAuthGuard(`${argumentsText}\n${source}`, authNames),
         ownershipProtected: hasOwnershipGuard(`${argumentsText}\n${source}`, ownershipNames),
@@ -612,6 +686,7 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         routerKey: node.key,
         handlerName: route.handlerName,
         location: route.location,
+        responseOwnerFields: route.responseOwnerFields,
         handlerSource: route.handlerSource,
         locallyProtected: nodeProtected || route.handlerProtected,
         ownershipProtected: nodeOwnershipProtected || route.ownershipProtected,

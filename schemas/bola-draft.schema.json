@@ -77,13 +77,30 @@
       }
     },
     "expectedTemplate": {
+      "oneOf": [
+        { "$ref": "#/$defs/testDataLabelExpectedTemplate" },
+        { "$ref": "#/$defs/ownerIdentityExpectedTemplate" }
+      ]
+    },
+    "testDataLabelExpectedTemplate": {
       "type": "object",
       "additionalProperties": false,
       "required": ["statusCodes", "jsonPath", "value"],
       "properties": {
+        "match": { "const": "testDataLabel" },
         "statusCodes": { "type": "array", "const": [200] },
         "jsonPath": { "const": "<SET_JSON_PATH_TO_SYNTHETIC_MARKER>" },
         "value": { "type": "string", "pattern": "^aisec-draft-[a-z0-9-]{1,60}$" }
+      }
+    },
+    "ownerIdentityExpectedTemplate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["match", "statusCodes", "jsonPath"],
+      "properties": {
+        "match": { "const": "ownerIdentity" },
+        "statusCodes": { "type": "array", "const": [200] },
+        "jsonPath": { "const": "<REVIEW_JSON_PATH_TO_SERVER_DERIVED_OWNER_FIELD>" }
       }
     },
     "candidate": {
@@ -103,6 +120,14 @@
           "uniqueItems": true,
           "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
         },
+        "suggestedEvidenceMode": { "enum": ["testDataLabel", "ownerIdentity"] },
+        "ownerIdentityFieldCandidates": {
+          "type": "array",
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^(?:owner_id|user_id|tenant_id|creator_id|created_by|account_id|organization_id|org_id)$" }
+        },
+        "evidenceSuggestionReason": { "type": "string", "minLength": 1, "maxLength": 500 },
         "source": { "$ref": "#/$defs/source" },
         "requestTemplate": { "$ref": "#/$defs/requestTemplate" },
         "expectedTemplate": { "$ref": "#/$defs/expectedTemplate" }
@@ -122,6 +147,41 @@
               "requestTemplate": false,
               "expectedTemplate": false
             }
+          }
+        },
+        {
+          "if": {
+            "properties": { "suggestedEvidenceMode": { "const": "ownerIdentity" } },
+            "required": ["suggestedEvidenceMode"]
+          },
+          "then": {
+            "properties": {
+              "classification": { "const": "read_candidate" },
+              "ownerIdentityFieldCandidates": { "type": "array", "minItems": 1 },
+              "evidenceSuggestionReason": { "type": "string", "minLength": 1, "maxLength": 500 }
+            },
+            "required": ["ownerIdentityFieldCandidates", "evidenceSuggestionReason"],
+            "allOf": [{
+              "if": { "properties": { "classification": { "const": "read_candidate" } }, "required": ["classification"] },
+              "then": { "properties": { "expectedTemplate": { "$ref": "#/$defs/ownerIdentityExpectedTemplate" } } }
+            }]
+          }
+        },
+        {
+          "if": {
+            "properties": { "suggestedEvidenceMode": { "const": "testDataLabel" } },
+            "required": ["suggestedEvidenceMode"]
+          },
+          "then": {
+            "properties": {
+              "ownerIdentityFieldCandidates": { "type": "array", "maxItems": 0 },
+              "evidenceSuggestionReason": { "type": "string", "minLength": 1, "maxLength": 500 }
+            },
+            "required": ["ownerIdentityFieldCandidates", "evidenceSuggestionReason"],
+            "allOf": [{
+              "if": { "properties": { "classification": { "const": "read_candidate" } }, "required": ["classification"] },
+              "then": { "properties": { "expectedTemplate": { "$ref": "#/$defs/testDataLabelExpectedTemplate" } } }
+            }]
           }
         }
       ]

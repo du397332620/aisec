@@ -328,10 +328,18 @@ aisec draft-bola \
 `draft-bola` performs no network requests. It considers only open findings
 tagged `bola` or `idor`, preserves the originating rule and source location,
 and classifies each route as `read_candidate`, `mutation_excluded`, or
-`manual_review`. A read candidate contains placeholders for a pre-created
-owner object ID and a primitive synthetic response marker. The output is
-deliberately not accepted by `verify-bola`: an operator must select at most nine
-cases, create dedicated test fixtures, replace every placeholder, and copy the
+`manual_review`. A read candidate contains placeholders for a pre-created owner
+object ID and an object-evidence mode. When a FastAPI `response_model` or
+explicit `responses=` example exposes a distinct `user_id`, `owner_id`,
+`tenant_id`, or another recognized ownership field, the worksheet suggests
+`ownerIdentity` and lists the candidate field; otherwise it retains the
+primitive synthetic-marker template. The suggested JSON path remains a
+non-executable review placeholder because static
+source cannot reliably infer every response envelope. Fields also supplied as
+request object IDs are excluded from owner-identity suggestions to reduce
+echo-based false positives. The output is deliberately not accepted by
+`verify-bola`: an operator must select at most nine cases, create dedicated test
+fixtures, validate the suggestion, replace every placeholder, and copy the
 reviewed cases into the strict authorization manifest.
 
 `verify-bola` actively checks whether one low-privilege account can read an
