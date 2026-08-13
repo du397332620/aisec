@@ -404,10 +404,6 @@ roadmap. Not yet implemented: mobile runtime instrumentation, general-purpose
 authenticated IDOR verification, automatic code modification, hosted services,
 or a claim of broad multi-language semantic analysis.
 
-The living [product requirements and progress tracker](docs/PRODUCT_PROGRESS.md)
-records the verified implementation state, public-beta release gates, risks,
-open decisions and next work in one place.
-
 Apache-2.0. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 The CI workflow runs the default tests, benchmark, dependency audit and package
@@ -446,5 +442,5 @@ gh attestation verify aisec-cli-0.1.0.tgz \
   --predicate-type https://cyclonedx.org/bom
 ```
 
-An npm publish is intentionally not part of this workflow until the long-term
-package owner and trusted-publishing identity are decided.
+The npm package name is `@aisec/cli`. Publishing remains disabled until control
+of the `@aisec` scope is verified and a trusted-publishing identity is configured.

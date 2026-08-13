@@ -7,3 +7,4 @@ coverage/
 reports/
 *.tgz
 /release/
+/docs/
