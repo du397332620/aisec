@@ -51,7 +51,8 @@ try {
     "ref: <40-character-reviewed-aisec-commit>",
     "npm exec --no -- aisec scan ../target --profile native",
     "## Beta capability matrix",
-    "0.1.0` has not been published to npm yet",
+    "0.1.0` is not published to npm",
+    "npm registry\npublication is intentionally not planned",
   ]) assert.ok(readme.includes(required), `README is missing documented first-run contract: ${required}`);
 
   const localExecutable = spawnSync(npmCommand, ["exec", "--no", "--", "aisec", "--version"], {

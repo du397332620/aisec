@@ -35,10 +35,9 @@ use WSL for the beta.
 | Ubuntu 24.04 | x64 | 22, 24 |
 | macOS 15 | arm64 | 22, 24 |
 
-`0.1.0` has not been published to npm yet. Install the current beta from its
-source checkout; do not expect `npm install -g @aisec/cli` to work until a
-tagged release and package identity are announced. An unregistered package name
-does not imply that the current maintainer controls its npm scope.
+`0.1.0` is not published to npm. This project is currently distributed for
+self-use from its source checkout; `npm install -g @aisec/cli` is not a
+supported installation path.
 
 ```bash
 git clone https://github.com/du397332620/aisec.git
@@ -442,5 +441,6 @@ gh attestation verify aisec-cli-0.1.0.tgz \
   --predicate-type https://cyclonedx.org/bom
 ```
 
-The npm package name is `@aisec/cli`. Publishing remains disabled until control
-of the `@aisec` scope is verified and a trusted-publishing identity is configured.
+The local package metadata name remains `@aisec/cli`, but npm registry
+publication is intentionally not planned. Use the source-checkout instructions
+above.
