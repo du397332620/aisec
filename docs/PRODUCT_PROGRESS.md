@@ -10,9 +10,9 @@
 | 产品 | AIsec |
 | 当前版本 | `0.1.0` |
 | 文档状态 | Living document（持续更新） |
-| 最后更新 | 2026-08-12 |
+| 最后更新 | 2026-08-13 |
 | 当前阶段 | Beta 技术与文档门禁已实现；公开 Beta 仅剩发布身份与正式发布决策 |
-| 当前主线 | `main`；公开仓库 `du397332620/aisec`，最新 P0-08 四组合 GitHub Actions 已通过 |
+| 当前主线 | `main`；公开仓库 `du397332620/aisec`，最新 P0-09 四组合 GitHub Actions 已通过 |
 | 进度事实源 | 本文档；暂未接入 GitHub Issues |
 
 ### 状态定义
@@ -189,7 +189,7 @@ AIsec 提供一个本地编排与证据归一层：
 
 每条新检测规则至少需要一个脆弱样本和一个不会触发的安全近似样本。测试必须确认报告脱敏、证据等级、覆盖状态和裁决，而不只确认“出现了某个字符串”。
 
-## 10. 2026-08-12 验收快照
+## 10. 2026-08-13 验收快照
 
 | 检查 | 结果 | 结论 |
 | --- | --- | --- |
@@ -207,7 +207,7 @@ AIsec 提供一个本地编排与证据归一层：
 | GitHub Release 演练 | [`88a80e5`](https://github.com/du397332620/aisec/commit/88a80e5d9b8099e3e9bac86cadd745db104f9f34) 的 [run 31585652584](https://github.com/du397332620/aisec/actions/runs/31585652584) 构建任务成功，发布任务按无标签条件跳过 | Ubuntu 24.04 / Node 24.19.0 生成并上传 4 文件产物；provenance 与 CycloneDX attestation 均按 signer workflow、source digest 和 `refs/heads/main` 严格验证通过 |
 | `engines prepare trivy` | schema `2`，状态 `ready`；记录 `updatedAt`、`downloadedAt`、`nextUpdate` | 数据库准备是显式联网动作，正常扫描离线；缺失、空、无效或过期均 fail closed |
 | `doctor --json` | Gitleaks `8.30.1`、Opengrep `1.26.0`、Trivy `0.73.0` 全部 compatible | Opengrep 托管二进制 SHA-256 为 `513ff8491f7254c9a672cf8421136a537eb53b2a8af748568bd697acdc59eefe` |
-| Git/CI | P0-08 提交 [`6966b94`](https://github.com/du397332620/aisec/commit/6966b94dcf8901bc06d305674573ae660d9b180c) 已推送；提交身份为 `xiaobai <397332620@qq.com>` | GitHub Actions [run 31590880594](https://github.com/du397332620/aisec/actions/runs/31590880594) 的四个 OS/Node job 全部成功，资源基准、audit、打包安装和可复现发布均通过 |
+| Git/CI | P0-09 提交 [`ed63b1e`](https://github.com/du397332620/aisec/commit/ed63b1e8897ce74e9be20272f3cb5d594eaf56c8) 已推送；提交身份为 `xiaobai <397332620@qq.com>` | GitHub Actions [run 31593033794](https://github.com/du397332620/aisec/actions/runs/31593033794) 的四个 OS/Node job 全部成功；每个 job 的文档首跑复现步骤均通过，资源基准、audit、打包安装和可复现发布也全部通过 |
 
 证据入口：
 
@@ -342,6 +342,11 @@ AIsec 提供一个本地编排与证据归一层：
 ```
 
 ## 19. 变更日志
+
+### 2026-08-13
+
+- P0-09 远程验收完成：提交 `ed63b1e` 的 GitHub Actions run `31593033794` 在 Ubuntu 24.04 与 macOS 15、Node.js 22 与 24 的四种组合中全部通过；四个 job 的文档首跑复现步骤均成功。
+- 当前 P0 仅剩 P0-06 的发布身份与首次正式发布决策；尚未创建版本标签、GitHub Release 或执行 npm 发布。
 
 ### 2026-08-12
 
