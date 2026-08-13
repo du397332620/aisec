@@ -277,6 +277,54 @@ export interface BolaVerificationReport {
   limitations: string[];
 }
 
+export type BolaDraftClassification = "read_candidate" | "mutation_excluded" | "manual_review";
+
+export interface BolaDraftCandidate {
+  id: string;
+  classification: BolaDraftClassification;
+  reason: string;
+  method: string;
+  path: string;
+  handler: string;
+  objectIdFields: string[];
+  source: {
+    signalId: string;
+    ruleId: string;
+    fingerprint: string;
+    evidenceLevel: EvidenceLevel;
+    location: SourceLocation;
+  };
+  requestTemplate?: {
+    method: "GET" | "POST";
+    path: string;
+    body?: Record<string, string>;
+  };
+  expectedTemplate?: {
+    statusCodes: [200];
+    jsonPath: "<SET_JSON_PATH_TO_SYNTHETIC_MARKER>";
+    value: string;
+  };
+}
+
+export interface BolaDraftPlan {
+  schemaVersion: typeof SCHEMA_VERSION;
+  draftId: string;
+  scanId: string;
+  projectId: string;
+  generatedAt: string;
+  status: "review_required";
+  summary: {
+    total: number;
+    readCandidates: number;
+    mutationExcluded: number;
+    manualReview: number;
+  };
+  candidates: BolaDraftCandidate[];
+  prerequisites: string[];
+  nextCommand: "aisec verify-bola --authorization <reviewed-manifest.yml> --confirm";
+  disclaimer: string;
+}
+
 export interface ScanOptions {
   profile: "predeploy" | "native";
   artifacts: string[];

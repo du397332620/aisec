@@ -4,6 +4,7 @@ import { resolve } from "node:path";
 import YAML from "yaml";
 import type { AuthorizationManifest, BolaAuthorizationManifest } from "../schema.js";
 import { validateAuthorizationManifestSchema, validateBolaAuthorizationManifestSchema } from "../core/schema-validation.js";
+import { BOLA_MUTATING_PATH_MARKERS, BOLA_READ_PATH_MARKERS, bolaMarkerTokens } from "./bola-policy.js";
 
 function isPrivateIpv4(host: string): boolean {
   const parts = host.split(".").map(Number);
@@ -51,17 +52,6 @@ export async function loadAuthorization(path: string): Promise<AuthorizationMani
   return validateAuthorization(parsed);
 }
 
-const mutatingPathMarkers = new Set([
-  "create", "update", "delete", "remove", "save", "upload", "generate", "approve", "reject",
-  "cancel", "submit", "publish", "archive", "restore", "assign", "grant", "revoke", "reset",
-  "change", "logout", "register", "import", "execute", "run", "start", "stop", "retry", "edit",
-  "modify", "insert", "enable", "disable", "activate", "deactivate", "attach", "detach",
-]);
-const readPathMarkers = new Set([
-  "detail", "get", "list", "info", "search", "query", "read", "view", "preview", "status",
-  "history", "stats", "statistics", "download", "export", "find", "lookup", "check",
-]);
-
 function pathTokens(path: string, base: string): { decoded: string; tokens: string[] } {
   const url = new URL(path, base);
   if (url.origin !== new URL(base).origin) throw new Error(`Configured path escaped the authorized origin: ${path}`);
@@ -69,8 +59,7 @@ function pathTokens(path: string, base: string): { decoded: string; tokens: stri
   try {
     const decoded = decodeURIComponent(`${url.pathname}${url.search}`);
     if (decoded.includes("%")) throw new Error("nested percent encoding is not accepted");
-    const separated = decoded.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
-    return { decoded, tokens: separated.split(/[^a-z0-9]+/).filter(Boolean) };
+    return { decoded, tokens: bolaMarkerTokens(decoded) };
   } catch {
     throw new Error(`Configured path contains invalid percent encoding: ${path}`);
   }
@@ -86,7 +75,7 @@ function containsJsonString(value: unknown, expected: string): boolean {
 function mutatingBodyMarker(value: unknown): string | undefined {
   if (typeof value === "string") {
     const tokens = value.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
-    return [...mutatingPathMarkers].find((marker) => tokens.includes(marker));
+    return [...BOLA_MUTATING_PATH_MARKERS].find((marker) => tokens.includes(marker));
   }
   if (Array.isArray(value)) {
     for (const item of value) {
@@ -112,7 +101,7 @@ export function validateBolaAuthorization(value: unknown): BolaAuthorizationMani
   if (manifest.login.tokenJsonPath === manifest.login.identityJsonPath) throw new Error("Login tokenJsonPath and identityJsonPath must differ");
   const loginTokens = pathTokens(manifest.login.path, manifest.targetBaseUrl).tokens;
   if (!["login", "signin", "session", "token"].some((marker) => loginTokens.includes(marker))) throw new Error("login.path must identify an authentication endpoint");
-  const unsafeLoginMarker = [...mutatingPathMarkers].find((marker) => !["create", "start"].includes(marker) && loginTokens.includes(marker));
+  const unsafeLoginMarker = [...BOLA_MUTATING_PATH_MARKERS].find((marker) => !["create", "start"].includes(marker) && loginTokens.includes(marker));
   if (unsafeLoginMarker) throw new Error(`login.path has an unrelated state-changing marker: ${unsafeLoginMarker}`);
 
   const requiredRequests = 2 + manifest.cases.length * 2;
@@ -129,9 +118,9 @@ export function validateBolaAuthorization(value: unknown): BolaAuthorizationMani
     }
     if (item.expected.value !== item.testDataLabel) throw new Error(`BOLA case ${item.id} expected.value must exactly equal testDataLabel`);
     const parsedPath = pathTokens(item.path, manifest.targetBaseUrl);
-    const mutatingMarker = [...mutatingPathMarkers].find((marker) => parsedPath.tokens.includes(marker));
+    const mutatingMarker = [...BOLA_MUTATING_PATH_MARKERS].find((marker) => parsedPath.tokens.includes(marker));
     if (mutatingMarker) throw new Error(`BOLA case ${item.id} path has a state-changing marker: ${mutatingMarker}`);
-    if (item.method === "POST" && ![...readPathMarkers].some((marker) => parsedPath.tokens.includes(marker))) {
+    if (item.method === "POST" && ![...BOLA_READ_PATH_MARKERS].some((marker) => parsedPath.tokens.includes(marker))) {
       throw new Error(`BOLA case ${item.id} POST path must contain an explicit read/query marker`);
     }
     if (item.method === "POST" && item.body === undefined) throw new Error(`BOLA case ${item.id} POST requires a fixed body`);

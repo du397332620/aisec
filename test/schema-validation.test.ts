@@ -12,6 +12,7 @@ import { loadReport, reportPath, saveReport } from "../src/core/store.js";
 import {
   validateAuthorizationManifestSchema,
   validateBolaAuthorizationManifestSchema,
+  validateBolaDraftPlan,
   validateFixContract,
   validateScanReport,
 } from "../src/core/schema-validation.js";

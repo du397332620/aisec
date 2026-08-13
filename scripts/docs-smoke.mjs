@@ -67,6 +67,7 @@ try {
   const help = run(["--help"]).stdout;
   assert.match(help, /--profile predeploy\|native/);
   assert.match(help, /verify-bola --authorization <manifest\.yml> --confirm/);
+  assert.match(help, /draft-bola --scan <scan-id\|report\.json>/);
   const doctor = report(run(["doctor", "--json"]), "doctor");
   assert.equal(doctor.node, process.version);
   assert.deepEqual(doctor.engines.map((item) => item.source), ["invalid", "invalid", "invalid"]);
@@ -84,6 +85,11 @@ try {
   assert.ok(finding, "vulnerable fixture must expose a finding for the documented fix-contract path");
   const contract = JSON.parse(run(["fix-contract", "--scan", vulnerable.scanId, "--finding", finding.id, "--format", "json"]).stdout);
   assert.equal(contract.scanId, vulnerable.scanId);
+
+  const bolaDraft = report(run(["draft-bola", "--scan", vulnerable.scanId]), "BOLA draft");
+  assert.equal(bolaDraft.scanId, vulnerable.scanId);
+  assert.equal(bolaDraft.status, "review_required");
+  assert.match(bolaDraft.disclaimer, /performs no network requests/);
 
   const incomplete = report(run(["scan", "test/fixtures/safe", "--no-persist", "--format", "json"], 2), "full scan without engines");
   assert.equal(incomplete.decision, "incomplete");

@@ -223,6 +223,67 @@ function stripComments(text: string): string {
   }).join("\n");
 }
 
+function pythonCodeMask(text: string): string {
+  let quote = "";
+  let triple = false;
+  let escaped = false;
+  let comment = false;
+  const characters = [...text];
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]!;
+    const newline = character === "\n" || character === "\r";
+    if (comment) {
+      if (newline) comment = false;
+      else characters[index] = " ";
+      continue;
+    }
+    if (quote) {
+      if (triple) {
+        if (text.slice(index, index + 3) === quote.repeat(3)) {
+          characters[index] = characters[index + 1] = characters[index + 2] = " ";
+          index += 2;
+          quote = "";
+          triple = false;
+        } else if (!newline) characters[index] = " ";
+        continue;
+      }
+      if (escaped) {
+        escaped = false;
+        if (!newline) characters[index] = " ";
+        continue;
+      }
+      if (character === "\\") {
+        escaped = true;
+        characters[index] = " ";
+        continue;
+      }
+      if (character === quote) quote = "";
+      characters[index] = " ";
+      continue;
+    }
+    if (character === "#") {
+      comment = true;
+      characters[index] = " ";
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      triple = text.slice(index, index + 3) === character.repeat(3);
+      characters[index] = " ";
+      if (triple) {
+        characters[index + 1] = characters[index + 2] = " ";
+        index += 2;
+      }
+    }
+  }
+  return characters.join("");
+}
+
+function executableOffsets(text: string, pattern: RegExp): number[] {
+  const mask = pythonCodeMask(text);
+  return [...mask.matchAll(pattern)].map((match) => match.index ?? -1).filter((index) => index >= 0);
+}
+
 function functionSource(text: string, definitionStart: number): string {
   const lineStart = text.lastIndexOf("\n", definitionStart) + 1;
   const indent = text.slice(lineStart, definitionStart).match(/^\s*/)?.[0].length ?? 0;
@@ -413,7 +474,9 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
   for (const parsed of parsedFiles) {
     const text = parsed.file.content;
     const constructors = /\b([A-Za-z_]\w*)\s*=\s*(FastAPI|APIRouter)\s*\(/g;
+    const constructorOffsets = new Set(executableOffsets(text, new RegExp(constructors.source, constructors.flags)));
     for (const match of text.matchAll(constructors)) {
+      if (!constructorOffsets.has(match.index ?? -1)) continue;
       const opening = (match.index ?? 0) + match[0].length - 1;
       const closing = findClosing(text, opening);
       if (closing === -1) continue;
@@ -438,7 +501,9 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
   for (const parsed of parsedFiles) {
     const text = parsed.file.content;
     const middleware = /\b([A-Za-z_]\w*)\.add_middleware\s*\(\s*([A-Za-z_.]\w*)/g;
+    const middlewareOffsets = new Set(executableOffsets(text, new RegExp(middleware.source, middleware.flags)));
     for (const match of text.matchAll(middleware)) {
+      if (!middlewareOffsets.has(match.index ?? -1)) continue;
       const node = nodes.get(`${parsed.module}:${match[1]}`);
       const middlewareExpression = match[2] ?? "";
       if (node?.kind === "app" && /(?:auth|session|identity)/i.test(middlewareExpression)) {
@@ -451,7 +516,9 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
     }
 
     const includes = /\b([A-Za-z_]\w*)\.include_router\s*\(/g;
+    const includeOffsets = new Set(executableOffsets(text, new RegExp(includes.source, includes.flags)));
     for (const match of text.matchAll(includes)) {
+      if (!includeOffsets.has(match.index ?? -1)) continue;
       const opening = (match.index ?? 0) + match[0].length - 1;
       const closing = findClosing(text, opening);
       if (closing === -1) continue;
@@ -469,7 +536,9 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
     }
 
     const decorators = /@([A-Za-z_]\w*)\.(get|post|put|patch|delete|options|head)\s*\(/gi;
+    const decoratorOffsets = new Set(executableOffsets(text, new RegExp(decorators.source, decorators.flags)));
     for (const match of text.matchAll(decorators)) {
+      if (!decoratorOffsets.has(match.index ?? -1)) continue;
       const method = (match[2] ?? "").toLowerCase();
       if (!ROUTE_METHODS.has(method)) continue;
       const opening = (match.index ?? 0) + match[0].length - 1;

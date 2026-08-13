@@ -66,6 +66,7 @@ try {
   const executable = join(consumer, "node_modules", ".bin", process.platform === "win32" ? "aisec.cmd" : "aisec");
   await access(executable, process.platform === "win32" ? constants.R_OK : constants.X_OK);
   await access(join(packageRoot, "schemas", "bola-authorization-manifest.schema.json"), constants.R_OK);
+  await access(join(packageRoot, "schemas", "bola-draft.schema.json"), constants.R_OK);
   await access(join(packageRoot, "examples", "authorization.bola.local.yml"), constants.R_OK);
   const scanEnvironment = { AISEC_DATA_DIR: join(temporary, "data") };
 
@@ -86,11 +87,18 @@ try {
     "scan",
     join(packageRoot, "test", "fixtures", "vulnerable"),
     "--native-only",
-    "--no-persist",
     "--format",
     "json",
   ], { cwd: consumer, env: scanEnvironment, expectedStatus: 1 }), "vulnerable fixture");
   assert.equal(vulnerable.decision, "block");
+
+  const bolaDraft = parseReport(run(executable, [
+    "draft-bola",
+    "--scan",
+    join(temporary, "data", "scans", `${vulnerable.scanId}.json`),
+  ], { cwd: consumer, env: scanEnvironment }), "installed BOLA draft");
+  assert.equal(bolaDraft.status, "review_required");
+  assert.equal(bolaDraft.scanId, vulnerable.scanId);
 
   process.stdout.write("Running the public corpus from inside the installed package...\n");
   const benchmarkOutput = run(process.execPath, [join(packageRoot, "dist", "src", "benchmark.js")], {

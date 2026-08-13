@@ -89,6 +89,7 @@ test("FastAPI object authorization detects an authenticated ID operation without
   assert.ok(finding);
   assert.equal(finding.evidenceLevel, "inferred");
   assert.equal(finding.metadata?.route, "POST /document/delete");
+  assert.deepEqual(finding.metadata?.objectIdFields, ["report_id"]);
 });
 
 test("FastAPI object authorization accepts a centralized ownership guard", async () => {
@@ -98,6 +99,33 @@ test("FastAPI object authorization accepts a centralized ownership guard", async
     persist: false,
   });
   assert.ok(!report.signals.some((signal) => signal.ruleId === "fastapi.authorization.object-without-ownership-check"));
+});
+
+test("FastAPI analysis ignores route-like decorators inside triple-quoted disabled code", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-fastapi-disabled-route-"));
+  try {
+    await writeFile(join(temporary, "main.py"), `
+from fastapi import Depends, FastAPI
+
+app = FastAPI(dependencies=[Depends(get_current_user)])
+
+'''disabled legacy route
+@app.post("/resource/detail")
+def detail(request: DetailRequest, db=Depends(get_db)):
+    return db.get(Resource, request.resource_id)
+'''
+
+@app.post("/document/detail")
+def live_detail(request: DetailRequest, db=Depends(get_db)):
+    return db.get(Report, request.report_id)
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("POST /document/detail"));
+    assert.ok(!report.profile.routes.includes("POST /resource/detail"));
+    assert.ok(!report.signals.some((signal) => signal.metadata?.route === "POST /resource/detail"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
 });
 
 test("Python API dataflow detects URL, file, SQL, and model credential destination flows", async () => {

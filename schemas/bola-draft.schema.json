@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/bola-draft-1.0.0.json",
+  "title": "AIsec BOLA Draft Plan 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "draftId", "scanId", "projectId", "generatedAt", "status", "summary", "candidates", "prerequisites", "nextCommand", "disclaimer"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "draftId": { "type": "string", "pattern": "^bola_draft_[0-9a-f]{16}$" },
+    "scanId": { "type": "string", "pattern": "^scan_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "projectId": { "type": "string", "pattern": "^project_[0-9a-f]{16}$" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "status": { "const": "review_required" },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "readCandidates", "mutationExcluded", "manualReview"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0 },
+        "readCandidates": { "type": "integer", "minimum": 0 },
+        "mutationExcluded": { "type": "integer", "minimum": 0 },
+        "manualReview": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "candidates": {
+      "type": "array",
+      "maxItems": 200,
+      "items": { "$ref": "#/$defs/candidate" }
+    },
+    "prerequisites": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 20,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    },
+    "nextCommand": { "const": "aisec verify-bola --authorization <reviewed-manifest.yml> --confirm" },
+    "disclaimer": { "type": "string", "minLength": 1, "maxLength": 1000 }
+  },
+  "$defs": {
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "snippet": { "type": "string", "maxLength": 1000 }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["signalId", "ruleId", "fingerprint", "evidenceLevel", "location"],
+      "properties": {
+        "signalId": { "type": "string", "pattern": "^sig_[0-9a-f]{16}$" },
+        "ruleId": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "evidenceLevel": { "enum": ["verified", "static_confirmed", "inferred"] },
+        "location": { "$ref": "#/$defs/location" }
+      }
+    },
+    "requestTemplate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["method", "path"],
+      "properties": {
+        "method": { "enum": ["GET", "POST"] },
+        "path": { "type": "string", "pattern": "^/[^/]", "maxLength": 2048 },
+        "body": {
+          "type": "object",
+          "maxProperties": 40,
+          "additionalProperties": { "type": "string", "pattern": "^<SET_PRECREATED_OWNER_[A-Z0-9_]+>$" }
+        }
+      }
+    },
+    "expectedTemplate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["statusCodes", "jsonPath", "value"],
+      "properties": {
+        "statusCodes": { "type": "array", "const": [200] },
+        "jsonPath": { "const": "<SET_JSON_PATH_TO_SYNTHETIC_MARKER>" },
+        "value": { "type": "string", "pattern": "^aisec-draft-[a-z0-9-]{1,60}$" }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "classification", "reason", "method", "path", "handler", "objectIdFields", "source"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^bola_candidate_[0-9a-f]{16}$" },
+        "classification": { "enum": ["read_candidate", "mutation_excluded", "manual_review"] },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "method": { "type": "string", "pattern": "^[A-Z]+$", "maxLength": 20 },
+        "path": { "type": "string", "pattern": "^/[^/]", "maxLength": 2048 },
+        "handler": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "objectIdFields": {
+          "type": "array",
+          "maxItems": 40,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        },
+        "source": { "$ref": "#/$defs/source" },
+        "requestTemplate": { "$ref": "#/$defs/requestTemplate" },
+        "expectedTemplate": { "$ref": "#/$defs/expectedTemplate" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "classification": { "const": "read_candidate" } }, "required": ["classification"] },
+          "then": {
+            "properties": {
+              "requestTemplate": { "$ref": "#/$defs/requestTemplate" },
+              "expectedTemplate": { "$ref": "#/$defs/expectedTemplate" }
+            },
+            "required": ["requestTemplate", "expectedTemplate"]
+          },
+          "else": {
+            "properties": {
+              "requestTemplate": false,
+              "expectedTemplate": false
+            }
+          }
+        }
+      ]
+    }
+  }
+}

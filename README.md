@@ -109,6 +109,7 @@ aisec scan [path] [--profile predeploy|native] [--native-only] [--artifact app.a
 aisec rescan [path] --baseline <scan-id|report.json>
 aisec report <scan-id|report.json> --format terminal|json|html|sarif
 aisec fix-contract --scan <scan-id> --finding <id> --format json
+aisec draft-bola --scan <scan-id|report.json> --output bola-draft.json
 aisec verify-web --authorization authorization.yml --confirm
 aisec verify-bola --authorization bola-authorization.yml --confirm
 aisec doctor
@@ -269,6 +270,7 @@ binaries and prepare the Trivy database before scanning.
 | Dependency, IaC and secondary secret checks | Trivy `0.73.0` | Required in pre-deploy mode; requires an explicitly prepared, fresh schema-v2 database and scans offline |
 | APK/IPA static resources | Native archive adapter | Optional input; required for pre-deploy mobile artifact coverage when a mobile project/artifact is expected; no extraction or runtime instrumentation |
 | Passive test/staging Web checks | `verify-web` | Explicit authorization plus `--confirm`; bounded GET/header/cookie checks only, no auth/IDOR/injection testing |
+| Static-to-active BOLA planning | `draft-bola` | Converts open static BOLA/IDOR signals into a non-executable review worksheet; mutation routes are excluded and object IDs/markers remain placeholders |
 | Two-account BOLA verification | `verify-bola` | Exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
 | Agent integration | stdio MCP | Local read-oriented inspection, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
 | Reports and release decisions | CLI / JSON / HTML / SARIF | Coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; never certification |
@@ -313,6 +315,24 @@ aisec verify-web --authorization authorization.yml --confirm
 ```
 
 ## Authorized two-account BOLA verification
+
+Before preparing an authorization manifest, generate a review worksheet from a
+stored scan:
+
+```bash
+aisec draft-bola \
+  --scan <scan-id-or-report.json> \
+  --output bola-draft.json
+```
+
+`draft-bola` performs no network requests. It considers only open findings
+tagged `bola` or `idor`, preserves the originating rule and source location,
+and classifies each route as `read_candidate`, `mutation_excluded`, or
+`manual_review`. A read candidate contains placeholders for a pre-created
+owner object ID and a primitive synthetic response marker. The output is
+deliberately not accepted by `verify-bola`: an operator must select at most nine
+cases, create dedicated test fixtures, replace every placeholder, and copy the
+reviewed cases into the strict authorization manifest.
 
 `verify-bola` actively checks whether one low-privilege account can read an
 object owned by a second low-privilege account. It is a separate, explicit
@@ -385,7 +405,8 @@ as resolved, with no new high/critical finding.
 ## Versioned data contracts
 
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, fix
-contracts, passive-web authorization and BOLA authorization manifests in
+contracts, passive-web authorization, BOLA draft plans and BOLA authorization
+manifests in
 [`schemas/`](schemas/). Version
 `1.0.0` is validated at runtime when a report is generated, serialized, saved
 or loaded, when a fix contract is generated, and before authorization semantics
@@ -393,7 +414,7 @@ are evaluated. Unknown fields, unsupported schema versions and malformed nested
 values fail closed instead of flowing into CLI or MCP output.
 
 The package also exports `validateScanReport`, `validateFixContract`,
-`validateAuthorizationManifestSchema` and
+`validateAuthorizationManifestSchema`, `validateBolaDraftPlan` and
 `validateBolaAuthorizationManifestSchema` for integrations that consume these
 objects directly. Fields declared optional may be omitted by `1.0.0` producers;
 new fields or other contract changes require a new schema version.

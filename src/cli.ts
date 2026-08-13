@@ -11,6 +11,7 @@ import { emitReport, type OutputFormat } from "./reporters/index.js";
 import { renderFixContract } from "./reporters/terminal.js";
 import { verifyWeb } from "./web/verify.js";
 import { verifyBola } from "./web/bola.js";
+import { draftBola } from "./web/bola-draft.js";
 import { TOOL_VERSION } from "./core/constants.js";
 import { parsePositiveInt } from "./core/utils.js";
 import { prepareTrivyDatabase, trivyDatabaseStatus } from "./engines/trivy-db.js";
@@ -23,6 +24,7 @@ Usage:
   aisec rescan [path] --baseline <scan-id|report.json> [scan options]
   aisec report <scan-id|report.json> [--format terminal|json|html|sarif] [--output file]
   aisec fix-contract --scan <scan-id|report.json> --finding <id|fingerprint> [--format terminal|json] [--output file]
+  aisec draft-bola --scan <scan-id|report.json> [--output file]
   aisec verify-web --authorization <manifest.yml> --confirm [--output file]
   aisec verify-bola --authorization <manifest.yml> --confirm [--output file]
   aisec doctor [--json]
@@ -125,6 +127,12 @@ async function main(): Promise<void> {
     const contract = createFixContract(await loadReport(requireFlag(parsed, "scan")), requireFlag(parsed, "finding"));
     const output = flag(parsed, "format") === "json" ? `${JSON.stringify(contract, null, 2)}\n` : `${renderFixContract(contract)}\n`;
     await writeOrStdout(output, flag(parsed, "output"));
+    return;
+  }
+
+  if (parsed.command === "draft-bola") {
+    const result = await draftBola(requireFlag(parsed, "scan"));
+    await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, flag(parsed, "output"));
     return;
   }
 

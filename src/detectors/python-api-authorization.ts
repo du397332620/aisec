@@ -10,6 +10,21 @@ const SIGNATURE_OBJECT_ID = /^(?:async\s+)?def\s+\w+\s*\([\s\S]{0,1000}?\b(?:[A-
 const OBJECT_ACCESS = /(?:\b(?:db|session)\s*\.\s*(?:get|delete|exec|execute|query|add|merge|commit)\s*\(|\b(?:CRUD\w*|\w*(?:repository|service|manager|dao|crud))\s*\.\s*\w*(?:get|find|detail|delete|remove|update|save|status|download|approve|reject)\w*\s*\(|\.\s*(?:where|filter|delete|update)\s*\()/i;
 const AUTH_SESSION_ROUTE = /(?:^|\/)(?:login|logout|token|session\/current|me|profile)(?:\/|$)/i;
 
+function objectIdFields(route: FastApiRoute): string[] {
+  const fields = new Set<string>();
+  const source = route.handlerSource;
+  const patterns = [
+    /\b(?:request|payload|body|data|params|query)\s*\.\s*([A-Za-z_]\w*_id|id|uuid)\b/gi,
+    /\b(?:request|payload|body|data|params|query)\s*\[\s*["']([A-Za-z_]\w*_id|id|uuid)["']\s*\]/gi,
+    /\b(?:request|payload|body|data|params|query)\s*\.get\s*\(\s*["']([A-Za-z_]\w*_id|id|uuid)["']/gi,
+  ];
+  for (const pattern of patterns) for (const match of source.matchAll(pattern)) if (match[1]) fields.add(match[1]);
+  for (const match of route.path.matchAll(/\{([A-Za-z_]\w*)\}/g)) {
+    if (match[1] && /(?:_id|^id$|uuid$)/i.test(match[1])) fields.add(match[1]);
+  }
+  return [...fields].sort();
+}
+
 function hasObjectOperation(route: FastApiRoute): boolean {
   if (AUTH_SESSION_ROUTE.test(route.path)) return false;
   const source = route.handlerSource;
@@ -37,7 +52,7 @@ function bolaSignal(route: FastApiRoute): Signal {
     owasp: ["A01:2021", "API1:2023"],
     tags: ["fastapi", "api", "authorization", "bola", "idor", "ownership"],
     remediation: "Bind the requested object to the authenticated subject, tenant, or an explicit privileged role in the database query or a centralized access-check helper. Verify with two low-privilege accounts that cross-account identifiers receive 403 or 404.",
-    metadata: { route: `${route.method} ${route.path}`, handler: route.handlerName },
+    metadata: { route: `${route.method} ${route.path}`, handler: route.handlerName, objectIdFields: objectIdFields(route) },
   });
 }
 
