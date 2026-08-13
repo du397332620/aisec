@@ -1,4 +1,4 @@
-import { basename, extname } from "node:path";
+import { basename, extname, posix } from "node:path";
 import ts from "typescript";
 import type { ProjectFile } from "../core/files.js";
 import type { SourceLocation } from "../schema.js";
@@ -34,10 +34,41 @@ interface ParsedSource {
   file: ProjectFile;
   source: ts.SourceFile;
   modules: Set<string>;
+  imports: Map<string, ImportBinding>;
+  exports: Map<string, ExportBinding>;
+  starExports: string[];
+}
+
+interface ImportBinding {
+  module: string;
+  imported: string;
+  namespace: boolean;
+}
+
+interface ExportBinding {
+  local?: string;
+  module?: string;
+  imported?: string;
+}
+
+function syntheticExportLocal(exported: string): string {
+  return exported === "default" ? "$default" : `$export$${exported}`;
+}
+
+function commonJsExportName(expression: ts.Expression): string | undefined {
+  const name = expressionName(expression);
+  if (name === "module.exports") return "default";
+  return name.match(/^(?:module\.exports|exports)\.([A-Za-z_$][\w$]*)$/)?.[1];
+}
+
+interface ResolvedFunction {
+  declaration: ts.FunctionLikeDeclaration;
+  parsed: ParsedSource;
 }
 
 interface ExpressRouteCandidate {
   receiver: string;
+  parsed: ParsedSource;
   method: string;
   path: string;
   offset: number;
@@ -50,6 +81,7 @@ interface ExpressRouteCandidate {
 
 interface ExpressMiddleware {
   receiver: string;
+  sourcePath: string;
   offset: number;
   prefix: string;
   authenticated: boolean;
@@ -58,6 +90,7 @@ interface ExpressMiddleware {
 interface ExpressMount {
   parent: string;
   child: string;
+  sourcePath: string;
   offset: number;
   prefix: string;
   authenticated: boolean;
@@ -70,6 +103,8 @@ const OWNER_FIELD = /^(?:owner_id|user_id|tenant_id|creator_id|created_by|accoun
 const AUTH_GUARD_NAME = /(?:^|[._])(?:auth(?:Middleware|Guard)?|authenticate|authenticated|authentication(?:Middleware)?|requireAuth|requireUser|ensureAuthenticated|isAuthenticated|verifyToken|verifySession|jwtAuth(?:Guard)?|jwtGuard|sessionAuth(?:Guard)?|bearerAuth|protect|passport\.authenticate)(?:$|[.(])/i;
 const ACCESS_GUARD_NAME = /(?:^|[._])(?:require|verify|check|ensure|authorize|assert|can)[A-Za-z0-9_]*(?:access|owner|ownership|permission|policy|role|admin|tenant)|(?:owner|ownership|permission|policy|ability|role|admin|tenant)[A-Za-z0-9_]*(?:guard|check)(?:$|[.(])/i;
 const ID_OPERATION = /(?:^|\.)(?:findById|findByIdAndUpdate|findByIdAndDelete|findUnique|findUniqueOrThrow|findFirst|findFirstOrThrow|findOne|findMany|getById|getOne|loadById|detail|update|updateOne|updateMany|delete|deleteOne|deleteMany|remove|destroy|where)$/i;
+const NEST_AUTH_GUARD_HINT = /(?:auth|jwt|session|identity|loggedIn|signedIn|user|role|permission|policy|ability|access|owner|admin)/i;
+const NEST_OWNERSHIP_GUARD_HINT = /(?:owner|ownership|tenant|role|permission|policy|ability|access|admin)/i;
 
 function scriptKind(path: string): ts.ScriptKind {
   const extension = extname(path).toLowerCase();
@@ -105,6 +140,127 @@ function moduleNames(source: ts.SourceFile): Set<string> {
       && node.arguments.length === 1 && ts.isStringLiteral(node.arguments[0]!)) result.add(node.arguments[0].text);
   });
   return result;
+}
+
+function hasModifier(node: ts.Node, kind: ts.SyntaxKind): boolean {
+  return Boolean(ts.canHaveModifiers(node) && ts.getModifiers(node)?.some((modifier) => modifier.kind === kind));
+}
+
+function requireModule(expression: ts.Expression): string | undefined {
+  const current = unwrapExpression(expression);
+  if (!ts.isCallExpression(current) || !ts.isIdentifier(current.expression) || current.expression.text !== "require") return undefined;
+  return literalText(current.arguments[0]);
+}
+
+function moduleBindings(source: ts.SourceFile): {
+  imports: Map<string, ImportBinding>;
+  exports: Map<string, ExportBinding>;
+  starExports: string[];
+} {
+  const imports = new Map<string, ImportBinding>();
+  const exports = new Map<string, ExportBinding>();
+  const starExports: string[] = [];
+  for (const statement of source.statements) {
+    if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+      const module = statement.moduleSpecifier.text;
+      const clause = statement.importClause;
+      if (clause?.name) imports.set(clause.name.text, { module, imported: "default", namespace: false });
+      if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) {
+        imports.set(clause.namedBindings.name.text, { module, imported: "default", namespace: true });
+      }
+      if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+        for (const element of clause.namedBindings.elements) {
+          imports.set(element.name.text, {
+            module,
+            imported: element.propertyName?.text ?? element.name.text,
+            namespace: false,
+          });
+        }
+      }
+    }
+    if (ts.isExportDeclaration(statement)) {
+      const module = statement.moduleSpecifier && ts.isStringLiteral(statement.moduleSpecifier)
+        ? statement.moduleSpecifier.text : undefined;
+      if (!statement.exportClause && module) starExports.push(module);
+      if (statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+        for (const element of statement.exportClause.elements) {
+          const imported = element.propertyName?.text ?? element.name.text;
+          exports.set(element.name.text, module ? { module, imported } : { local: imported });
+        }
+      }
+      continue;
+    }
+    if (ts.isExportAssignment(statement)) {
+      const value = unwrapExpression(statement.expression);
+      if (ts.isIdentifier(value)) exports.set("default", { local: value.text });
+      else if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
+        exports.set("default", { local: syntheticExportLocal("default") });
+      }
+      continue;
+    }
+    if (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) {
+      if (!hasModifier(statement, ts.SyntaxKind.ExportKeyword)) continue;
+      if (!statement.name) {
+        if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) exports.set("default", { local: syntheticExportLocal("default") });
+        continue;
+      }
+      exports.set(statement.name.text, { local: statement.name.text });
+      if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) exports.set("default", { local: statement.name.text });
+      continue;
+    }
+    if (ts.isVariableStatement(statement)) {
+      const exported = hasModifier(statement, ts.SyntaxKind.ExportKeyword);
+      for (const declaration of statement.declarationList.declarations) {
+        if (!declaration.initializer) continue;
+        const directModule = requireModule(declaration.initializer);
+        const initializer = unwrapExpression(declaration.initializer);
+        const requiredProperty = ts.isPropertyAccessExpression(initializer)
+          ? requireModule(initializer.expression) : undefined;
+        if (directModule && ts.isIdentifier(declaration.name)) {
+          imports.set(declaration.name.text, { module: directModule, imported: "default", namespace: true });
+        } else if (directModule && ts.isObjectBindingPattern(declaration.name)) {
+          for (const element of declaration.name.elements) {
+            if (!ts.isIdentifier(element.name)) continue;
+            imports.set(element.name.text, {
+              module: directModule,
+              imported: propertyName(element.propertyName) ?? element.name.text,
+              namespace: false,
+            });
+          }
+        } else if (requiredProperty && ts.isIdentifier(declaration.name) && ts.isPropertyAccessExpression(initializer)) {
+          imports.set(declaration.name.text, {
+            module: requiredProperty,
+            imported: initializer.name.text,
+            namespace: false,
+          });
+        }
+        if (exported && ts.isIdentifier(declaration.name)) exports.set(declaration.name.text, { local: declaration.name.text });
+      }
+      continue;
+    }
+    if (!ts.isExpressionStatement(statement) || !ts.isBinaryExpression(statement.expression)
+      || statement.expression.operatorToken.kind !== ts.SyntaxKind.EqualsToken) continue;
+    const exported = commonJsExportName(statement.expression.left);
+    if (!exported) continue;
+    const value = unwrapExpression(statement.expression.right);
+    if (ts.isIdentifier(value)) exports.set(exported, { local: value.text });
+    else if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
+      exports.set(exported, { local: syntheticExportLocal(exported) });
+    } else if (exported === "default" && ts.isObjectLiteralExpression(value)) {
+      for (const property of value.properties) {
+        const name = propertyName(property.name);
+        if (!name) continue;
+        if (ts.isShorthandPropertyAssignment(property)) exports.set(name, { local: property.name.text });
+        else if (ts.isPropertyAssignment(property)) {
+          const initializer = unwrapExpression(property.initializer);
+          exports.set(name, ts.isIdentifier(initializer)
+            ? { local: initializer.text }
+            : { local: syntheticExportLocal(name) });
+        } else if (ts.isMethodDeclaration(property)) exports.set(name, { local: syntheticExportLocal(name) });
+      }
+    }
+  }
+  return { imports, exports, starExports };
 }
 
 function packageNames(files: ProjectFile[]): Set<string> {
@@ -285,7 +441,7 @@ function explicitAuthentication(source: string): boolean {
 
 function ownershipGuard(source: string): boolean {
   if (ACCESS_GUARD_NAME.test(source)) return true;
-  const identity = String.raw`(?:req(?:uest)?|ctx|context)\s*(?:\?\.)?\.\s*(?:user|auth|session)(?:\s*(?:\?\.)?\.\s*(?:id|userId|tenantId|role|isAdmin))?|(?:currentUser|authenticatedUser|principal|identity)(?:\s*(?:\?\.)?\.\s*(?:id|userId|tenantId|role|isAdmin))?`;
+  const identity = String.raw`(?:(?:req(?:uest)?|ctx|context)\s*(?:\?\.)?\.\s*(?:user|auth|session)(?:\s*(?:\?\.)?\.\s*(?:id|userId|tenantId|role|isAdmin))?|(?:currentUser|authenticatedUser|principal|identity)(?:\s*(?:\?\.)?\.\s*(?:id|userId|tenantId|role|isAdmin))?)`;
   const owner = String.raw`(?:owner_id|user_id|tenant_id|creator_id|created_by|account_id|organization_id|org_id|ownerId|userId|tenantId|creatorId|createdBy|accountId|organizationId|orgId)`;
   const directBinding = new RegExp(`${owner}\\s*:\\s*${identity}`, "i");
   const comparison = new RegExp(`(?:\\.\\s*${owner}|\\b${owner}\\b)\\s*(?:===?|!==?)\\s*${identity}|${identity}\\s*(?:===?|!==?)\\s*(?:\\.\\s*${owner}|\\b${owner}\\b)`, "i");
@@ -296,7 +452,36 @@ function ownershipGuard(source: string): boolean {
 function functionDeclarations(source: ts.SourceFile): Map<string, ts.FunctionLikeDeclaration> {
   const result = new Map<string, ts.FunctionLikeDeclaration>();
   for (const statement of source.statements) {
-    if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) result.set(statement.name.text, statement);
+    if (ts.isFunctionDeclaration(statement) && statement.body) {
+      if (statement.name) result.set(statement.name.text, statement);
+      else if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) result.set(syntheticExportLocal("default"), statement);
+    }
+    if (ts.isExportAssignment(statement)) {
+      const expression = unwrapExpression(statement.expression);
+      if (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression)) {
+        result.set(syntheticExportLocal("default"), expression);
+      }
+    }
+    if (ts.isExpressionStatement(statement) && ts.isBinaryExpression(statement.expression)
+      && statement.expression.operatorToken.kind === ts.SyntaxKind.EqualsToken) {
+      const exported = commonJsExportName(statement.expression.left);
+      const expression = unwrapExpression(statement.expression.right);
+      if (exported && (ts.isArrowFunction(expression) || ts.isFunctionExpression(expression))) {
+        result.set(syntheticExportLocal(exported), expression);
+      }
+      if (exported === "default" && ts.isObjectLiteralExpression(expression)) {
+        for (const property of expression.properties) {
+          const name = propertyName(property.name);
+          if (!name) continue;
+          if (ts.isPropertyAssignment(property)) {
+            const initializer = unwrapExpression(property.initializer);
+            if (ts.isArrowFunction(initializer) || ts.isFunctionExpression(initializer)) {
+              result.set(syntheticExportLocal(name), initializer);
+            }
+          } else if (ts.isMethodDeclaration(property)) result.set(syntheticExportLocal(name), property);
+        }
+      }
+    }
     if (!ts.isVariableStatement(statement)) continue;
     for (const declaration of statement.declarationList.declarations) {
       if (!ts.isIdentifier(declaration.name) || !declaration.initializer) continue;
@@ -307,11 +492,102 @@ function functionDeclarations(source: ts.SourceFile): Map<string, ts.FunctionLik
   return result;
 }
 
-function resolveFunction(expression: ts.Expression, declarations: Map<string, ts.FunctionLikeDeclaration>): ts.FunctionLikeDeclaration | undefined {
-  const current = unwrapExpression(expression);
-  if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) return current;
-  if (ts.isIdentifier(current)) return declarations.get(current.text);
+function parsedSourceLookup(sources: ParsedSource[]): Map<string, ParsedSource> {
+  return new Map(sources.map((parsed) => [posix.normalize(parsed.file.relativePath), parsed]));
+}
+
+function resolveModule(parsed: ParsedSource, module: string, lookup: Map<string, ParsedSource>): ParsedSource | undefined {
+  if (!module.startsWith(".")) return undefined;
+  const joined = posix.normalize(posix.join(posix.dirname(parsed.file.relativePath), module));
+  const extension = extname(joined).toLowerCase();
+  const stem = NODE_EXTENSIONS.has(extension) ? joined.slice(0, -extension.length) : joined;
+  const candidates = [joined, stem];
+  for (const candidateExtension of NODE_EXTENSIONS) {
+    candidates.push(`${stem}${candidateExtension}`);
+    candidates.push(`${stem}/index${candidateExtension}`);
+  }
+  for (const candidate of candidates) {
+    const target = lookup.get(posix.normalize(candidate));
+    if (target) return target;
+  }
   return undefined;
+}
+
+interface ResolvedSymbol {
+  parsed: ParsedSource;
+  local: string;
+}
+
+function resolveExportedSymbol(
+  parsed: ParsedSource,
+  exported: string,
+  lookup: Map<string, ParsedSource>,
+  seen = new Set<string>(),
+): ResolvedSymbol | undefined {
+  const key = `${parsed.file.relativePath}\u0000${exported}`;
+  if (seen.has(key)) return undefined;
+  seen.add(key);
+  const binding = parsed.exports.get(exported);
+  if (binding?.local) return resolveLocalSymbol(parsed, binding.local, lookup, seen);
+  if (binding?.module) {
+    const target = resolveModule(parsed, binding.module, lookup);
+    if (target) return resolveExportedSymbol(target, binding.imported ?? exported, lookup, seen);
+  }
+  for (const module of parsed.starExports) {
+    const target = resolveModule(parsed, module, lookup);
+    const resolved = target && resolveExportedSymbol(target, exported, lookup, seen);
+    if (resolved) return resolved;
+  }
+  return undefined;
+}
+
+function resolveLocalSymbol(
+  parsed: ParsedSource,
+  local: string,
+  lookup: Map<string, ParsedSource>,
+  seen = new Set<string>(),
+): ResolvedSymbol | undefined {
+  const binding = parsed.imports.get(local);
+  if (!binding) return { parsed, local };
+  const target = resolveModule(parsed, binding.module, lookup);
+  if (!target) return undefined;
+  return resolveExportedSymbol(target, binding.imported, lookup, seen);
+}
+
+function resolveExpressionSymbol(
+  parsed: ParsedSource,
+  expression: ts.Expression,
+  lookup: Map<string, ParsedSource>,
+): ResolvedSymbol | undefined {
+  const current = unwrapExpression(expression);
+  if (ts.isIdentifier(current)) return resolveLocalSymbol(parsed, current.text, lookup);
+  if (ts.isPropertyAccessExpression(current) && ts.isIdentifier(current.expression)) {
+    const namespace = parsed.imports.get(current.expression.text);
+    if (!namespace?.namespace) return undefined;
+    const target = resolveModule(parsed, namespace.module, lookup);
+    return target ? resolveExportedSymbol(target, current.name.text, lookup) : undefined;
+  }
+  if (ts.isElementAccessExpression(current) && ts.isIdentifier(current.expression)
+    && current.argumentExpression && ts.isStringLiteral(current.argumentExpression)) {
+    const namespace = parsed.imports.get(current.expression.text);
+    if (!namespace?.namespace) return undefined;
+    const target = resolveModule(parsed, namespace.module, lookup);
+    return target ? resolveExportedSymbol(target, current.argumentExpression.text, lookup) : undefined;
+  }
+  return undefined;
+}
+
+function resolveFunction(
+  parsed: ParsedSource,
+  expression: ts.Expression,
+  lookup: Map<string, ParsedSource>,
+  declarations: Map<string, Map<string, ts.FunctionLikeDeclaration>>,
+): ResolvedFunction | undefined {
+  const current = unwrapExpression(expression);
+  if (ts.isArrowFunction(current) || ts.isFunctionExpression(current)) return { declaration: current, parsed };
+  const symbol = resolveExpressionSymbol(parsed, current, lookup);
+  const declaration = symbol && declarations.get(symbol.parsed.file.relativePath)?.get(symbol.local);
+  return symbol && declaration ? { declaration, parsed: symbol.parsed } : undefined;
 }
 
 function isExpressFactoryCall(expression: ts.Expression, expressFactories: Set<string>, routerFactories: Set<string>): "app" | "router" | undefined {
@@ -320,132 +596,170 @@ function isExpressFactoryCall(expression: ts.Expression, expressFactories: Set<s
   const name = expressionName(current.expression);
   if (expressFactories.has(name)) return "app";
   if (routerFactories.has(name) || [...expressFactories].some((factory) => name === `${factory}.Router`)) return "router";
+  if (ts.isPropertyAccessExpression(current.expression) && current.expression.name.text === "Router"
+    && requireModule(current.expression.expression) === "express") return "router";
   if (ts.isCallExpression(current.expression) && ts.isIdentifier(current.expression.expression)
     && current.expression.expression.text === "require" && literalText(current.expression.arguments[0]) === "express") return "app";
   return undefined;
 }
 
-function expressRoutes(parsed: ParsedSource): { routes: NodeApiRoute[]; unresolvedHandlers: number; unresolvedMounts: number } {
-  const source = parsed.source;
-  const expressFactories = new Set<string>();
-  const routerFactories = new Set<string>();
-  for (const statement of source.statements) {
-    if (ts.isImportDeclaration(statement) && literalText(statement.moduleSpecifier) === "express") {
-      const clause = statement.importClause;
-      if (clause?.name) expressFactories.add(clause.name.text);
-      if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) expressFactories.add(clause.namedBindings.name.text);
-      if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
-        for (const element of clause.namedBindings.elements) {
-          const imported = element.propertyName?.text ?? element.name.text;
-          if (imported === "Router") routerFactories.add(element.name.text);
-        }
-      }
-    }
-    if (!ts.isVariableStatement(statement)) continue;
-    for (const declaration of statement.declarationList.declarations) {
-      if (!declaration.initializer) continue;
-      if (ts.isIdentifier(declaration.name) && ts.isCallExpression(declaration.initializer)
-        && ts.isIdentifier(declaration.initializer.expression) && declaration.initializer.expression.text === "require"
-        && literalText(declaration.initializer.arguments[0]) === "express") expressFactories.add(declaration.name.text);
-      if (ts.isObjectBindingPattern(declaration.name) && ts.isCallExpression(declaration.initializer)
-        && ts.isIdentifier(declaration.initializer.expression) && declaration.initializer.expression.text === "require"
-        && literalText(declaration.initializer.arguments[0]) === "express") {
-        for (const element of declaration.name.elements) {
-          const imported = propertyName(element.propertyName) ?? (ts.isIdentifier(element.name) ? element.name.text : "");
-          if (imported === "Router" && ts.isIdentifier(element.name)) routerFactories.add(element.name.text);
-        }
-      }
-    }
-  }
-
+function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unresolvedHandlers: number; unresolvedMounts: number } {
+  const lookup = parsedSourceLookup(sources);
+  const declarations = new Map(sources.map((parsed) => [parsed.file.relativePath, functionDeclarations(parsed.source)]));
   const receivers = new Map<string, "app" | "router">();
-  visit(source, (node) => {
-    if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name) || !node.initializer) return;
-    const kind = isExpressFactoryCall(node.initializer, expressFactories, routerFactories);
-    if (kind) receivers.set(node.name.text, kind);
-  });
+  const receiverKey = (parsed: ParsedSource, local: string): string => `${parsed.file.relativePath}\u0000${local}`;
+  for (const parsed of sources) {
+    const expressFactories = new Set<string>();
+    const routerFactories = new Set<string>();
+    for (const statement of parsed.source.statements) {
+      if (ts.isImportDeclaration(statement) && literalText(statement.moduleSpecifier) === "express") {
+        const clause = statement.importClause;
+        if (clause?.name) expressFactories.add(clause.name.text);
+        if (clause?.namedBindings && ts.isNamespaceImport(clause.namedBindings)) expressFactories.add(clause.namedBindings.name.text);
+        if (clause?.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+          for (const element of clause.namedBindings.elements) {
+            if ((element.propertyName?.text ?? element.name.text) === "Router") routerFactories.add(element.name.text);
+          }
+        }
+      }
+      if (!ts.isVariableStatement(statement)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (!declaration.initializer) continue;
+        const module = requireModule(declaration.initializer);
+        if (module === "express" && ts.isIdentifier(declaration.name)) expressFactories.add(declaration.name.text);
+        if (module === "express" && ts.isObjectBindingPattern(declaration.name)) {
+          for (const element of declaration.name.elements) {
+            const imported = propertyName(element.propertyName) ?? (ts.isIdentifier(element.name) ? element.name.text : "");
+            if (imported === "Router" && ts.isIdentifier(element.name)) routerFactories.add(element.name.text);
+          }
+        }
+      }
+    }
+    visit(parsed.source, (node) => {
+      if (!ts.isVariableDeclaration(node) || !ts.isIdentifier(node.name) || !node.initializer) return;
+      const kind = isExpressFactoryCall(node.initializer, expressFactories, routerFactories);
+      if (kind) receivers.set(receiverKey(parsed, node.name.text), kind);
+    });
+  }
   if (receivers.size === 0) return { routes: [], unresolvedHandlers: 0, unresolvedMounts: 0 };
 
-  const declarations = functionDeclarations(source);
+  const resolvedReceiver = (parsed: ParsedSource, expression: ts.Expression): string | undefined => {
+    const symbol = resolveExpressionSymbol(parsed, expression, lookup);
+    if (!symbol) return undefined;
+    const key = receiverKey(symbol.parsed, symbol.local);
+    return receivers.has(key) ? key : undefined;
+  };
+  const authenticatedExpression = (parsed: ParsedSource, expression: ts.Expression): boolean => {
+    if (AUTH_GUARD_NAME.test(expressionName(expression))) return true;
+    const resolved = resolveFunction(parsed, expression, lookup, declarations);
+    return Boolean(resolved && explicitAuthentication(resolved.declaration.getText(resolved.parsed.source)));
+  };
   const candidates: ExpressRouteCandidate[] = [];
   const middleware: ExpressMiddleware[] = [];
   const mounts: ExpressMount[] = [];
   let unresolvedHandlers = 0;
   let unresolvedMounts = 0;
-  visit(source, (node) => {
-    if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return;
-    const receiver = expressionName(node.expression.expression);
-    if (!receivers.has(receiver)) return;
-    const callName = node.expression.name.text.toLowerCase();
-    if (callName === "use") {
-      const prefix = literalText(node.arguments[0]) === undefined ? "" : normalizePath(literalText(node.arguments[0])!);
-      const start = prefix ? 1 : 0;
-      const expressions = node.arguments.slice(start);
-      const childExpression = expressions.at(-1);
-      const child = childExpression && ts.isIdentifier(unwrapExpression(childExpression)) ? (unwrapExpression(childExpression) as ts.Identifier).text : undefined;
-      const guardExpressions = child && receivers.has(child) ? expressions.slice(0, -1) : expressions;
-      const authenticated = guardExpressions.some((expression) => {
-        const resolved = resolveFunction(expression, declarations);
-        return AUTH_GUARD_NAME.test(expressionName(expression)) || Boolean(resolved && explicitAuthentication(resolved.getText(source)));
+  for (const parsed of sources) visit(parsed.source, (node) => {
+      if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return;
+      const receiver = resolvedReceiver(parsed, node.expression.expression);
+      if (!receiver) return;
+      const callName = node.expression.name.text.toLowerCase();
+      if (callName === "use") {
+        const prefixText = literalText(node.arguments[0]);
+        const prefix = prefixText === undefined ? "" : normalizePath(prefixText);
+        const expressions = node.arguments.slice(prefix ? 1 : 0);
+        const childExpression = expressions.at(-1);
+        const child = childExpression ? resolvedReceiver(parsed, childExpression) : undefined;
+        const guardExpressions = child ? expressions.slice(0, -1) : expressions;
+        const authenticated = guardExpressions.some((expression) => authenticatedExpression(parsed, expression));
+        if (child && child !== receiver) {
+          const parentLocalPath = prefix || "/";
+          mounts.push({
+            parent: receiver,
+            child,
+            sourcePath: parsed.file.relativePath,
+            offset: node.getStart(parsed.source),
+            prefix,
+            authenticated,
+          });
+          middleware.push({
+            receiver,
+            sourcePath: parsed.file.relativePath,
+            offset: node.getStart(parsed.source),
+            prefix: parentLocalPath,
+            authenticated,
+          });
+        } else {
+          middleware.push({ receiver, sourcePath: parsed.file.relativePath, offset: node.getStart(parsed.source), prefix, authenticated });
+          if (childExpression && prefix && /(?:router|routes?)/i.test(expressionName(childExpression))
+            && !authenticatedExpression(parsed, childExpression)) unresolvedMounts += 1;
+        }
+        return;
+      }
+      if (!HTTP_METHODS.has(callName) || node.arguments.length < 2) return;
+      const rawPath = literalText(node.arguments[0]);
+      if (rawPath === undefined) return;
+      const path = normalizePath(rawPath);
+      const handlerExpression = node.arguments.at(-1)!;
+      const resolvedHandler = resolveFunction(parsed, handlerExpression, lookup, declarations);
+      if (!resolvedHandler) unresolvedHandlers += 1;
+      const handler = resolvedHandler?.declaration;
+      const handlerParsed = resolvedHandler?.parsed ?? parsed;
+      const handlerSource = handler?.getText(handlerParsed.source) ?? handlerExpression.getText(parsed.source);
+      const middlewareExpressions = node.arguments.slice(1, -1);
+      const locallyAuthenticated = middlewareExpressions.some((expression) => authenticatedExpression(parsed, expression))
+        || explicitAuthentication(handlerSource);
+      const currentHandler = unwrapExpression(handlerExpression);
+      const handlerName = ts.isIdentifier(currentHandler) ? currentHandler.text
+        : ts.isPropertyAccessExpression(currentHandler) ? currentHandler.name.text
+          : handler && "name" in handler && handler.name && ts.isIdentifier(handler.name) ? handler.name.text : "anonymous";
+      candidates.push({
+        receiver,
+        parsed,
+        method: callName === "all" ? "ALL" : callName.toUpperCase(),
+        path,
+        offset: node.getStart(parsed.source),
+        handlerName,
+        handler,
+        handlerSource,
+        location: location(parsed, node),
+        locallyAuthenticated,
       });
-      middleware.push({ receiver, offset: node.getStart(source), prefix, authenticated });
-      if (child && receivers.has(child) && child !== receiver) mounts.push({ parent: receiver, child, offset: node.getStart(source), prefix, authenticated });
-      else if (childExpression && prefix && ts.isIdentifier(unwrapExpression(childExpression)) && !authenticated
-        && /(?:router|routes?)/i.test((unwrapExpression(childExpression) as ts.Identifier).text)) unresolvedMounts += 1;
-      return;
-    }
-    if (!HTTP_METHODS.has(callName) || node.arguments.length < 2) return;
-    const rawPath = literalText(node.arguments[0]);
-    if (rawPath === undefined) return;
-    const path = normalizePath(rawPath);
-    const handlerExpression = node.arguments.at(-1)!;
-    const handler = resolveFunction(handlerExpression, declarations);
-    if (!handler) unresolvedHandlers += 1;
-    const middlewareExpressions = node.arguments.slice(1, -1);
-    const handlerSource = handler?.getText(source) ?? handlerExpression.getText(source);
-    const locallyAuthenticated = middlewareExpressions.some((expression) => {
-      const resolved = resolveFunction(expression, declarations);
-      return AUTH_GUARD_NAME.test(expressionName(expression)) || Boolean(resolved && explicitAuthentication(resolved.getText(source)));
-    }) || explicitAuthentication(handlerSource);
-    const handlerName = ts.isIdentifier(unwrapExpression(handlerExpression))
-      ? (unwrapExpression(handlerExpression) as ts.Identifier).text
-      : ts.isPropertyAccessExpression(unwrapExpression(handlerExpression))
-        ? expressionName(unwrapExpression(handlerExpression)).split(".").pop() ?? "anonymous"
-        : handler && "name" in handler && handler.name && ts.isIdentifier(handler.name) ? handler.name.text : "anonymous";
-    candidates.push({
-      receiver,
-      method: callName === "all" ? "ALL" : callName.toUpperCase(),
-      path,
-      offset: node.getStart(source),
-      handlerName,
-      handler,
-      handlerSource,
-      location: location(parsed, node),
-      locallyAuthenticated,
     });
-  });
 
-  const protectedByMiddleware = (receiver: string, path: string, before: number): boolean => middleware.some((item) => item.receiver === receiver
-    && item.authenticated && item.offset < before && (!item.prefix || path === item.prefix || path.startsWith(`${item.prefix}/`)));
+  const protectedByMiddleware = (receiver: string, path: string, before: number, sourcePath: string): boolean => middleware.some((item) => item.receiver === receiver
+    && item.sourcePath === sourcePath && item.authenticated && item.offset < before
+    && (!item.prefix || path === item.prefix || path.startsWith(`${item.prefix}/`)));
+  interface RouteVariant { path: string; inheritedAuthentication: boolean }
+  const routeVariants = (receiver: string, path: string, seen = new Set<string>()): RouteVariant[] => {
+    if (seen.has(receiver)) return [{ path, inheritedAuthentication: false }];
+    const incoming = mounts.filter((mount) => mount.child === receiver);
+    if (incoming.length === 0) return [{ path, inheritedAuthentication: false }];
+    const nextSeen = new Set(seen).add(receiver);
+    return incoming.flatMap((mount) => {
+      const mountedPath = joinPath(mount.prefix, path);
+      const mountAuthentication = mount.authenticated
+        || protectedByMiddleware(mount.parent, mount.prefix || "/", mount.offset, mount.sourcePath);
+      return routeVariants(mount.parent, mountedPath, nextSeen).map((parent) => ({
+        path: parent.path,
+        inheritedAuthentication: mountAuthentication || parent.inheritedAuthentication,
+      }));
+    });
+  };
   const routes: NodeApiRoute[] = [];
   for (const candidate of candidates) {
-    const matchingMounts = mounts.filter((mount) => mount.child === candidate.receiver);
-    const routeVariants = matchingMounts.length > 0 ? matchingMounts.map((mount) => ({
-      path: joinPath(mount.prefix, candidate.path),
-      inheritedAuthentication: mount.authenticated || protectedByMiddleware(mount.parent, joinPath(mount.prefix, candidate.path), mount.offset),
-    })) : [{ path: candidate.path, inheritedAuthentication: false }];
-    for (const variant of routeVariants) {
+    for (const variant of routeVariants(candidate.receiver, candidate.path)) {
       const fields = objectIdFields(candidate.handler, variant.path, new Set(), new Set());
       routes.push({
         framework: "Express",
         method: candidate.method,
         path: variant.path,
-        sourcePath: parsed.file.relativePath,
+        sourcePath: candidate.parsed.file.relativePath,
         handlerName: candidate.handlerName,
         handlerSource: candidate.handlerSource,
         location: candidate.location,
         authenticationProtected: candidate.locallyAuthenticated || variant.inheritedAuthentication
-          || protectedByMiddleware(candidate.receiver, candidate.path, candidate.offset),
+          || protectedByMiddleware(candidate.receiver, candidate.path, candidate.offset, candidate.parsed.file.relativePath),
         ownershipProtected: ownershipGuard(candidate.handlerSource),
         objectOperation: hasObjectOperation(candidate.handler, fields),
         objectIdFields: fields,
@@ -456,21 +770,128 @@ function expressRoutes(parsed: ParsedSource): { routes: NodeApiRoute[]; unresolv
   return { routes, unresolvedHandlers, unresolvedMounts };
 }
 
-function hasGlobalNestGuard(sources: ParsedSource[]): boolean {
+interface NestSecuritySemantics {
+  authenticationGuards: Set<string>;
+  ownershipGuards: Set<string>;
+  authenticationDecorators: Set<string>;
+  ownershipDecorators: Set<string>;
+}
+
+function semanticExpression(
+  parsed: ParsedSource,
+  expression: ts.Expression,
+  names: Set<string>,
+  lookup: Map<string, ParsedSource>,
+): boolean {
+  let current = unwrapExpression(expression);
+  if (ts.isNewExpression(current) || ts.isCallExpression(current)) current = current.expression;
+  const name = expressionName(current).split(".").pop() ?? "";
+  if (names.has(name)) return true;
+  const symbol = resolveExpressionSymbol(parsed, current, lookup);
+  return Boolean(symbol && names.has(symbol.local));
+}
+
+function guardAuthentication(source: string): boolean {
+  if (explicitAuthentication(source)) return true;
+  const identity = /(?:request|req|ctx|context)\s*(?:\?\.)?\.\s*(?:user|auth|session)|\b(?:principal|identity|currentUser|authenticatedUser)\b/i;
+  const decision = /(?:UnauthorizedException|AuthenticationError|NotAuthenticated|status\s*\(\s*401|isAuthenticated\s*\(|jwt\w*\s*\.\s*verify|verifyAsync\s*\(|verifyToken\s*\(|authorization[\s\S]{0,100}bearer|return\s+(?:Boolean\s*\(|!!\s*)?(?:request|req|ctx|context)\s*(?:\?\.)?\.\s*(?:user|auth|session))/i;
+  return identity.test(source) && decision.test(source);
+}
+
+function discoverNestSecurity(sources: ParsedSource[], lookup: Map<string, ParsedSource>): NestSecuritySemantics {
+  const semantics: NestSecuritySemantics = {
+    authenticationGuards: new Set(),
+    ownershipGuards: new Set(),
+    authenticationDecorators: new Set(),
+    ownershipDecorators: new Set(),
+  };
+  for (const parsed of sources) {
+    for (const statement of parsed.source.statements) {
+      if (!ts.isClassDeclaration(statement) || !statement.name) continue;
+      const source = statement.getText(parsed.source);
+      const canActivate = statement.members.some((member) => ts.isMethodDeclaration(member)
+        && propertyName(member.name) === "canActivate");
+      const inheritedAuthGuard = statement.heritageClauses?.some((clause) => /\bAuthGuard\s*\(/.test(clause.getText(parsed.source))) ?? false;
+      if (!canActivate && !inheritedAuthGuard) continue;
+      const ownership = ownershipGuard(source)
+        || (NEST_OWNERSHIP_GUARD_HINT.test(source) && /(?:ForbiddenException|AccessDenied|status\s*\(\s*403|canActivate[\s\S]{0,500}return)/i.test(source));
+      const authentication = inheritedAuthGuard || guardAuthentication(source) || ownership;
+      if (authentication) semantics.authenticationGuards.add(statement.name.text);
+      if (ownership) semantics.ownershipGuards.add(statement.name.text);
+    }
+  }
+
+  const declarations = sources.flatMap((parsed) => [...functionDeclarations(parsed.source)].map(([name, declaration]) => ({
+    parsed,
+    name,
+    declaration,
+  })));
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const item of declarations) {
+      let authentication = false;
+      let ownership = false;
+      visit(item.declaration, (node) => {
+        if (!ts.isCallExpression(node)) return;
+        const callName = expressionName(node.expression).split(".").pop() ?? "";
+        if (/^(?:Auth|Authenticated|RequireAuth|Roles?|Permissions?|Policies|Authorize)$/i.test(callName)
+          || semanticExpression(item.parsed, node.expression, semantics.authenticationDecorators, lookup)) authentication = true;
+        if (/^(?:Roles?|Permissions?|Policies|CheckPolicies|Authorize|RequireOwner|RequireAccess)$/i.test(callName)
+          || semanticExpression(item.parsed, node.expression, semantics.ownershipDecorators, lookup)) ownership = true;
+        if (callName === "UseGuards") {
+          if (node.arguments.some((argument) => {
+            const symbol = resolveExpressionSymbol(item.parsed, argument, lookup);
+            const known = symbol && (semantics.authenticationGuards.has(symbol.local) || semantics.ownershipGuards.has(symbol.local));
+            return semanticExpression(item.parsed, argument, semantics.authenticationGuards, lookup)
+              || (!known && NEST_AUTH_GUARD_HINT.test(argument.getText(item.parsed.source)));
+          })) authentication = true;
+          if (node.arguments.some((argument) => {
+            const symbol = resolveExpressionSymbol(item.parsed, argument, lookup);
+            const known = symbol && (semantics.authenticationGuards.has(symbol.local) || semantics.ownershipGuards.has(symbol.local));
+            return semanticExpression(item.parsed, argument, semantics.ownershipGuards, lookup)
+              || (!known && NEST_OWNERSHIP_GUARD_HINT.test(argument.getText(item.parsed.source)));
+          })) ownership = true;
+        }
+        if (callName === "SetMetadata") {
+          const key = literalText(node.arguments[0]) ?? "";
+          if (/^(?:roles?|permissions?|policies|abilities|ownership|tenant)$/i.test(key)) ownership = true;
+        }
+      });
+      if (ownership) authentication = true;
+      if (authentication && !semantics.authenticationDecorators.has(item.name)) {
+        semantics.authenticationDecorators.add(item.name);
+        changed = true;
+      }
+      if (ownership && !semantics.ownershipDecorators.has(item.name)) {
+        semantics.ownershipDecorators.add(item.name);
+        changed = true;
+      }
+    }
+  }
+  return semantics;
+}
+
+function hasGlobalNestGuard(
+  sources: ParsedSource[],
+  semantics: NestSecuritySemantics,
+  lookup: Map<string, ParsedSource>,
+): boolean {
   let found = false;
   for (const parsed of sources) {
     visit(parsed.source, (node) => {
       if (found) return;
-      const guardName = /(?:auth|jwt|session|identity|user|role|permission|policy|ability|access|owner|admin)/i;
       if (ts.isCallExpression(node) && /(?:^|\.)useGlobalGuards$/.test(expressionName(node.expression))
-        && node.arguments.some((argument) => guardName.test(argument.getText(parsed.source)))) found = true;
+        && node.arguments.some((argument) => semanticExpression(parsed, argument, semantics.authenticationGuards, lookup)
+          || NEST_AUTH_GUARD_HINT.test(argument.getText(parsed.source)))) found = true;
       if (ts.isObjectLiteralExpression(node)) {
         const properties = new Map(node.properties.filter(ts.isPropertyAssignment)
           .map((property) => [propertyName(property.name), property.initializer]));
         const provide = properties.get("provide");
         const implementation = properties.get("useClass") ?? properties.get("useExisting") ?? properties.get("useValue");
         if (provide && ts.isIdentifier(unwrapExpression(provide)) && (unwrapExpression(provide) as ts.Identifier).text === "APP_GUARD"
-          && implementation && guardName.test(implementation.getText(parsed.source))) found = true;
+          && implementation && (semanticExpression(parsed, implementation, semantics.authenticationGuards, lookup)
+            || NEST_AUTH_GUARD_HINT.test(implementation.getText(parsed.source)))) found = true;
       }
     });
     if (found) break;
@@ -478,18 +899,34 @@ function hasGlobalNestGuard(sources: ParsedSource[]): boolean {
   return found;
 }
 
-function nestDecoratorAuthentication(values: Array<{ name: string; arguments: readonly ts.Expression[] }>, source: ts.SourceFile): boolean {
+function nestDecoratorAuthentication(
+  values: Array<{ name: string; arguments: readonly ts.Expression[] }>,
+  parsed: ParsedSource,
+  semantics: NestSecuritySemantics,
+  lookup: Map<string, ParsedSource>,
+): boolean {
   return values.some((item) => {
     if (/^(?:Auth|Authenticated|RequireAuth|Roles?|Permissions?|Policies|Authorize)$/i.test(item.name)) return true;
-    return item.name === "UseGuards" && item.arguments.some((argument) => /(?:auth|jwt|session|identity|user|role|permission|policy|ability|access|owner|admin)/i.test(argument.getText(source)));
+    const local = resolveLocalSymbol(parsed, item.name, lookup);
+    if (semantics.authenticationDecorators.has(item.name) || (local && semantics.authenticationDecorators.has(local.local))) return true;
+    return item.name === "UseGuards" && item.arguments.some((argument) => semanticExpression(parsed, argument, semantics.authenticationGuards, lookup)
+      || NEST_AUTH_GUARD_HINT.test(argument.getText(parsed.source)));
   });
 }
 
-function nestDecoratorOwnership(values: Array<{ name: string; arguments: readonly ts.Expression[] }>, source: ts.SourceFile): boolean {
+function nestDecoratorOwnership(
+  values: Array<{ name: string; arguments: readonly ts.Expression[] }>,
+  parsed: ParsedSource,
+  semantics: NestSecuritySemantics,
+  lookup: Map<string, ParsedSource>,
+): boolean {
   return values.some((item) => {
     if (/^(?:Roles?|Permissions?|Policies|CheckPolicies|Authorize|RequireOwner|RequireAccess)$/i.test(item.name)) return true;
+    const local = resolveLocalSymbol(parsed, item.name, lookup);
+    if (semantics.ownershipDecorators.has(item.name) || (local && semantics.ownershipDecorators.has(local.local))) return true;
     return item.name === "UseGuards"
-      && item.arguments.some((argument) => /(?:owner|ownership|tenant|role|permission|policy|ability|access|admin)/i.test(argument.getText(source)));
+      && item.arguments.some((argument) => semanticExpression(parsed, argument, semantics.ownershipGuards, lookup)
+        || NEST_OWNERSHIP_GUARD_HINT.test(argument.getText(parsed.source)));
   });
 }
 
@@ -511,7 +948,12 @@ function nestInputDetails(method: ts.MethodDeclaration): { roots: Set<string>; f
   return { roots, fields };
 }
 
-function nestRoutes(parsed: ParsedSource, globalGuard: boolean): NodeApiRoute[] {
+function nestRoutes(
+  parsed: ParsedSource,
+  globalGuard: boolean,
+  semantics: NestSecuritySemantics,
+  lookup: Map<string, ParsedSource>,
+): NodeApiRoute[] {
   const routes: NodeApiRoute[] = [];
   for (const statement of parsed.source.statements) {
     if (!ts.isClassDeclaration(statement)) continue;
@@ -519,15 +961,15 @@ function nestRoutes(parsed: ParsedSource, globalGuard: boolean): NodeApiRoute[] 
     const controller = classDecorators.find((item) => item.name === "Controller");
     if (!controller) continue;
     const prefix = normalizePath(literalText(controller.arguments[0]) ?? "");
-    const classAuthenticated = nestDecoratorAuthentication(classDecorators, parsed.source);
-    const classOwnership = nestDecoratorOwnership(classDecorators, parsed.source);
+    const classAuthenticated = nestDecoratorAuthentication(classDecorators, parsed, semantics, lookup);
+    const classOwnership = nestDecoratorOwnership(classDecorators, parsed, semantics, lookup);
     for (const member of statement.members) {
       if (!ts.isMethodDeclaration(member) || !member.body) continue;
       const methodDecorators = decorators(member).map(decoratorDetails);
       const routeDecorators = methodDecorators.filter((item) => /^(?:Get|Post|Put|Patch|Delete|Options|Head|All)$/.test(item.name));
       if (routeDecorators.length === 0) continue;
       const isPublic = methodDecorators.some((item) => /^(?:Public|AllowAnonymous)$/.test(item.name));
-      const methodAuthenticated = nestDecoratorAuthentication(methodDecorators, parsed.source);
+      const methodAuthenticated = nestDecoratorAuthentication(methodDecorators, parsed, semantics, lookup);
       const source = member.getText(parsed.source);
       const inputs = nestInputDetails(member);
       for (const routeDecorator of routeDecorators) {
@@ -542,7 +984,7 @@ function nestRoutes(parsed: ParsedSource, globalGuard: boolean): NodeApiRoute[] 
           handlerSource: source,
           location: location(parsed, member),
           authenticationProtected: methodAuthenticated || (!isPublic && (classAuthenticated || globalGuard)) || explicitAuthentication(source),
-          ownershipProtected: classOwnership || nestDecoratorOwnership(methodDecorators, parsed.source) || ownershipGuard(source),
+          ownershipProtected: classOwnership || nestDecoratorOwnership(methodDecorators, parsed, semantics, lookup) || ownershipGuard(source),
           objectOperation: hasObjectOperation(member, fields),
           objectIdFields: fields,
           responseOwnerFields: responseOwnerFields(member),
@@ -566,7 +1008,8 @@ export function analyzeNodeApi(files: ProjectFile[]): NodeApiAnalysis {
     const source = ts.createSourceFile(file.relativePath, file.content, ts.ScriptTarget.Latest, true, scriptKind(file.relativePath));
     const diagnostics = (source as ts.SourceFile & { parseDiagnostics?: readonly ts.Diagnostic[] }).parseDiagnostics ?? [];
     if (diagnostics.length > 0) filesWithParseErrors += 1;
-    parsed.push({ file, source, modules: moduleNames(source) });
+    const bindings = moduleBindings(source);
+    parsed.push({ file, source, modules: moduleNames(source), ...bindings });
   }
   const detectedExpress = packages.has("express") || parsed.some((item) => item.modules.has("express"));
   const detectedNest = packages.has("@nestjs/core") || packages.has("@nestjs/common")
@@ -575,16 +1018,16 @@ export function analyzeNodeApi(files: ProjectFile[]): NodeApiAnalysis {
   let unresolvedHandlers = 0;
   let unresolvedMounts = 0;
   if (detectedExpress) {
-    for (const item of parsed.filter((candidate) => candidate.modules.has("express"))) {
-      const result = expressRoutes(item);
-      routes.push(...result.routes);
-      unresolvedHandlers += result.unresolvedHandlers;
-      unresolvedMounts += result.unresolvedMounts;
-    }
+    const result = expressRoutes(parsed);
+    routes.push(...result.routes);
+    unresolvedHandlers += result.unresolvedHandlers;
+    unresolvedMounts += result.unresolvedMounts;
   }
   if (detectedNest) {
-    const globalGuard = hasGlobalNestGuard(parsed);
-    for (const item of parsed) routes.push(...nestRoutes(item, globalGuard));
+    const lookup = parsedSourceLookup(parsed);
+    const semantics = discoverNestSecurity(parsed, lookup);
+    const globalGuard = hasGlobalNestGuard(parsed, semantics, lookup);
+    for (const item of parsed) routes.push(...nestRoutes(item, globalGuard, semantics, lookup));
   }
   const deduplicated = [...new Map(routes.map((route) => [routeKey(route), route])).values()]
     .sort((left, right) => left.path.localeCompare(right.path) || left.method.localeCompare(right.method));

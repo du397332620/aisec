@@ -1,13 +1,15 @@
-import { Body, Controller, Post, Req, UseGuards } from "@nestjs/common";
+import { Body, Controller, Post, Req } from "@nestjs/common";
+import { LoggedIn, TenantAccess } from "./security/nest-security.js";
 
 @Controller("reports")
-@UseGuards(JwtAuthGuard)
+@LoggedIn()
 export class ReportsController {
   @Post("admin/export")
   exportReports() {
     return { queued: true };
   }
 
+  @TenantAccess()
   @Post("detail")
   async reportDetail(@Body() request: ReportDetailRequest, @Req() req: any) {
     const report = await this.reports.findOne({

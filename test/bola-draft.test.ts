@@ -61,7 +61,7 @@ test("BOLA draft consumes Express and NestJS object-authorization evidence", asy
   });
   const draft = createBolaDraftPlan(report);
   assert.deepEqual(draft.summary, { total: 2, readCandidates: 2, mutationExcluded: 0, manualReview: 0 });
-  const express = draft.candidates.find((candidate) => candidate.path === "/document/detail");
+  const express = draft.candidates.find((candidate) => candidate.path === "/api/document/detail");
   assert.equal(express?.source.ruleId, "express.authorization.object-without-ownership-check");
   assert.deepEqual(express?.ownerIdentityFieldCandidates, ["user_id"]);
   assert.deepEqual(express?.requestTemplate?.body, { document_id: "<SET_PRECREATED_OWNER_DOCUMENT_ID>" });

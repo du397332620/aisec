@@ -179,7 +179,7 @@ test("Express and NestJS analysis resolves routes and reports authentication and
   });
   assert.ok(report.profile.frameworks.includes("Express"));
   assert.ok(report.profile.frameworks.includes("NestJS"));
-  assert.ok(report.profile.routes.includes("POST /document/detail"));
+  assert.ok(report.profile.routes.includes("POST /api/document/detail"));
   assert.ok(report.profile.routes.includes("POST /reports/detail"));
   const rules = new Set(report.signals.map((signal) => signal.ruleId));
   assert.ok(rules.has("express.auth.sensitive-route-without-guard"));
@@ -187,6 +187,7 @@ test("Express and NestJS analysis resolves routes and reports authentication and
   assert.ok(rules.has("nestjs.auth.sensitive-route-without-guard"));
   assert.ok(rules.has("nestjs.authorization.object-without-ownership-check"));
   const expressBola = report.signals.find((signal) => signal.ruleId === "express.authorization.object-without-ownership-check");
+  assert.equal(expressBola?.metadata?.route, "POST /api/document/detail");
   assert.deepEqual(expressBola?.metadata?.objectIdFields, ["document_id"]);
   assert.deepEqual(expressBola?.metadata?.ownerIdentityFields, ["user_id"]);
   const nestBola = report.signals.find((signal) => signal.ruleId === "nestjs.authorization.object-without-ownership-check");
@@ -200,7 +201,55 @@ test("Express and NestJS analysis accepts visible authentication and ownership c
     nativeOnly: true,
     persist: false,
   });
+  assert.ok(report.profile.routes.includes("POST /api/document/detail"));
   assert.ok(!report.signals.some((signal) => /^(?:express|nestjs)\.(?:auth|authorization)\./.test(signal.ruleId)));
+});
+
+test("Express analysis resolves CommonJS routers through nested mounts and namespace handlers", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-commonjs-"));
+  try {
+    await mkdir(join(temporary, "routes"));
+    await mkdir(join(temporary, "handlers"));
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "app.cjs"), `
+const express = require("express");
+const apiRouter = require("./routes/api");
+const app = express();
+app.use("/v1", apiRouter);
+app.get("/v1/admin/status", (_req, res) => res.json({ ok: true }));
+`);
+    await writeFile(join(temporary, "routes", "api.cjs"), `
+const { Router } = require("express");
+const reportRouter = require("./reports");
+const router = Router();
+router.use("/reports", reportRouter);
+module.exports = router;
+`);
+    await writeFile(join(temporary, "routes", "reports.cjs"), `
+const { Router } = require("express");
+const handlers = require("../handlers/reports");
+const router = Router();
+router.get("/:reportId", handlers.readReport);
+module.exports = router;
+`);
+    await writeFile(join(temporary, "handlers", "reports.cjs"), `
+exports.readReport = async function readReport(req, res) {
+  const report = await db.reports.findById(req.params.reportId);
+  return res.json({ id: report.id, tenantId: report.tenantId });
+};
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /v1/reports/:reportId"));
+    assert.ok(report.profile.routes.includes("GET /v1/admin/status"));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "express.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "GET /v1/reports/:reportId"));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "express.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "GET /v1/admin/status"));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.doesNotMatch(coverage?.reason ?? "", /handler reference/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
 });
 
 test("Node API analysis ignores disabled route text and unresolved Nest APP_GUARD tokens", async () => {

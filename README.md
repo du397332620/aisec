@@ -34,6 +34,13 @@ access tokens and production Compose publication of unguarded services are
 covered by focused configuration rules. These are lexical, bounded checks—not
 a complete Python semantic analysis or proof of exploitability.
 
+Express coverage resolves common ESM and CommonJS relative imports, nested
+`Router` mounts, external middleware and external route handlers. NestJS
+coverage recognizes common `CanActivate` guard implementations and composed
+decorator factories such as `applyDecorators(UseGuards(...))`. Package aliases,
+dynamic route registration, dependency-injected policy wrappers and external
+authorization engines remain partial static coverage and require review.
+
 Other ecosystems receive baseline coverage when optional Opengrep, Gitleaks and
 Trivy engines are installed. A report explicitly records `complete`, `partial`,
 `not_run` or `failed` for every expected coverage domain.
@@ -264,7 +271,7 @@ binaries and prepare the Trivy database before scanning.
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; some findings are explicitly `inferred` and require review |
 | FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
-| Express/NestJS authentication and object authorization | Native TypeScript analyzer | Resolves local Express routes/middleware/router mounts and NestJS controllers/guards; missing authentication or object ownership/role checks are inferred and require review |
+| Express/NestJS authentication and object authorization | Native TypeScript analyzer | Resolves relative-module Express Router mounts, external handlers and middleware plus NestJS controllers, custom guards and composed decorators; dynamic registrations, package aliases and external policy engines still require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |
