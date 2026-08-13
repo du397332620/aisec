@@ -4,6 +4,7 @@ import type { AssetGraph, AssetNode, ProjectProfile } from "../schema.js";
 import type { FileInventory, ProjectFile } from "./files.js";
 import { sha256, stableId, unique } from "./utils.js";
 import { analyzeFastApi } from "../api/fastapi.js";
+import { analyzeNodeApi } from "../api/node.js";
 
 type PackageJson = {
   dependencies?: Record<string, string>;
@@ -61,6 +62,7 @@ export async function inspectProject(
 ): Promise<ProjectProfile> {
   const dependencies = packages(inventory.files);
   const fastApi = analyzeFastApi(inventory.files);
+  const nodeApi = analyzeNodeApi(inventory.files);
   const languages = unique(inventory.files
     .map((file) => LANGUAGE_BY_EXTENSION[extname(file.relativePath).toLowerCase()])
     .filter((value): value is string => Boolean(value))).sort();
@@ -123,6 +125,8 @@ export async function inspectProject(
     frameworks: unique([
       ...inferFrameworks(dependencies, inventory.files),
       ...(fastApi.detected ? ["FastAPI"] : []),
+      ...(nodeApi.detectedExpress ? ["Express"] : []),
+      ...(nodeApi.detectedNest ? ["NestJS"] : []),
     ]),
     packageManagers,
     baas,
@@ -133,6 +137,7 @@ export async function inspectProject(
     routes: unique([
       ...inferRoutes(inventory.files),
       ...fastApi.routes.map((route) => `${route.method} ${route.path}`),
+      ...nodeApi.routes.map((route) => `${route.method} ${route.path}`),
     ]).sort(),
     fileCount: inventory.files.length,
     skippedFiles: inventory.skippedFiles,

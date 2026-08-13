@@ -171,6 +171,73 @@ def live_detail(request: DetailRequest, db=Depends(get_db)):
   }
 });
 
+test("Express and NestJS analysis resolves routes and reports authentication and object-authorization gaps", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "node-api", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  assert.ok(report.profile.frameworks.includes("Express"));
+  assert.ok(report.profile.frameworks.includes("NestJS"));
+  assert.ok(report.profile.routes.includes("POST /document/detail"));
+  assert.ok(report.profile.routes.includes("POST /reports/detail"));
+  const rules = new Set(report.signals.map((signal) => signal.ruleId));
+  assert.ok(rules.has("express.auth.sensitive-route-without-guard"));
+  assert.ok(rules.has("express.authorization.object-without-ownership-check"));
+  assert.ok(rules.has("nestjs.auth.sensitive-route-without-guard"));
+  assert.ok(rules.has("nestjs.authorization.object-without-ownership-check"));
+  const expressBola = report.signals.find((signal) => signal.ruleId === "express.authorization.object-without-ownership-check");
+  assert.deepEqual(expressBola?.metadata?.objectIdFields, ["document_id"]);
+  assert.deepEqual(expressBola?.metadata?.ownerIdentityFields, ["user_id"]);
+  const nestBola = report.signals.find((signal) => signal.ruleId === "nestjs.authorization.object-without-ownership-check");
+  assert.deepEqual(nestBola?.metadata?.objectIdFields, ["report_id"]);
+  assert.deepEqual(nestBola?.metadata?.ownerIdentityFields, ["tenantId"]);
+});
+
+test("Express and NestJS analysis accepts visible authentication and ownership constraints", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "node-api", "near-miss"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  assert.ok(!report.signals.some((signal) => /^(?:express|nestjs)\.(?:auth|authorization)\./.test(signal.ruleId)));
+});
+
+test("Node API analysis ignores disabled route text and unresolved Nest APP_GUARD tokens", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-disabled-route-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0", "@nestjs/common": "11.1.6" } }));
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+const app = express();
+// app.post("/admin/commented", (_req, res) => res.json({ ok: true }));
+const disabled = 'app.post("/admin/string", handler)';
+app.get("/health", (_req, res) => res.json({ ok: true }));
+app.post("/admin/audit", (req, res) => {
+  console.log(req.user?.id);
+  if (!req.query.format) return res.status(400).json({ error: "format required" });
+  return res.json({ ok: true });
+});
+`);
+    await writeFile(join(temporary, "reports.controller.ts"), `
+import { Controller, Get } from "@nestjs/common";
+const incompleteProvider = { provide: APP_GUARD };
+@Controller("admin")
+class AdminController {
+  @Get("reports")
+  reports() { return []; }
+}
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(!report.profile.routes.some((route) => /commented|string/.test(route)));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "express.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "POST /admin/audit"));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("Python API dataflow detects URL, file, SQL, and model credential destination flows", async () => {
   const { report } = await scanProject(join(fixtures, "corpus", "python-dataflow", "positive"), {
     profile: "native",

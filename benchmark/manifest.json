@@ -24,6 +24,10 @@
     { "ruleId": "fastapi.auth.whitelisted-sensitive-route", "category": "api-security", "evidenceLevel": "static_confirmed" },
     { "ruleId": "fastapi.auth.sensitive-route-without-guard", "category": "api-security", "evidenceLevel": "inferred" },
     { "ruleId": "fastapi.authorization.object-without-ownership-check", "category": "api-security", "evidenceLevel": "inferred" },
+    { "ruleId": "express.auth.sensitive-route-without-guard", "category": "api-security", "evidenceLevel": "inferred" },
+    { "ruleId": "express.authorization.object-without-ownership-check", "category": "api-security", "evidenceLevel": "inferred" },
+    { "ruleId": "nestjs.auth.sensitive-route-without-guard", "category": "api-security", "evidenceLevel": "inferred" },
+    { "ruleId": "nestjs.authorization.object-without-ownership-check", "category": "api-security", "evidenceLevel": "inferred" },
     { "ruleId": "python.dataflow.ssrf", "category": "api-security", "evidenceLevel": "static_confirmed" },
     { "ruleId": "python.dataflow.untrusted-file-path", "category": "api-security", "evidenceLevel": "static_confirmed" },
     { "ruleId": "python.dataflow.sql-injection", "category": "api-security", "evidenceLevel": "static_confirmed" },
@@ -185,6 +189,33 @@
       "expectedRuleIds": [],
       "nearMissRuleIds": [
         "fastapi.authorization.object-without-ownership-check"
+      ]
+    },
+    {
+      "id": "node-api-positive",
+      "category": "api-security",
+      "framework": "Express/NestJS",
+      "variant": "positive",
+      "path": "test/fixtures/corpus/node-api/positive",
+      "expectedRuleIds": [
+        "express.auth.sensitive-route-without-guard",
+        "express.authorization.object-without-ownership-check",
+        "nestjs.auth.sensitive-route-without-guard",
+        "nestjs.authorization.object-without-ownership-check"
+      ]
+    },
+    {
+      "id": "node-api-near-miss",
+      "category": "api-security",
+      "framework": "Express/NestJS",
+      "variant": "near_miss",
+      "path": "test/fixtures/corpus/node-api/near-miss",
+      "expectedRuleIds": [],
+      "nearMissRuleIds": [
+        "express.auth.sensitive-route-without-guard",
+        "express.authorization.object-without-ownership-check",
+        "nestjs.auth.sensitive-route-without-guard",
+        "nestjs.authorization.object-without-ownership-check"
       ]
     },
     {

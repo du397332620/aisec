@@ -125,7 +125,7 @@
           "type": "array",
           "maxItems": 20,
           "uniqueItems": true,
-          "items": { "type": "string", "pattern": "^(?:owner_id|user_id|tenant_id|creator_id|created_by|account_id|organization_id|org_id)$" }
+          "items": { "type": "string", "pattern": "^(?:owner_id|user_id|tenant_id|creator_id|created_by|account_id|organization_id|org_id|ownerId|userId|tenantId|creatorId|createdBy|accountId|organizationId|orgId)$" }
         },
         "evidenceSuggestionReason": { "type": "string", "minLength": 1, "maxLength": 500 },
         "source": { "$ref": "#/$defs/source" },

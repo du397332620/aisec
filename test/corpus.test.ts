@@ -10,22 +10,22 @@ const repositoryRoot = join(here, "..", "..");
 
 test("the public corpus gives every native Beta rule a positive and near-miss with the expected evidence level", async () => {
   const result = await runBenchmark();
-  assert.deepEqual(result.catalog, { totalRules: 43, rulesWithPositive: 43, rulesWithNearMiss: 43 });
-  assert.equal(result.totals.truePositive, 44);
+  assert.deepEqual(result.catalog, { totalRules: 47, rulesWithPositive: 47, rulesWithNearMiss: 47 });
+  assert.equal(result.totals.truePositive, 48);
   assert.equal(result.totals.falsePositive, 0);
   assert.equal(result.totals.falseNegative, 0);
   assert.equal(result.totals.evidenceMismatches, 0);
   assert.equal(benchmarkSucceeded(result), true);
   assert.ok(Object.values(result.categories).every((category) => category.falsePositive === 0
     && category.falseNegative === 0 && category.evidenceMismatches === 0));
-  assert.equal(result.cases.filter((item) => item.variant === "positive").length, 15);
-  assert.equal(result.cases.filter((item) => item.variant === "near_miss").length, 15);
+  assert.equal(result.cases.filter((item) => item.variant === "positive").length, 16);
+  assert.equal(result.cases.filter((item) => item.variant === "near_miss").length, 16);
 });
 
 test("the corpus catalog cannot drift from rule ids declared by native detectors", async () => {
   const detectorFiles = [
     "app-config.ts", "artifacts.ts", "baas.ts", "platform.ts", "python-api-auth.ts",
-    "python-api-authorization.ts", "python-api-config.ts", "python-dataflow.ts", "secrets.ts", "typescript-dataflow.ts",
+    "node-api-security.ts", "python-api-authorization.ts", "python-api-config.ts", "python-dataflow.ts", "secrets.ts", "typescript-dataflow.ts",
   ];
   const declared = new Set<string>();
   for (const filename of detectorFiles) {

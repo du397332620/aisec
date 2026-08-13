@@ -14,6 +14,7 @@ Depth is intentionally concentrated in:
 
 - JavaScript/TypeScript, Next.js, React and Node.js
 - Python/FastAPI route, authentication, object-authorization and focused data-flow analysis
+- Express/NestJS route, authentication-boundary and object-authorization analysis
 - Supabase and Firebase authorization configuration
 - React Native and common Android/iOS source configuration
 - APK/IPA recovery of embedded secrets, cleartext URLs and selected metadata
@@ -263,6 +264,7 @@ binaries and prepare the Trivy database before scanning.
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; some findings are explicitly `inferred` and require review |
 | FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
+| Express/NestJS authentication and object authorization | Native TypeScript analyzer | Resolves local Express routes/middleware/router mounts and NestJS controllers/guards; missing authentication or object ownership/role checks are inferred and require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |
@@ -329,9 +331,9 @@ aisec draft-bola \
 tagged `bola` or `idor`, preserves the originating rule and source location,
 and classifies each route as `read_candidate`, `mutation_excluded`, or
 `manual_review`. A read candidate contains placeholders for a pre-created owner
-object ID and an object-evidence mode. When a FastAPI `response_model` or
-explicit `responses=` example exposes a distinct `user_id`, `owner_id`,
-`tenant_id`, or another recognized ownership field, the worksheet suggests
+object ID and an object-evidence mode. When a supported response model/example
+or explicit JavaScript/TypeScript response object exposes a distinct `user_id`,
+`owner_id`, `tenant_id`, camel-case equivalent, or another recognized ownership field, the worksheet suggests
 `ownerIdentity` and lists the candidate field; otherwise it retains the
 primitive synthetic-marker template. The suggested JSON path remains a
 non-executable review placeholder because static
@@ -496,10 +498,10 @@ npm run test:release
 npm run test:engines
 ```
 
-The public synthetic corpus contains 30 isolated cases: 15 positive/near-miss
-pairs covering all 43 deterministic native Beta rules across secrets, data
+The public synthetic corpus contains 32 isolated cases: 16 positive/near-miss
+pairs covering all 47 deterministic native Beta rules across secrets, data
 flow, application configuration, FastAPI authentication and object
-authorization, Python API data flow/configuration, BaaS, mobile source and
+authorization, Express/NestJS authentication and object authorization, Python API data flow/configuration, BaaS, mobile source and
 mobile artifacts. The
 benchmark reports each category separately and verifies the expected evidence
 level as well as false positives and false negatives. Its perfect fixture score
@@ -518,8 +520,8 @@ promise for every repository or machine.
 ## Project status
 
 This repository implements a usable beta foundation, not the entire long-term
-roadmap. Not yet implemented: mobile runtime instrumentation, active
-authenticated multi-account IDOR verification, arbitrary Python framework
+roadmap. Not yet implemented: mobile runtime instrumentation, mutation or
+identifier-enumeration security probes, arbitrary Python/Node framework
 semantics, automatic code modification, hosted services, or a claim of broad
 multi-language semantic analysis.
 

@@ -9,6 +9,7 @@ import { runPythonApiAuth } from "./python-api-auth.js";
 import { runPythonApiAuthorization } from "./python-api-authorization.js";
 import { runPythonDataflow } from "./python-dataflow.js";
 import { runPythonApiConfig } from "./python-api-config.js";
+import { runNodeApiSecurity } from "./node-api-security.js";
 import { redactSnippet } from "../core/utils.js";
 
 export async function runNativeDetectors(context: ScanContext): Promise<{ signals: Signal[]; coverage: CoverageRecord[] }> {
@@ -18,6 +19,7 @@ export async function runNativeDetectors(context: ScanContext): Promise<{ signal
     { domain: "mobile-source-config", run: platformDetector.run.bind(platformDetector) },
     { domain: "application-config", run: appConfigDetector.run.bind(appConfigDetector) },
     { domain: "typescript-dataflow", run: runTypeScriptDataflow },
+    { domain: "node-api-security", run: runNodeApiSecurity },
     { domain: "fastapi-authentication", run: runPythonApiAuth },
     { domain: "fastapi-object-authorization", run: runPythonApiAuthorization },
     { domain: "python-dataflow", run: runPythonDataflow },

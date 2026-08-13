@@ -53,6 +53,24 @@ test("BOLA draft excludes mutation routes and never emits request templates for 
   assert.match(candidate?.reason ?? "", /state-changing marker delete/);
 });
 
+test("BOLA draft consumes Express and NestJS object-authorization evidence", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "node-api", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const draft = createBolaDraftPlan(report);
+  assert.deepEqual(draft.summary, { total: 2, readCandidates: 2, mutationExcluded: 0, manualReview: 0 });
+  const express = draft.candidates.find((candidate) => candidate.path === "/document/detail");
+  assert.equal(express?.source.ruleId, "express.authorization.object-without-ownership-check");
+  assert.deepEqual(express?.ownerIdentityFieldCandidates, ["user_id"]);
+  assert.deepEqual(express?.requestTemplate?.body, { document_id: "<SET_PRECREATED_OWNER_DOCUMENT_ID>" });
+  const nest = draft.candidates.find((candidate) => candidate.path === "/reports/detail");
+  assert.equal(nest?.source.ruleId, "nestjs.authorization.object-without-ownership-check");
+  assert.deepEqual(nest?.ownerIdentityFieldCandidates, ["tenantId"]);
+  assert.deepEqual(nest?.requestTemplate?.body, { report_id: "<SET_PRECREATED_OWNER_REPORT_ID>" });
+});
+
 test("BOLA draft considers only open BOLA findings", async () => {
   const { report } = await scanProject(join(fixtures, "corpus", "fastapi-authorization", "positive-read"), {
     profile: "native",
