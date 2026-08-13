@@ -55,6 +55,199 @@ test("safe near-miss fixture is not blocked in native-only mode", async () => {
   assert.equal(report.coverage.find((item) => item.domain === "baas-authorization")?.status, "complete");
 });
 
+test("FastAPI auth analysis detects a sensitive route bypassed by a prefix whitelist", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "fastapi-auth", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  assert.ok(report.profile.frameworks.includes("FastAPI"));
+  assert.ok(report.profile.routes.includes("POST /permission/operation/create"));
+  const finding = report.signals.find((signal) => signal.ruleId === "fastapi.auth.whitelisted-sensitive-route");
+  assert.ok(finding);
+  assert.equal(finding.evidenceLevel, "static_confirmed");
+  assert.equal(finding.metadata?.route, "POST /permission/operation/create");
+});
+
+test("FastAPI auth analysis accepts an explicit route-level dependency inside a whitelist", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "fastapi-auth", "near-miss"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  assert.ok(report.profile.frameworks.includes("FastAPI"));
+  assert.ok(!report.signals.some((signal) => signal.ruleId === "fastapi.auth.whitelisted-sensitive-route"));
+});
+
+test("FastAPI object authorization detects an authenticated ID operation without ownership binding", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "fastapi-authorization", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const finding = report.signals.find((signal) => signal.ruleId === "fastapi.authorization.object-without-ownership-check");
+  assert.ok(finding);
+  assert.equal(finding.evidenceLevel, "inferred");
+  assert.equal(finding.metadata?.route, "POST /document/delete");
+});
+
+test("FastAPI object authorization accepts a centralized ownership guard", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "fastapi-authorization", "near-miss"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  assert.ok(!report.signals.some((signal) => signal.ruleId === "fastapi.authorization.object-without-ownership-check"));
+});
+
+test("Python API dataflow detects URL, file, SQL, and model credential destination flows", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "python-dataflow", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const rules = new Set(report.signals.map((signal) => signal.ruleId));
+  assert.ok(rules.has("python.dataflow.ssrf"));
+  assert.ok(rules.has("python.dataflow.untrusted-file-path"));
+  assert.ok(rules.has("python.dataflow.sql-injection"));
+  assert.ok(rules.has("python.dataflow.client-url-with-server-secret"));
+});
+
+test("Python API dataflow accepts allowlisted URLs, fixed-root paths, bound SQL, and fixed model origins", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "python-dataflow", "near-miss"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("python.dataflow.")));
+});
+
+test("Python API configuration detects CORS, exception, JWT, and published unguarded service risks", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "python-api-config", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const rules = new Set(report.signals.map((signal) => signal.ruleId));
+  assert.ok(rules.has("fastapi.config.wildcard-cors-with-credentials"));
+  assert.ok(rules.has("fastapi.config.raw-exception-response"));
+  assert.ok(rules.has("jwt.config.committed-signing-secret"));
+  assert.ok(rules.has("jwt.config.long-lived-access-token"));
+  assert.ok(rules.has("docker.config.unguarded-service-published"));
+  assert.doesNotMatch(serializeReport(report, "json"), /aisec-benchmark-signing-secret-value/);
+});
+
+test("Python API configuration accepts explicit origins, safe errors, external keys, short tokens, and loopback ports", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "python-api-config", "near-miss"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const configRules = /^(?:fastapi\.config|jwt\.config|docker\.config)\./;
+  assert.ok(!report.signals.some((signal) => configRules.test(signal.ruleId)));
+});
+
+test("Python API findings correlate published unauthenticated network flows into an attack path", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-python-api-path-"));
+  try {
+    await mkdir(join(temporary, "docker"), { recursive: true });
+    await writeFile(join(temporary, "main.py"), `
+import urllib.request
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.post("/generate")
+def generate(payload: dict):
+    target_url = payload.get("url")
+    return urllib.request.urlopen(target_url)
+`);
+    await writeFile(join(temporary, "docker", "docker-compose.prod.yml"), `
+services:
+  algorithm:
+    build: ..
+    ports:
+      - "7010:8000"
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.attackPaths.some((path) => path.title.includes("Published unauthenticated Python service")));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("FastAPI whitelist and object authorization findings correlate only for a shared route family", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-python-bola-path-"));
+  try {
+    await writeFile(join(temporary, "auth_middleware.py"), `
+from fastapi import Request
+
+class AuthMiddleware:
+    whitelist_paths = {"/document/detail"}
+    whitelist_prefixes = {"/public/"}
+
+    def __init__(self, app):
+        self.app = app
+
+    async def dispatch(self, request: Request, call_next):
+        authorization = request.headers.get("Authorization")
+        if not authorization:
+            raise RuntimeError("authentication required")
+        return await call_next(request)
+`);
+    await writeFile(join(temporary, "main.py"), `
+from fastapi import Depends, FastAPI
+from auth_middleware import AuthMiddleware
+
+app = FastAPI()
+app.add_middleware(AuthMiddleware)
+
+@app.post("/document/detail")
+def detail(payload: dict, db=Depends(get_db)):
+    return db.get(Report, payload.get("report_id"))
+
+@app.post("/document/delete")
+def delete(payload: dict, db=Depends(get_db)):
+    report = db.get(Report, payload.get("report_id"))
+    db.delete(report)
+    return {"deleted": True}
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.attackPaths.some((path) => path.title.includes("authentication bypass combines")));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Python virtual environments are excluded from source and secret analysis", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-python-venv-"));
+  try {
+    await mkdir(join(temporary, ".venv", "lib", "python3.13", "site-packages"), { recursive: true });
+    await writeFile(join(temporary, "main.py"), "print('application source')\n");
+    await writeFile(join(temporary, ".venv", "lib", "python3.13", "site-packages", "fixture.py"), "-----BEGIN PRIVATE KEY-----\n");
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(!report.signals.some((signal) => signal.ruleId === "secret.private-key"));
+    assert.ok(report.coverage.find((item) => item.domain === "project-inventory")?.reason?.includes("excluded_directory"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("findings merge repeated evidence with the same fingerprint", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-finding-dedup-"));
+  try {
+    await writeFile(join(temporary, "keys.py"), "-----BEGIN PRIVATE KEY-----\nfixture-one\n-----BEGIN PRIVATE KEY-----\nfixture-two\n");
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const signals = report.signals.filter((signal) => signal.ruleId === "secret.private-key");
+    const findings = report.findings.filter((finding) => finding.title.includes("Private key"));
+    assert.equal(signals.length, 2);
+    assert.equal(findings.length, 1);
+    assert.deepEqual(new Set(findings[0]?.signalIds), new Set(signals.map((signal) => signal.id)));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("an inferred attack path does not hide a stronger component finding", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-injection-"));
   try {

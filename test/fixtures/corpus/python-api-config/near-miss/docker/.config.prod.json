@@ -1,0 +1,7 @@
+{
+  "jwt": {
+    "secret_key_env": "APP_JWT_SECRET",
+    "algorithm": "RS256",
+    "access_token_expire_minute": 15
+  }
+}

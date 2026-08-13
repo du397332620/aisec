@@ -5,6 +5,10 @@ import { baasDetector } from "./baas.js";
 import { platformDetector } from "./platform.js";
 import { secretDetector } from "./secrets.js";
 import { runTypeScriptDataflow } from "./typescript-dataflow.js";
+import { runPythonApiAuth } from "./python-api-auth.js";
+import { runPythonApiAuthorization } from "./python-api-authorization.js";
+import { runPythonDataflow } from "./python-dataflow.js";
+import { runPythonApiConfig } from "./python-api-config.js";
 import { redactSnippet } from "../core/utils.js";
 
 export async function runNativeDetectors(context: ScanContext): Promise<{ signals: Signal[]; coverage: CoverageRecord[] }> {
@@ -14,6 +18,10 @@ export async function runNativeDetectors(context: ScanContext): Promise<{ signal
     { domain: "mobile-source-config", run: platformDetector.run.bind(platformDetector) },
     { domain: "application-config", run: appConfigDetector.run.bind(appConfigDetector) },
     { domain: "typescript-dataflow", run: runTypeScriptDataflow },
+    { domain: "fastapi-authentication", run: runPythonApiAuth },
+    { domain: "fastapi-object-authorization", run: runPythonApiAuthorization },
+    { domain: "python-dataflow", run: runPythonDataflow },
+    { domain: "python-api-configuration", run: runPythonApiConfig },
   ];
   const settled = await Promise.allSettled(detectors.map((detector) => detector.run(context)));
   const results = settled.map((result, index) => {

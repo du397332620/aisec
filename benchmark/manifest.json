@@ -21,6 +21,19 @@
     { "ruleId": "ci.github-expression-command-injection", "category": "application", "evidenceLevel": "static_confirmed" },
     { "ruleId": "privacy.sensitive-logging", "category": "application", "evidenceLevel": "inferred" },
 
+    { "ruleId": "fastapi.auth.whitelisted-sensitive-route", "category": "api-security", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "fastapi.auth.sensitive-route-without-guard", "category": "api-security", "evidenceLevel": "inferred" },
+    { "ruleId": "fastapi.authorization.object-without-ownership-check", "category": "api-security", "evidenceLevel": "inferred" },
+    { "ruleId": "python.dataflow.ssrf", "category": "api-security", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "python.dataflow.untrusted-file-path", "category": "api-security", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "python.dataflow.sql-injection", "category": "api-security", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "python.dataflow.client-url-with-server-secret", "category": "api-security", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "fastapi.config.wildcard-cors-with-credentials", "category": "api-security", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "fastapi.config.raw-exception-response", "category": "api-security", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "jwt.config.committed-signing-secret", "category": "api-security", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "jwt.config.long-lived-access-token", "category": "api-security", "evidenceLevel": "static_confirmed" },
+    { "ruleId": "docker.config.unguarded-service-published", "category": "api-security", "evidenceLevel": "inferred" },
+
     { "ruleId": "supabase.table-without-rls", "category": "baas", "evidenceLevel": "static_confirmed" },
     { "ruleId": "supabase.permissive-rls-policy", "category": "baas", "evidenceLevel": "static_confirmed" },
     { "ruleId": "firebase.unconditional-access", "category": "baas", "evidenceLevel": "static_confirmed" },
@@ -128,6 +141,107 @@
         "auth.sensitive-route-without-visible-guard",
         "ci.github-expression-command-injection",
         "privacy.sensitive-logging"
+      ]
+    },
+    {
+      "id": "fastapi-auth-positive",
+      "category": "api-security",
+      "framework": "FastAPI",
+      "variant": "positive",
+      "path": "test/fixtures/corpus/fastapi-auth/positive",
+      "expectedRuleIds": [
+        "fastapi.auth.whitelisted-sensitive-route",
+        "fastapi.auth.sensitive-route-without-guard"
+      ]
+    },
+    {
+      "id": "fastapi-auth-near-miss",
+      "category": "api-security",
+      "framework": "FastAPI",
+      "variant": "near_miss",
+      "path": "test/fixtures/corpus/fastapi-auth/near-miss",
+      "expectedRuleIds": [],
+      "nearMissRuleIds": [
+        "fastapi.auth.whitelisted-sensitive-route",
+        "fastapi.auth.sensitive-route-without-guard"
+      ]
+    },
+    {
+      "id": "fastapi-authorization-positive",
+      "category": "api-security",
+      "framework": "FastAPI",
+      "variant": "positive",
+      "path": "test/fixtures/corpus/fastapi-authorization/positive",
+      "expectedRuleIds": [
+        "fastapi.authorization.object-without-ownership-check"
+      ]
+    },
+    {
+      "id": "fastapi-authorization-near-miss",
+      "category": "api-security",
+      "framework": "FastAPI",
+      "variant": "near_miss",
+      "path": "test/fixtures/corpus/fastapi-authorization/near-miss",
+      "expectedRuleIds": [],
+      "nearMissRuleIds": [
+        "fastapi.authorization.object-without-ownership-check"
+      ]
+    },
+    {
+      "id": "python-dataflow-positive",
+      "category": "api-security",
+      "framework": "Python/FastAPI",
+      "variant": "positive",
+      "path": "test/fixtures/corpus/python-dataflow/positive",
+      "expectedRuleIds": [
+        "python.dataflow.ssrf",
+        "python.dataflow.untrusted-file-path",
+        "python.dataflow.sql-injection",
+        "python.dataflow.client-url-with-server-secret"
+      ]
+    },
+    {
+      "id": "python-dataflow-near-miss",
+      "category": "api-security",
+      "framework": "Python/FastAPI",
+      "variant": "near_miss",
+      "path": "test/fixtures/corpus/python-dataflow/near-miss",
+      "expectedRuleIds": [],
+      "nearMissRuleIds": [
+        "python.dataflow.ssrf",
+        "python.dataflow.untrusted-file-path",
+        "python.dataflow.sql-injection",
+        "python.dataflow.client-url-with-server-secret"
+      ]
+    },
+    {
+      "id": "python-api-config-positive",
+      "category": "api-security",
+      "framework": "FastAPI/Docker/JWT",
+      "variant": "positive",
+      "path": "test/fixtures/corpus/python-api-config/positive",
+      "expectedRuleIds": [
+        "fastapi.auth.sensitive-route-without-guard",
+        "fastapi.config.wildcard-cors-with-credentials",
+        "fastapi.config.raw-exception-response",
+        "jwt.config.committed-signing-secret",
+        "jwt.config.long-lived-access-token",
+        "docker.config.unguarded-service-published"
+      ]
+    },
+    {
+      "id": "python-api-config-near-miss",
+      "category": "api-security",
+      "framework": "FastAPI/Docker/JWT",
+      "variant": "near_miss",
+      "path": "test/fixtures/corpus/python-api-config/near-miss",
+      "expectedRuleIds": [],
+      "nearMissRuleIds": [
+        "fastapi.config.wildcard-cors-with-credentials",
+        "fastapi.config.raw-exception-response",
+        "jwt.config.committed-signing-secret",
+        "jwt.config.long-lived-access-token",
+        "docker.config.unguarded-service-published"
       ]
     },
     {

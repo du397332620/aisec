@@ -9,9 +9,17 @@ export function buildFindings(signals: Signal[], attackPaths: AttackPath[], conf
     // A lower-confidence correlation must never hide stronger component evidence.
     return attackPath.evidenceLevel !== "inferred" || signal?.evidenceLevel === "inferred";
   })));
-  const findings: Finding[] = [];
+  const findingsByFingerprint = new Map<string, Finding>();
+  const addFinding = (finding: Finding): void => {
+    const existing = findingsByFingerprint.get(finding.fingerprint);
+    if (!existing) {
+      findingsByFingerprint.set(finding.fingerprint, finding);
+      return;
+    }
+    existing.signalIds = [...new Set([...existing.signalIds, ...finding.signalIds])];
+  };
   for (const attackPath of attackPaths) {
-    findings.push({
+    addFinding({
       id: `finding_${attackPath.fingerprint.slice(0, 16)}`,
       fingerprint: attackPath.fingerprint,
       title: attackPath.title,
@@ -24,7 +32,7 @@ export function buildFindings(signals: Signal[], attackPaths: AttackPath[], conf
   }
   for (const signal of signals.filter((candidate) => !consumed.has(candidate.id))) {
     const fingerprint = signal.fingerprint;
-    findings.push({
+    addFinding({
       id: `finding_${fingerprint.slice(0, 16)}`,
       fingerprint,
       title: signal.title,
@@ -34,6 +42,8 @@ export function buildFindings(signals: Signal[], attackPaths: AttackPath[], conf
       signalIds: [signal.id],
     });
   }
+
+  const findings = [...findingsByFingerprint.values()];
 
   const now = Date.now();
   for (const finding of findings) {

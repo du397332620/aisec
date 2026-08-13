@@ -13,11 +13,25 @@ does **not** certify an application as secure.
 Depth is intentionally concentrated in:
 
 - JavaScript/TypeScript, Next.js, React and Node.js
+- Python/FastAPI route, authentication, object-authorization and focused data-flow analysis
 - Supabase and Firebase authorization configuration
 - React Native and common Android/iOS source configuration
 - APK/IPA recovery of embedded secrets, cleartext URLs and selected metadata
 - LLM output flowing into command, code or database execution
 - GitHub Actions expression injection and common application misconfiguration
+
+FastAPI coverage currently resolves common `FastAPI`/`APIRouter` declarations,
+`include_router` prefixes, authentication middleware, exact/prefix whitelists,
+router dependencies and route-level `Depends` or explicit identity guards. It
+detects sensitive routes that a global whitelist makes public and separately
+flags standalone services with no visible authentication boundary. It also
+identifies authenticated object operations without a visible owner/tenant/role
+constraint; request-derived URL, file-path and dynamic-SQL flows; and the
+specific case where a caller-selected model base URL can receive a server API
+key. CORS, raw exception responses, committed JWT signing keys, long-lived
+access tokens and production Compose publication of unguarded services are
+covered by focused configuration rules. These are lexical, bounded checks—not
+a complete Python semantic analysis or proof of exploitability.
 
 Other ecosystems receive baseline coverage when optional Opengrep, Gitleaks and
 Trivy engines are installed. A report explicitly records `complete`, `partial`,
@@ -246,6 +260,9 @@ binaries and prepare the Trivy database before scanning.
 | Secrets in selected source files | Native | Deterministic patterns; working tree only, not Git history |
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; some findings are explicitly `inferred` and require review |
+| FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
+| Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; recognizes selected validation boundaries and reports partial coverage |
+| FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |
 | General SAST | Opengrep `1.26.0` | Required in pre-deploy mode; uses AIsec-owned rules and suppression controls |
 | Dependency, IaC and secondary secret checks | Trivy `0.73.0` | Required in pre-deploy mode; requires an explicitly prepared, fresh schema-v2 database and scans offline |
@@ -379,9 +396,11 @@ npm run test:release
 npm run test:engines
 ```
 
-The public synthetic corpus contains 22 isolated cases: 11 positive/near-miss
-pairs covering all 31 deterministic native Beta rules across secrets, data
-flow, application configuration, BaaS, mobile source and mobile artifacts. The
+The public synthetic corpus contains 30 isolated cases: 15 positive/near-miss
+pairs covering all 43 deterministic native Beta rules across secrets, data
+flow, application configuration, FastAPI authentication and object
+authorization, Python API data flow/configuration, BaaS, mobile source and
+mobile artifacts. The
 benchmark reports each category separately and verifies the expected evidence
 level as well as false positives and false negatives. Its perfect fixture score
 is **not** a real-world efficacy claim; the corpus is deliberately small and
@@ -399,9 +418,10 @@ promise for every repository or machine.
 ## Project status
 
 This repository implements a usable beta foundation, not the entire long-term
-roadmap. Not yet implemented: mobile runtime instrumentation, general-purpose
-authenticated IDOR verification, automatic code modification, hosted services,
-or a claim of broad multi-language semantic analysis.
+roadmap. Not yet implemented: mobile runtime instrumentation, active
+authenticated multi-account IDOR verification, arbitrary Python framework
+semantics, automatic code modification, hosted services, or a claim of broad
+multi-language semantic analysis.
 
 Apache-2.0. See [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 

@@ -1,0 +1,7 @@
+{
+  "jwt": {
+    "secret_key": "aisec-benchmark-signing-secret-value",
+    "algorithm": "HS256",
+    "access_token_expire_minute": 30000
+  }
+}

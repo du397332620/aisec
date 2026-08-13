@@ -45,7 +45,7 @@ try {
   await writeFile(join(consumer, "package.json"), '{"name":"aisec-package-smoke","private":true}\n');
 
   process.stdout.write("Packing AIsec and installing it into an empty project...\n");
-  const packed = JSON.parse(run(npmCommand, ["pack", "--json", "--pack-destination", tarballs]));
+  const packed = JSON.parse(run(npmCommand, ["pack", "--ignore-scripts", "--json", "--pack-destination", tarballs]));
   assert.equal(packed.length, 1, "npm pack must create exactly one tarball");
   assert.equal(packed[0].name, packageMetadata.name);
   assert.equal(packed[0].version, packageMetadata.version);
@@ -97,8 +97,8 @@ try {
   });
   assert.ok(benchmarkOutput.trim(), "the installed benchmark entry point must produce a result");
   const benchmark = JSON.parse(benchmarkOutput);
-  assert.deepEqual(benchmark.catalog, { totalRules: 31, rulesWithPositive: 31, rulesWithNearMiss: 31 });
-  assert.equal(benchmark.totals.truePositive, 31);
+  assert.deepEqual(benchmark.catalog, { totalRules: 43, rulesWithPositive: 43, rulesWithNearMiss: 43 });
+  assert.equal(benchmark.totals.truePositive, 44);
   assert.equal(benchmark.totals.falsePositive, 0);
   assert.equal(benchmark.totals.falseNegative, 0);
   assert.equal(benchmark.totals.evidenceMismatches, 0);

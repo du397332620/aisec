@@ -3,6 +3,7 @@ import { basename, extname, resolve } from "node:path";
 import type { AssetGraph, AssetNode, ProjectProfile } from "../schema.js";
 import type { FileInventory, ProjectFile } from "./files.js";
 import { sha256, stableId, unique } from "./utils.js";
+import { analyzeFastApi } from "../api/fastapi.js";
 
 type PackageJson = {
   dependencies?: Record<string, string>;
@@ -59,6 +60,7 @@ export async function inspectProject(
   artifacts: string[],
 ): Promise<ProjectProfile> {
   const dependencies = packages(inventory.files);
+  const fastApi = analyzeFastApi(inventory.files);
   const languages = unique(inventory.files
     .map((file) => LANGUAGE_BY_EXTENSION[extname(file.relativePath).toLowerCase()])
     .filter((value): value is string => Boolean(value))).sort();
@@ -118,14 +120,20 @@ export async function inspectProject(
     projectId: `project_${sha256(root).slice(0, 16)}`,
     detectedAt: new Date().toISOString(),
     languages,
-    frameworks: inferFrameworks(dependencies, inventory.files),
+    frameworks: unique([
+      ...inferFrameworks(dependencies, inventory.files),
+      ...(fastApi.detected ? ["FastAPI"] : []),
+    ]),
     packageManagers,
     baas,
     mobilePlatforms: unique(mobilePlatforms),
     llmProviders,
     manifests: manifests.sort(),
     artifacts: normalizedArtifacts,
-    routes: inferRoutes(inventory.files),
+    routes: unique([
+      ...inferRoutes(inventory.files),
+      ...fastApi.routes.map((route) => `${route.method} ${route.path}`),
+    ]).sort(),
     fileCount: inventory.files.length,
     skippedFiles: inventory.skippedFiles,
   };
@@ -145,7 +153,7 @@ export function buildAssetGraph(profile: ProjectProfile): AssetGraph {
   };
 
   if (profile.frameworks.some((name) => ["React", "Next.js"].includes(name))) add(node("client", "Web client"), "contains");
-  if (profile.frameworks.some((name) => ["Next.js", "Express", "NestJS"].includes(name))) add(node("server", "Application server"), "contains");
+  if (profile.frameworks.some((name) => ["Next.js", "Express", "NestJS", "FastAPI"].includes(name))) add(node("server", "Application server"), "contains");
   for (const route of profile.routes) add(node("api_route", route), "exposes");
   for (const baas of profile.baas) {
     const database = node("database", baas);

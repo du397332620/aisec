@@ -237,7 +237,8 @@ export async function runBenchmark(root = repositoryRoot) {
     try {
       const { report } = await scanProject(prepared.projectPath, { profile: "native", nativeOnly: true, artifacts: prepared.artifacts, persist: false });
       const actualSignals = report.signals.filter((signal) => signal.engine === "aisec-native"
-        || signal.engine === "aisec-typescript" || signal.engine === "aisec-artifact");
+        || signal.engine === "aisec-typescript" || signal.engine === "aisec-python"
+        || signal.engine === "aisec-artifact");
       const actual = new Set(actualSignals.map((signal) => signal.ruleId));
       const expected = new Set(item.expectedRuleIds);
       const truePositive = [...actual].filter((ruleId) => expected.has(ruleId));

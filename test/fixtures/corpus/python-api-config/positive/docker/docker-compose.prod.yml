@@ -1,0 +1,9 @@
+services:
+  api:
+    build: ..
+    ports:
+      - "7002:8000"
+  algorithm:
+    build: ..
+    ports:
+      - "7010:8000"
