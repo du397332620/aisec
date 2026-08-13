@@ -110,6 +110,7 @@ aisec rescan [path] --baseline <scan-id|report.json>
 aisec report <scan-id|report.json> --format terminal|json|html|sarif
 aisec fix-contract --scan <scan-id> --finding <id> --format json
 aisec verify-web --authorization authorization.yml --confirm
+aisec verify-bola --authorization bola-authorization.yml --confirm
 aisec doctor
 aisec engines status
 aisec engines prepare trivy [--timeout-ms 600000]
@@ -268,6 +269,7 @@ binaries and prepare the Trivy database before scanning.
 | Dependency, IaC and secondary secret checks | Trivy `0.73.0` | Required in pre-deploy mode; requires an explicitly prepared, fresh schema-v2 database and scans offline |
 | APK/IPA static resources | Native archive adapter | Optional input; required for pre-deploy mobile artifact coverage when a mobile project/artifact is expected; no extraction or runtime instrumentation |
 | Passive test/staging Web checks | `verify-web` | Explicit authorization plus `--confirm`; bounded GET/header/cookie checks only, no auth/IDOR/injection testing |
+| Two-account BOLA verification | `verify-bola` | Exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
 | Agent integration | stdio MCP | Local read-oriented inspection, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
 | Reports and release decisions | CLI / JSON / HTML / SARIF | Coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; never certification |
 
@@ -310,6 +312,50 @@ Run only after reviewing the target:
 aisec verify-web --authorization authorization.yml --confirm
 ```
 
+## Authorized two-account BOLA verification
+
+`verify-bola` actively checks whether one low-privilege account can read an
+object owned by a second low-privilege account. It is a separate, explicit
+workflow from `scan` and `verify-web`: production is refused, `--confirm` is
+required, and credentials are read only from named `AISEC_BOLA_` environment
+variables. The tool sends at most two login requests, verifies that they resolve
+to distinct identities, and sends a cross-account request only after the owner
+baseline succeeds. It never guesses or enumerates object identifiers, creates
+test data, follows redirects, or sends mutation methods.
+
+An owner response must first return the exact configured synthetic marker (for
+example `data.project_name: aisec-local-project-a`), and that value must equal
+the case's `testDataLabel`. A high-severity verified BOLA signal is emitted only
+when the second account also receives that same marker. HTTP 401/403/404, or a
+different returned object marker, is recorded as protected. Ambiguous 200 error
+envelopes, missing owner fixtures, network failures and non-comparable responses
+produce partial coverage and exit `2`; they are never reported as a clean pass.
+
+Start from [`examples/authorization.bola.local.yml`](examples/authorization.bola.local.yml).
+The example shape matches APIs such as `POST /user/login` returning
+`data.access_token` plus a stable `data.user_id`, and a read-only
+`POST /project/detail` request. Replace the placeholder object ID with a
+dedicated, pre-created fixture whose label starts with `dataPrefix`; do not use
+real customer data.
+
+```bash
+export AISEC_BOLA_OWNER_USERNAME='aisec_fixture_owner'
+export AISEC_BOLA_OWNER_PASSWORD='...'
+export AISEC_BOLA_OTHER_USERNAME='aisec_fixture_other'
+export AISEC_BOLA_OTHER_PASSWORD='...'
+
+aisec verify-bola \
+  --authorization examples/authorization.bola.local.yml \
+  --confirm \
+  --output bola-report.json
+```
+
+Exit `1` means verified cross-account access, exit `2` means at least one case
+was inconclusive, exit `0` means every listed case was conclusively protected,
+and exit `64` means the manifest, credentials or login setup was invalid. The
+report contains account labels and case outcomes, but never usernames,
+passwords, bearer tokens or response bodies.
+
 ## Findings, suppressions and fixes
 
 Evidence is classified as:
@@ -339,14 +385,16 @@ as resolved, with no new high/critical finding.
 ## Versioned data contracts
 
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, fix
-contracts and web authorization manifests in [`schemas/`](schemas/). Version
+contracts, passive-web authorization and BOLA authorization manifests in
+[`schemas/`](schemas/). Version
 `1.0.0` is validated at runtime when a report is generated, serialized, saved
 or loaded, when a fix contract is generated, and before authorization semantics
 are evaluated. Unknown fields, unsupported schema versions and malformed nested
 values fail closed instead of flowing into CLI or MCP output.
 
-The package also exports `validateScanReport`, `validateFixContract` and
-`validateAuthorizationManifestSchema` for integrations that consume these
+The package also exports `validateScanReport`, `validateFixContract`,
+`validateAuthorizationManifestSchema` and
+`validateBolaAuthorizationManifestSchema` for integrations that consume these
 objects directly. Fields declared optional may be omitted by `1.0.0` producers;
 new fields or other contract changes require a new schema version.
 
@@ -374,7 +422,7 @@ new fields or other contract changes require a new schema version.
   and database updates, and runs Trivy in explicit offline mode. For a hard
   no-egress guarantee around third-party binaries, enforce it with an OS sandbox
   or CI network policy. AIsec's own network paths are explicit engine setup and
-  `verify-web --confirm`.
+  `verify-web --confirm` or the more restrictive `verify-bola --confirm`.
 - APK/IPA inspection validates entry names and reads a bounded set of resources;
   it never extracts an archive onto disk.
 

@@ -11,10 +11,12 @@ import { scanProject } from "../src/core/scan.js";
 import { loadReport, reportPath, saveReport } from "../src/core/store.js";
 import {
   validateAuthorizationManifestSchema,
+  validateBolaAuthorizationManifestSchema,
   validateFixContract,
   validateScanReport,
 } from "../src/core/schema-validation.js";
 import { validateAuthorization } from "../src/web/authorization.js";
+import { validateBolaAuthorization } from "../src/web/authorization.js";
 import { serializeReport } from "../src/reporters/index.js";
 import { materializeFixture, SYNTHETIC_STRIPE_LIVE_KEY } from "./helpers/materialize-fixture.js";
 
@@ -137,6 +139,32 @@ test("authorization manifests use the public schema before semantic authorizatio
   assert.equal(validateAuthorization(manifest).targetBaseUrl, manifest.targetBaseUrl);
   assert.throws(() => validateAuthorization({ ...manifest, productionOverride: true }), /AuthorizationManifest.*additional properties/);
   assert.throws(() => validateAuthorization({ ...manifest, accounts: [{ label: "test", usernameEnv: "lowercase", passwordEnv: "PASSWORD" }] }), /AuthorizationManifest.*usernameEnv/);
+});
+
+test("BOLA authorization manifests use a separate strict public schema", () => {
+  const manifest = {
+    schemaVersion: "1.0.0",
+    targetBaseUrl: "http://127.0.0.1:8000/",
+    environment: "local",
+    ownedBy: "AIsec tests",
+    allowedHosts: ["127.0.0.1"],
+    dataPrefix: "aisec-schema",
+    maxRequests: 4,
+    accounts: [
+      { label: "owner", usernameEnv: "AISEC_BOLA_OWNER_USER", passwordEnv: "AISEC_BOLA_OWNER_PASSWORD" },
+      { label: "other", usernameEnv: "AISEC_BOLA_OTHER_USER", passwordEnv: "AISEC_BOLA_OTHER_PASSWORD" },
+    ],
+    login: { path: "/user/login", usernameField: "username", passwordField: "password", successStatusCodes: [200], tokenJsonPath: "data.access_token", identityJsonPath: "data.user_id", tokenPrefix: "Bearer" },
+    cases: [{
+      id: "project-detail", method: "POST", path: "/project/detail", readOnly: true,
+      testDataLabel: "aisec-schema-project", ownerAccount: "owner", otherAccount: "other",
+      body: { project_id: 42 }, expected: { statusCodes: [200], jsonPath: "data.project_name", value: "aisec-schema-project" },
+    }],
+    acknowledgment: "I am authorized to test this non-production target with two low-privilege accounts and pre-created test data",
+  } as const;
+  assert.equal(validateBolaAuthorizationManifestSchema(manifest), manifest);
+  assert.equal(validateBolaAuthorization(manifest).cases[0]?.id, "project-detail");
+  assert.throws(() => validateBolaAuthorization({ ...manifest, destructiveOverride: true }), /BolaAuthorizationManifest.*additional properties/);
 });
 
 test("date-only suppressions remain valid in the 1.0.0 report contract", async () => {

@@ -1,29 +1,15 @@
-import { lookup } from "node:dns/promises";
-import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
-import { request as httpsRequest } from "node:https";
-import { BlockList, isIP } from "node:net";
-import type { LookupAddress } from "node:dns";
+import type { IncomingHttpHeaders } from "node:http";
 import type { Signal, WebVerificationReport } from "../schema.js";
 import { SCHEMA_VERSION } from "../schema.js";
 import { createSignal, makeLocation, newId } from "../core/utils.js";
 import { assertAllowedResponseUrl, loadAuthorization } from "./authorization.js";
+import { boundedHttpRequest } from "./http.js";
 
 interface PassiveResponse {
   url: string;
   status: number;
   headers: IncomingHttpHeaders;
 }
-
-const unsafeAddresses = new BlockList();
-for (const [network, prefix] of [
-  ["0.0.0.0", 8], ["10.0.0.0", 8], ["100.64.0.0", 10], ["127.0.0.0", 8],
-  ["169.254.0.0", 16], ["172.16.0.0", 12], ["192.0.0.0", 24], ["192.0.2.0", 24],
-  ["192.168.0.0", 16], ["198.18.0.0", 15], ["198.51.100.0", 24], ["203.0.113.0", 24],
-  ["224.0.0.0", 4], ["240.0.0.0", 4],
-] as Array<[string, number]>) unsafeAddresses.addSubnet(network, prefix, "ipv4");
-for (const [network, prefix] of [
-  ["::", 128], ["::1", 128], ["fc00::", 7], ["fe80::", 10], ["ff00::", 8], ["2001:db8::", 32],
-] as Array<[string, number]>) unsafeAddresses.addSubnet(network, prefix, "ipv6");
 
 function headerSignal(target: string, ruleId: string, title: string, description: string, remediation: string): Signal {
   return createSignal({
@@ -41,45 +27,9 @@ function headerSignal(target: string, ruleId: string, title: string, description
   });
 }
 
-function hostWithoutBrackets(url: URL): string { return url.hostname.replace(/^\[|\]$/g, ""); }
-
-async function pinnedAddress(url: URL, local: boolean): Promise<LookupAddress> {
-  const hostname = hostWithoutBrackets(url);
-  const literalFamily = isIP(hostname);
-  const addresses = literalFamily
-    ? [{ address: hostname, family: literalFamily as 4 | 6 }]
-    : await lookup(hostname, { all: true, verbatim: true });
-  if (addresses.length === 0) throw new Error(`Authorized target did not resolve: ${hostname}`);
-  if (!local) {
-    const unsafe = addresses.find((item) => unsafeAddresses.check(item.address, item.family === 6 ? "ipv6" : "ipv4"));
-    if (unsafe) throw new Error(`Authorized target resolved to a non-public address and was refused: ${unsafe.address}`);
-  }
-  // Pin the chosen address into the socket lookup callback. This prevents a
-  // second DNS answer from changing the destination between validation and IO.
-  return addresses[0]!;
-}
-
 async function passiveGet(target: string, local: boolean): Promise<PassiveResponse> {
-  const url = new URL(target);
-  const address = await pinnedAddress(url, local);
-  const transport = url.protocol === "https:" ? httpsRequest : httpRequest;
-  return new Promise((resolve, reject) => {
-    let settled = false;
-    const request = transport(url, {
-      method: "GET",
-      agent: false,
-      maxHeaderSize: 64 * 1024,
-      headers: { "user-agent": "AIsec/0.1 passive-authorized-verifier", accept: "text/html,application/json;q=0.8,*/*;q=0.1" },
-      lookup: (_hostname, _options, callback) => callback(null, address.address, address.family),
-    }, (response) => {
-      settled = true;
-      response.destroy();
-      resolve({ url: target, status: response.statusCode ?? 0, headers: response.headers });
-    });
-    request.setTimeout(15_000, () => request.destroy(new Error("Authorized web request timed out")));
-    request.once("error", (error) => { if (!settled) reject(error); });
-    request.end();
-  });
+  const response = await boundedHttpRequest({ url: target, method: "GET", local, captureBody: false });
+  return { url: response.url, status: response.status, headers: response.headers };
 }
 
 function firstHeader(headers: IncomingHttpHeaders, name: string): string | undefined {

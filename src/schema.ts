@@ -201,6 +201,82 @@ export interface WebVerificationReport {
   limitations: string[];
 }
 
+export interface BolaTestAccount {
+  label: string;
+  usernameEnv: string;
+  passwordEnv: string;
+}
+
+export interface BolaLoginConfiguration {
+  path: string;
+  usernameField: string;
+  passwordField: string;
+  successStatusCodes: number[];
+  tokenJsonPath: string;
+  identityJsonPath: string;
+  tokenPrefix: "Bearer";
+}
+
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { [key: string]: JsonValue };
+
+export interface BolaVerificationCase {
+  id: string;
+  method: "GET" | "POST";
+  path: string;
+  readOnly: true;
+  testDataLabel: string;
+  ownerAccount: string;
+  otherAccount: string;
+  body?: { [key: string]: JsonValue };
+  expected: {
+    statusCodes: number[];
+    jsonPath: string;
+    value: string;
+  };
+}
+
+export interface BolaAuthorizationManifest {
+  schemaVersion: typeof SCHEMA_VERSION;
+  targetBaseUrl: string;
+  environment: "local" | "test" | "staging";
+  ownedBy: string;
+  allowedHosts: string[];
+  dataPrefix: string;
+  maxRequests: number;
+  accounts: [BolaTestAccount, BolaTestAccount];
+  login: BolaLoginConfiguration;
+  cases: BolaVerificationCase[];
+  acknowledgment: "I am authorized to test this non-production target with two low-privilege accounts and pre-created test data";
+}
+
+export interface BolaCaseResult {
+  caseId: string;
+  method: "GET" | "POST";
+  path: string;
+  testDataLabel: string;
+  ownerAccount: string;
+  otherAccount: string;
+  status: "vulnerable" | "protected" | "inconclusive" | "not_run";
+  ownerStatus?: number;
+  otherStatus?: number;
+  reason: string;
+}
+
+export interface BolaVerificationReport {
+  schemaVersion: typeof SCHEMA_VERSION;
+  verificationId: string;
+  target: string;
+  startedAt: string;
+  completedAt: string;
+  requestCount: number;
+  accounts: string[];
+  coverage: CoverageRecord[];
+  signals: Signal[];
+  cases: BolaCaseResult[];
+  limitations: string[];
+}
+
 export interface ScanOptions {
   profile: "predeploy" | "native";
   artifacts: string[];

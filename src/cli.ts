@@ -10,6 +10,7 @@ import { runMcpServer } from "./mcp/server.js";
 import { emitReport, type OutputFormat } from "./reporters/index.js";
 import { renderFixContract } from "./reporters/terminal.js";
 import { verifyWeb } from "./web/verify.js";
+import { verifyBola } from "./web/bola.js";
 import { TOOL_VERSION } from "./core/constants.js";
 import { parsePositiveInt } from "./core/utils.js";
 import { prepareTrivyDatabase, trivyDatabaseStatus } from "./engines/trivy-db.js";
@@ -23,6 +24,7 @@ Usage:
   aisec report <scan-id|report.json> [--format terminal|json|html|sarif] [--output file]
   aisec fix-contract --scan <scan-id|report.json> --finding <id|fingerprint> [--format terminal|json] [--output file]
   aisec verify-web --authorization <manifest.yml> --confirm [--output file]
+  aisec verify-bola --authorization <manifest.yml> --confirm [--output file]
   aisec doctor [--json]
   aisec engines status [--json]
   aisec engines prepare trivy [--timeout-ms 600000]
@@ -130,6 +132,15 @@ async function main(): Promise<void> {
     const result = await verifyWeb(requireFlag(parsed, "authorization"), booleanFlag(parsed, "confirm"));
     await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, flag(parsed, "output"));
     process.exitCode = result.signals.some((signal) => ["critical", "high"].includes(signal.severity)) ? 1 : 0;
+    return;
+  }
+
+  if (parsed.command === "verify-bola") {
+    const result = await verifyBola(requireFlag(parsed, "authorization"), booleanFlag(parsed, "confirm"));
+    await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, flag(parsed, "output"));
+    if (result.signals.some((signal) => ["critical", "high"].includes(signal.severity))) process.exitCode = 1;
+    else if (result.coverage.some((item) => item.required && item.status !== "complete")) process.exitCode = 2;
+    else process.exitCode = 0;
     return;
   }
 

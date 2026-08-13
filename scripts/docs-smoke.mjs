@@ -64,7 +64,9 @@ try {
   assert.equal(localExecutable.status, 0, localExecutable.stderr);
   assert.equal(localExecutable.stdout.trim(), "0.1.0");
   assert.equal(run(["--version"]).stdout.trim(), "0.1.0");
-  assert.match(run(["--help"]).stdout, /--profile predeploy\|native/);
+  const help = run(["--help"]).stdout;
+  assert.match(help, /--profile predeploy\|native/);
+  assert.match(help, /verify-bola --authorization <manifest\.yml> --confirm/);
   const doctor = report(run(["doctor", "--json"]), "doctor");
   assert.equal(doctor.node, process.version);
   assert.deepEqual(doctor.engines.map((item) => item.source), ["invalid", "invalid", "invalid"]);

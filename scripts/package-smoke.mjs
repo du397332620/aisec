@@ -65,6 +65,8 @@ try {
   const packageRoot = join(consumer, "node_modules", ...packageMetadata.name.split("/"));
   const executable = join(consumer, "node_modules", ".bin", process.platform === "win32" ? "aisec.cmd" : "aisec");
   await access(executable, process.platform === "win32" ? constants.R_OK : constants.X_OK);
+  await access(join(packageRoot, "schemas", "bola-authorization-manifest.schema.json"), constants.R_OK);
+  await access(join(packageRoot, "examples", "authorization.bola.local.yml"), constants.R_OK);
   const scanEnvironment = { AISEC_DATA_DIR: join(temporary, "data") };
 
   assert.equal(run(executable, ["--version"], { cwd: consumer, env: scanEnvironment }).trim(), packageMetadata.version);

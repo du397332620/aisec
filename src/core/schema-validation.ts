@@ -2,9 +2,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import type { AuthorizationManifest, FixContract, ScanReport } from "../schema.js";
+import type { AuthorizationManifest, BolaAuthorizationManifest, FixContract, ScanReport } from "../schema.js";
 
-type PublicSchemaName = "ScanReport" | "FixContract" | "AuthorizationManifest";
+type PublicSchemaName = "ScanReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest";
 
 function loadSchema(filename: string): object {
   const path = fileURLToPath(new URL(`../../../schemas/${filename}`, import.meta.url));
@@ -18,6 +18,7 @@ addFormats(ajv);
 const scanReportValidator = ajv.compile(loadSchema("scan-report.schema.json"));
 const fixContractValidator = ajv.compile(loadSchema("fix-contract.schema.json"));
 const authorizationManifestValidator = ajv.compile(loadSchema("authorization-manifest.schema.json"));
+const bolaAuthorizationManifestValidator = ajv.compile(loadSchema("bola-authorization-manifest.schema.json"));
 
 function describeError(error: ErrorObject): string {
   const path = error.instancePath || "/";
@@ -44,4 +45,8 @@ export function validateFixContract(value: unknown): FixContract {
 
 export function validateAuthorizationManifestSchema(value: unknown): AuthorizationManifest {
   return assertSchema<AuthorizationManifest>("AuthorizationManifest", authorizationManifestValidator, value);
+}
+
+export function validateBolaAuthorizationManifestSchema(value: unknown): BolaAuthorizationManifest {
+  return assertSchema<BolaAuthorizationManifest>("BolaAuthorizationManifest", bolaAuthorizationManifestValidator, value);
 }

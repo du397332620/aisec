@@ -1,0 +1,38 @@
+schemaVersion: 1.0.0
+targetBaseUrl: http://127.0.0.1:8000
+environment: local
+ownedBy: Local developer
+allowedHosts:
+  - 127.0.0.1
+dataPrefix: aisec-local
+maxRequests: 4
+accounts:
+  - label: owner
+    usernameEnv: AISEC_BOLA_OWNER_USERNAME
+    passwordEnv: AISEC_BOLA_OWNER_PASSWORD
+  - label: other
+    usernameEnv: AISEC_BOLA_OTHER_USERNAME
+    passwordEnv: AISEC_BOLA_OTHER_PASSWORD
+login:
+  path: /user/login
+  usernameField: username
+  passwordField: password
+  successStatusCodes: [200]
+  tokenJsonPath: data.access_token
+  identityJsonPath: data.user_id
+  tokenPrefix: Bearer
+cases:
+  - id: project-detail
+    method: POST
+    path: /project/detail
+    readOnly: true
+    testDataLabel: aisec-local-project-a
+    ownerAccount: owner
+    otherAccount: other
+    body:
+      project_id: 12345
+    expected:
+      statusCodes: [200]
+      jsonPath: data.project_name
+      value: aisec-local-project-a
+acknowledgment: I am authorized to test this non-production target with two low-privilege accounts and pre-created test data

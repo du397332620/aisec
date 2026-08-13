@@ -64,11 +64,16 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
 - Trivy scans use an AIsec-owned offline cache. Missing, invalid or stale
   database metadata fails coverage; database download happens only through the
   explicit `engines prepare trivy` setup command.
-- A test or staging URL is accessed only through an explicit authorization
-  manifest plus `--confirm`.
+- A local, test or staging URL is accessed only through an explicit
+  authorization manifest plus `--confirm`.
 - Passive web requests pin a validated DNS answer to the socket and redirects
   must retain the exact authorized origin. Local verification is deliberately
   allowed to reach private addresses; staging/test verification is not.
+- BOLA verification uses exactly two declared low-privilege accounts and fixed,
+  pre-created test-object assertions. It refuses production, mutation methods,
+  mutation-like paths, redirects, object enumeration and credential values in
+  manifests or reports. Query-style POST routes remain an explicit trusted
+  manifest assertion and should be executed only against disposable fixtures.
 
 ## Current limitations
 

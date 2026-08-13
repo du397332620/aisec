@@ -2,8 +2,8 @@ import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
 import { resolve } from "node:path";
 import YAML from "yaml";
-import type { AuthorizationManifest } from "../schema.js";
-import { validateAuthorizationManifestSchema } from "../core/schema-validation.js";
+import type { AuthorizationManifest, BolaAuthorizationManifest } from "../schema.js";
+import { validateAuthorizationManifestSchema, validateBolaAuthorizationManifestSchema } from "../core/schema-validation.js";
 
 function isPrivateIpv4(host: string): boolean {
   const parts = host.split(".").map(Number);
@@ -18,8 +18,13 @@ function normalizedHostname(url: URL): string {
   return url.hostname.replace(/^\[|\]$/g, "").toLowerCase();
 }
 
-export function validateAuthorization(value: unknown): AuthorizationManifest {
-  const manifest = validateAuthorizationManifestSchema(value);
+interface TargetAuthorization {
+  targetBaseUrl: string;
+  environment: "local" | "test" | "staging";
+  allowedHosts: string[];
+}
+
+function validateTarget<T extends TargetAuthorization>(manifest: T): T {
   const url = new URL(manifest.targetBaseUrl);
   const hostname = normalizedHostname(url);
   if (!["http:", "https:"].includes(url.protocol)) throw new Error("Only HTTP(S) targets are supported");
@@ -36,13 +41,117 @@ export function validateAuthorization(value: unknown): AuthorizationManifest {
   return { ...manifest, targetBaseUrl: url.toString(), allowedHosts };
 }
 
+export function validateAuthorization(value: unknown): AuthorizationManifest {
+  return validateTarget(validateAuthorizationManifestSchema(value));
+}
+
 export async function loadAuthorization(path: string): Promise<AuthorizationManifest> {
   const text = await readFile(resolve(path), "utf8");
   const parsed = path.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
   return validateAuthorization(parsed);
 }
 
-export function assertAllowedResponseUrl(manifest: AuthorizationManifest, responseUrl: string): void {
+const mutatingPathMarkers = new Set([
+  "create", "update", "delete", "remove", "save", "upload", "generate", "approve", "reject",
+  "cancel", "submit", "publish", "archive", "restore", "assign", "grant", "revoke", "reset",
+  "change", "logout", "register", "import", "execute", "run", "start", "stop", "retry", "edit",
+  "modify", "insert", "enable", "disable", "activate", "deactivate", "attach", "detach",
+]);
+const readPathMarkers = new Set([
+  "detail", "get", "list", "info", "search", "query", "read", "view", "preview", "status",
+  "history", "stats", "statistics", "download", "export", "find", "lookup", "check",
+]);
+
+function pathTokens(path: string, base: string): { decoded: string; tokens: string[] } {
+  const url = new URL(path, base);
+  if (url.origin !== new URL(base).origin) throw new Error(`Configured path escaped the authorized origin: ${path}`);
+  if (url.username || url.password || url.hash) throw new Error(`Configured path contains credentials or a fragment: ${path}`);
+  try {
+    const decoded = decodeURIComponent(`${url.pathname}${url.search}`);
+    if (decoded.includes("%")) throw new Error("nested percent encoding is not accepted");
+    const separated = decoded.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase();
+    return { decoded, tokens: separated.split(/[^a-z0-9]+/).filter(Boolean) };
+  } catch {
+    throw new Error(`Configured path contains invalid percent encoding: ${path}`);
+  }
+}
+
+function containsJsonString(value: unknown, expected: string): boolean {
+  if (typeof value === "string" && value.toLowerCase().includes(expected.toLowerCase())) return true;
+  if (Array.isArray(value)) return value.some((item) => containsJsonString(item, expected));
+  if (value && typeof value === "object") return Object.values(value).some((item) => containsJsonString(item, expected));
+  return false;
+}
+
+function mutatingBodyMarker(value: unknown): string | undefined {
+  if (typeof value === "string") {
+    const tokens = value.replace(/([a-z0-9])([A-Z])/g, "$1 $2").toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+    return [...mutatingPathMarkers].find((marker) => tokens.includes(marker));
+  }
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      const marker = mutatingBodyMarker(item);
+      if (marker) return marker;
+    }
+  } else if (value && typeof value === "object") {
+    for (const [key, nested] of Object.entries(value)) {
+      const marker = mutatingBodyMarker(key) ?? mutatingBodyMarker(nested);
+      if (marker) return marker;
+    }
+  }
+  return undefined;
+}
+
+export function validateBolaAuthorization(value: unknown): BolaAuthorizationManifest {
+  const manifest = validateTarget(validateBolaAuthorizationManifestSchema(value));
+  const labels = manifest.accounts.map((account) => account.label);
+  if (new Set(labels).size !== 2) throw new Error("BOLA verification requires two distinct account labels");
+  const credentialVariables = manifest.accounts.flatMap((account) => [account.usernameEnv, account.passwordEnv]);
+  if (new Set(credentialVariables).size !== credentialVariables.length) throw new Error("Each BOLA credential must use a distinct environment variable");
+  if (manifest.login.usernameField === manifest.login.passwordField) throw new Error("Login usernameField and passwordField must differ");
+  if (manifest.login.tokenJsonPath === manifest.login.identityJsonPath) throw new Error("Login tokenJsonPath and identityJsonPath must differ");
+  const loginTokens = pathTokens(manifest.login.path, manifest.targetBaseUrl).tokens;
+  if (!["login", "signin", "session", "token"].some((marker) => loginTokens.includes(marker))) throw new Error("login.path must identify an authentication endpoint");
+  const unsafeLoginMarker = [...mutatingPathMarkers].find((marker) => !["create", "start"].includes(marker) && loginTokens.includes(marker));
+  if (unsafeLoginMarker) throw new Error(`login.path has an unrelated state-changing marker: ${unsafeLoginMarker}`);
+
+  const requiredRequests = 2 + manifest.cases.length * 2;
+  if (manifest.maxRequests < requiredRequests) throw new Error(`maxRequests must allow the fixed plan of ${requiredRequests} requests`);
+  const caseIds = new Set<string>();
+  for (const item of manifest.cases) {
+    if (caseIds.has(item.id)) throw new Error(`BOLA case id must be unique: ${item.id}`);
+    caseIds.add(item.id);
+    if (!labels.includes(item.ownerAccount) || !labels.includes(item.otherAccount) || item.ownerAccount === item.otherAccount) {
+      throw new Error(`BOLA case ${item.id} must reference two different declared accounts`);
+    }
+    if (!item.testDataLabel.startsWith(`${manifest.dataPrefix}-`) && !item.testDataLabel.startsWith(`${manifest.dataPrefix}_`)) {
+      throw new Error(`BOLA case ${item.id} testDataLabel must begin with dataPrefix`);
+    }
+    if (item.expected.value !== item.testDataLabel) throw new Error(`BOLA case ${item.id} expected.value must exactly equal testDataLabel`);
+    const parsedPath = pathTokens(item.path, manifest.targetBaseUrl);
+    const mutatingMarker = [...mutatingPathMarkers].find((marker) => parsedPath.tokens.includes(marker));
+    if (mutatingMarker) throw new Error(`BOLA case ${item.id} path has a state-changing marker: ${mutatingMarker}`);
+    if (item.method === "POST" && ![...readPathMarkers].some((marker) => parsedPath.tokens.includes(marker))) {
+      throw new Error(`BOLA case ${item.id} POST path must contain an explicit read/query marker`);
+    }
+    if (item.method === "POST" && item.body === undefined) throw new Error(`BOLA case ${item.id} POST requires a fixed body`);
+    if (item.method === "GET" && item.body !== undefined) throw new Error(`BOLA case ${item.id} GET cannot contain a body`);
+    const bodyMarker = mutatingBodyMarker(item.body);
+    if (bodyMarker) throw new Error(`BOLA case ${item.id} body has a state-changing marker: ${bodyMarker}`);
+    if (parsedPath.decoded.toLowerCase().includes(item.expected.value.toLowerCase()) || containsJsonString(item.body, item.expected.value)) {
+      throw new Error(`BOLA case ${item.id} response marker must not be supplied in the request`);
+    }
+  }
+  return manifest;
+}
+
+export async function loadBolaAuthorization(path: string): Promise<BolaAuthorizationManifest> {
+  const text = await readFile(resolve(path), "utf8");
+  const parsed = path.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+  return validateBolaAuthorization(parsed);
+}
+
+export function assertAllowedResponseUrl(manifest: TargetAuthorization, responseUrl: string): void {
   const url = new URL(responseUrl);
   const hostname = normalizedHostname(url);
   if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) throw new Error("Redirect produced a non-HTTP(S) URL or embedded credentials");
