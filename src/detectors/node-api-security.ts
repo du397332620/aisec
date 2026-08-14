@@ -157,7 +157,7 @@ export async function runNodeApiSecurity(context: ScanContext): Promise<Detector
 
   const detected = [analysis.detectedExpress ? "Express" : undefined, analysis.detectedNest ? "NestJS" : undefined].filter(Boolean).join(" and ");
   const reasons = [
-    `${detected} route and authorization coverage is bounded static inference; package aliases, dynamic registrations, framework extensions, ORM wrappers, and external policy engines may require manual review`,
+    `${detected} route and authorization coverage is bounded static inference; package aliases, dynamic registrations, framework extensions, factory-provided dependencies, local call chains beyond the four-edge traversal limit, complex ORM wrappers, and external policy engines may require manual review`,
     analysis.filesWithParseErrors > 0 ? `${analysis.filesWithParseErrors} JavaScript/TypeScript source file(s) had parser diagnostics` : undefined,
     analysis.unresolvedHandlers > 0 ? `${analysis.unresolvedHandlers} Express handler reference(s) could not be resolved locally or through a relative module import` : undefined,
     analysis.unresolvedMounts > 0 ? `${analysis.unresolvedMounts} Express router mount(s) could not be resolved locally or through a relative module import` : undefined,

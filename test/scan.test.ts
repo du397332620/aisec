@@ -583,6 +583,213 @@ export class RecordsController {
   }
 });
 
+test("Node API analysis follows local service and repository wrappers into attacker-selected object lookups", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-service-wrapper-"));
+  try {
+    await mkdir(join(temporary, "express"));
+    await mkdir(join(temporary, "nest"));
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      express: "5.1.0",
+      "@nestjs/common": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+    } }));
+    await writeFile(join(temporary, "express", "app.ts"), `
+import express from "express";
+import { ExpressDocumentService } from "./document.service";
+
+const app = express();
+const service = new ExpressDocumentService();
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+app.get("/express/users/:userId/documents/:documentId", requireSession, async (req, res) => {
+  const document = await service.loadDocument(req.params.documentId, req.params.userId);
+  return res.json(document);
+});
+`);
+    await writeFile(join(temporary, "express", "document.service.ts"), `
+import { ExpressDocumentRepository } from "./document.repository";
+
+export class ExpressDocumentService {
+  private readonly repository = new ExpressDocumentRepository();
+
+  loadDocument(documentId: string, userId: string) {
+    return this.repository.fetchDocument(documentId, userId);
+  }
+}
+`);
+    await writeFile(join(temporary, "express", "document.repository.ts"), `
+export class ExpressDocumentRepository {
+  fetchDocument(documentId: string, userId: string) {
+    return this.prisma.document.findFirst({ where: { id: documentId, author: { id: userId } } });
+  }
+}
+`);
+    await writeFile(join(temporary, "nest", "document.controller.ts"), `
+import { Controller, Get, Param, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+import { NestDocumentService } from "./document.service";
+
+@Controller("nest/users/:userId/documents")
+@UseGuards(AuthGuard("jwt"))
+export class NestDocumentController {
+  constructor(private readonly service: NestDocumentService) {}
+
+  @Get(":documentId")
+  getDocument(@Param("documentId") documentId: string, @Param("userId") userId: string) {
+    return this.service.loadDocument(documentId, userId);
+  }
+}
+`);
+    await writeFile(join(temporary, "nest", "document.service.ts"), `
+import { Injectable } from "@nestjs/common";
+import { NestDocumentRepository } from "./document.repository";
+
+@Injectable()
+export class NestDocumentService {
+  constructor(private readonly repository: NestDocumentRepository) {}
+
+  loadDocument(documentId: string, userId: string) {
+    return this.repository.fetchDocument(documentId, userId);
+  }
+}
+`);
+    await writeFile(join(temporary, "nest", "document.repository.ts"), `
+export class NestDocumentRepository {
+  fetchDocument(documentId: string, userId: string) {
+    return this.prisma.document.findFirst({ where: { id: documentId, userId } });
+  }
+}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    for (const [ruleId, route] of [
+      ["express.authorization.object-without-ownership-check", "GET /express/users/:userId/documents/:documentId"],
+      ["nestjs.authorization.object-without-ownership-check", "GET /nest/users/:userId/documents/:documentId"],
+    ]) {
+      assert.ok(report.signals.some((signal) => signal.ruleId === ruleId && signal.metadata?.route === route), `${route} should remain unsafe when the owner id comes from the route`);
+    }
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Node API analysis accepts an owner predicate propagated from the authenticated subject through local wrappers", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-service-owner-"));
+  try {
+    await mkdir(join(temporary, "express"));
+    await mkdir(join(temporary, "nest"));
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      express: "5.1.0",
+      "@nestjs/common": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+    } }));
+    await writeFile(join(temporary, "express", "app.ts"), `
+import express from "express";
+import { ExpressDocumentService } from "./document.service";
+
+const app = express();
+const service = new ExpressDocumentService();
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+app.get("/express/documents/:documentId", requireSession, async (req, res) => {
+  const document = await service.loadDocumentForUser(req.params.documentId, req.user.id);
+  return res.json(document);
+});
+`);
+    await writeFile(join(temporary, "express", "document.service.ts"), `
+import { ExpressDocumentRepository } from "./document.repository";
+
+export class ExpressDocumentService {
+  private readonly repository = new ExpressDocumentRepository();
+
+  loadDocumentForUser(documentId: string, authenticatedUserId: string) {
+    return this.repository.fetchOwnedDocument(documentId, authenticatedUserId);
+  }
+}
+`);
+    await writeFile(join(temporary, "express", "document.repository.ts"), `
+export class ExpressDocumentRepository {
+  fetchOwnedDocument(documentId: string, authenticatedUserId: string) {
+    return this.prisma.document.findFirst({ where: { id: documentId, author: { id: authenticatedUserId } } });
+  }
+}
+`);
+    await writeFile(join(temporary, "nest", "document.controller.ts"), `
+import { Controller, Get, Param, Req, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+import { NestDocumentService } from "./document.service";
+
+@Controller("nest/documents")
+@UseGuards(AuthGuard("jwt"))
+export class NestDocumentController {
+  constructor(private readonly service: NestDocumentService) {}
+
+  @Get(":documentId")
+  getDocument(@Param("documentId") documentId: string, @Req() request) {
+    return this.service.loadDocumentForUser(documentId, request.user.id);
+  }
+}
+`);
+    await writeFile(join(temporary, "nest", "document.service.ts"), `
+import { Injectable } from "@nestjs/common";
+import { NestDocumentRepository } from "./document.repository";
+
+@Injectable()
+export class NestDocumentService {
+  constructor(private readonly repository: NestDocumentRepository) {}
+
+  loadDocumentForUser(documentId: string, authenticatedUserId: string) {
+    return this.repository.fetchOwnedDocument(documentId, authenticatedUserId);
+  }
+}
+`);
+    await writeFile(join(temporary, "nest", "document.repository.ts"), `
+export class NestDocumentRepository {
+  fetchOwnedDocument(documentId: string, authenticatedUserId: string) {
+    return this.prisma.document.findFirst({ where: { id: documentId, userId: authenticatedUserId } });
+  }
+}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    for (const route of ["GET /express/documents/:documentId", "GET /nest/documents/:documentId"]) {
+      assert.ok(report.profile.routes.includes(route));
+      assert.ok(!report.signals.some((signal) => /^(?:express|nestjs)\.authorization\./.test(signal.ruleId)
+        && signal.metadata?.route === route), `${route} should accept the authenticated-subject owner predicate`);
+    }
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Node API analysis does not treat relation-shaped response metadata as an ORM owner predicate", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-response-owner-decoy-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+const app = express();
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+app.get("/documents/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  return res.json({ document, user: { id: req.user.id } });
+});
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.signals.some((signal) => signal.ruleId === "express.authorization.object-without-ownership-check"
+      && signal.metadata?.route === "GET /documents/:documentId"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("NestJS analysis does not treat a tenant guard as an administrator role guard", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-tenant-not-admin-"));
   try {

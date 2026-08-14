@@ -69,9 +69,32 @@ interface ResolvedFunction {
   parsed: ParsedSource;
 }
 
+interface ResolvedClass {
+  declaration: ts.ClassDeclaration;
+  parsed: ParsedSource;
+}
+
+interface LocalCallSemantics {
+  source: string;
+  ownershipProtected: boolean;
+  roleProtected: boolean;
+  objectOperation: boolean;
+  responseOwnerFields: string[];
+}
+
+interface LocalCallAnalyzer {
+  analyze(
+    parsed: ParsedSource,
+    declaration: ts.FunctionLikeDeclaration,
+    ownerClass: ResolvedClass | undefined,
+    objectIdFields: string[],
+  ): LocalCallSemantics;
+}
+
 interface ExpressRouteCandidate {
   receiver: string;
   parsed: ParsedSource;
+  handlerParsed: ParsedSource;
   method: string;
   path: string;
   offset: number;
@@ -116,6 +139,7 @@ const NODE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", "
 const NON_RUNTIME_NODE_PATH = /(?:^|\/)(?:test|tests|fixtures|examples?|scripts|mocks?|__tests__|old-archive)(?:\/|$)|(?:^|\/)(?:debug|test|example)[^/]*\.(?:[cm]?[jt]sx?)$/i;
 const HTTP_METHODS = new Set(["get", "post", "put", "patch", "delete", "options", "head", "all"]);
 const OWNER_FIELD = /^(?:owner_id|user_id|tenant_id|creator_id|created_by|account_id|organization_id|org_id|ownerId|userId|tenantId|creatorId|createdBy|accountId|organizationId|orgId)$/;
+const OWNER_RELATION_FIELD = /^(?:owner|author|user|tenant|creator|account|organization|org)$/i;
 const AUTH_GUARD_NAME = /(?:^|[._])(?:auth(?:Middleware|Guard)?|authenticate|authenticated|authentication(?:Middleware)?|requireAuth|requireUser|ensureAuthenticated|isAuthenticated|verifyToken|verifySession|jwtAuth(?:Guard)?|jwtGuard|sessionAuth(?:Guard)?|bearerAuth|protect|passport\.authenticate)(?:$|[.(])/i;
 const ACCESS_GUARD_NAME = /(?:^|[._])(?:require|verify|check|ensure|authorize|assert|can)[A-Za-z0-9_]*(?:access|owner|ownership|permission|policy|role|admin|tenant)|(?:owner|ownership|permission|policy|ability|role|admin|tenant)[A-Za-z0-9_]*(?:guard|check)(?:$|[.(])/i;
 const ROLE_GUARD_NAME = /(?:^|[._])(?:require|verify|check|ensure|authorize|assert|can)[A-Za-z0-9_]*(?:permission|policy|role|admin)|(?:permission|policy|ability|role|admin)[A-Za-z0-9_]*(?:guard|check|only|middleware)(?:$|[.(])/i;
@@ -465,14 +489,14 @@ function explicitAuthentication(source: string): boolean {
   return deniedWhenAbsent || continuesWhenPresent;
 }
 
-function ownershipGuard(source: string): boolean {
+function ownershipGuard(source: string, allowUnscopedDirectBinding = true): boolean {
   if (ACCESS_GUARD_NAME.test(source)) return true;
   const identity = String.raw`(?:(?:req(?:uest)?|ctx|context)\s*(?:\?\.)?\.\s*(?:user|auth|session)(?:\s*(?:\?\.)?\.\s*(?:id|userId|tenantId|role|isAdmin))?|(?:currentUser|authenticatedUser|principal|identity)(?:\s*(?:\?\.)?\.\s*(?:id|userId|tenantId|role|isAdmin))?)`;
   const owner = String.raw`(?:owner_id|user_id|tenant_id|creator_id|created_by|account_id|organization_id|org_id|ownerId|userId|tenantId|creatorId|createdBy|accountId|organizationId|orgId)`;
   const directBinding = new RegExp(`${owner}\\s*:\\s*${identity}`, "i");
   const comparison = new RegExp(`(?:\\.\\s*${owner}|\\b${owner}\\b)\\s*(?:===?|!==?)\\s*${identity}|${identity}\\s*(?:===?|!==?)\\s*(?:\\.\\s*${owner}|\\b${owner}\\b)`, "i");
   const roleDenial = new RegExp(`${identity}[\\s\\S]{0,180}?(?:role|isAdmin|permissions?|ability)[\\s\\S]{0,180}?(?:Forbidden|status\\s*\\(\\s*403|AccessDenied)`, "i");
-  return directBinding.test(source) || comparison.test(source) || roleDenial.test(source);
+  return (allowUnscopedDirectBinding && directBinding.test(source)) || comparison.test(source) || roleDenial.test(source);
 }
 
 function roleGuard(source: string): boolean {
@@ -628,6 +652,330 @@ function resolveFunction(
   return symbol && declaration ? { declaration, parsed: symbol.parsed } : undefined;
 }
 
+function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, ParsedSource>): LocalCallAnalyzer {
+  const declarations = new Map(sources.map((parsed) => [parsed.file.relativePath, functionDeclarations(parsed.source)]));
+  const variables = new Map<string, { parsed: ParsedSource; expression: ts.Expression }>();
+  const classes = new Map<string, ResolvedClass>();
+  const classKey = (parsed: ParsedSource, local: string): string => `${parsed.file.relativePath}\u0000${local}`;
+  for (const parsed of sources) {
+    visit(parsed.source, (node) => {
+      if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
+        variables.set(classKey(parsed, node.name.text), { parsed, expression: node.initializer });
+      }
+    });
+    for (const statement of parsed.source.statements) {
+      if (!ts.isClassDeclaration(statement)) continue;
+      const local = statement.name?.text
+        ?? (hasModifier(statement, ts.SyntaxKind.DefaultKeyword) ? syntheticExportLocal("default") : undefined);
+      if (local) classes.set(classKey(parsed, local), { declaration: statement, parsed });
+    }
+  }
+
+  const classFromSymbol = (symbol: ResolvedSymbol | undefined): ResolvedClass | undefined => symbol
+    ? classes.get(classKey(symbol.parsed, symbol.local)) : undefined;
+  const classFromLocal = (parsed: ParsedSource, local: string): ResolvedClass | undefined => classFromSymbol(resolveLocalSymbol(parsed, local, lookup));
+  const classFromType = (parsed: ParsedSource, type: ts.TypeNode | undefined): ResolvedClass | undefined => {
+    if (!type) return undefined;
+    if (ts.isUnionTypeNode(type)) {
+      for (const item of type.types) {
+        const resolved = classFromType(parsed, item);
+        if (resolved) return resolved;
+      }
+      return undefined;
+    }
+    if (!ts.isTypeReferenceNode(type)) return undefined;
+    if (ts.isIdentifier(type.typeName)) return classFromLocal(parsed, type.typeName.text);
+    if (ts.isQualifiedName(type.typeName) && ts.isIdentifier(type.typeName.left)) {
+      const namespace = parsed.imports.get(type.typeName.left.text);
+      const target = namespace?.namespace && resolveModule(parsed, namespace.module, lookup);
+      return target ? classFromSymbol(resolveExportedSymbol(target, type.typeName.right.text, lookup)) : undefined;
+    }
+    return undefined;
+  };
+
+  const dependencyCache = new Map<string, ResolvedClass | null>();
+  const resolveValueClass = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+    ownerClass: ResolvedClass | undefined,
+    seen?: Set<string>,
+  ): ResolvedClass | undefined => {
+    const current = unwrapExpression(expression);
+    const nextSeen = seen ?? new Set<string>();
+    if (ts.isNewExpression(current)) return resolveValueClass(parsed, current.expression, ownerClass, nextSeen);
+    if (ts.isIdentifier(current)) {
+      const symbol = resolveLocalSymbol(parsed, current.text, lookup);
+      const resolved = classFromSymbol(symbol);
+      if (resolved) return resolved;
+      if (!symbol) return undefined;
+      const key = classKey(symbol.parsed, symbol.local);
+      if (nextSeen.has(key)) return undefined;
+      const initializer = variables.get(key);
+      return initializer && resolveValueClass(initializer.parsed, initializer.expression, ownerClass, new Set(nextSeen).add(key));
+    }
+    if (ts.isPropertyAccessExpression(current)) {
+      const exported = classFromSymbol(resolveExpressionSymbol(parsed, current, lookup));
+      if (exported) return exported;
+      if (current.expression.kind === ts.SyntaxKind.ThisKeyword && ownerClass) {
+        return resolveDependency(ownerClass, current.name.text);
+      }
+    }
+    return undefined;
+  };
+  const parameterClass = (owner: ResolvedClass, parameter: ts.ParameterDeclaration): ResolvedClass | undefined => {
+    if (parameter.initializer) {
+      const initialized = resolveValueClass(owner.parsed, parameter.initializer, owner);
+      if (initialized) return initialized;
+    }
+    return classFromType(owner.parsed, parameter.type);
+  };
+  const resolveDependency = (owner: ResolvedClass, property: string): ResolvedClass | undefined => {
+    const cacheKey = `${owner.parsed.file.relativePath}\u0000${owner.declaration.pos}\u0000${property}`;
+    const cached = dependencyCache.get(cacheKey);
+    if (cached !== undefined) return cached ?? undefined;
+    dependencyCache.set(cacheKey, null);
+    for (const member of owner.declaration.members) {
+      if (ts.isPropertyDeclaration(member) && propertyName(member.name) === property) {
+        const initialized = member.initializer && resolveValueClass(owner.parsed, member.initializer, owner);
+        const resolved = initialized || classFromType(owner.parsed, member.type);
+        if (resolved) {
+          dependencyCache.set(cacheKey, resolved);
+          return resolved;
+        }
+      }
+      if (!ts.isConstructorDeclaration(member)) continue;
+      const directParameter = member.parameters.find((parameter) => ts.isIdentifier(parameter.name) && parameter.name.text === property);
+      const direct = directParameter && parameterClass(owner, directParameter);
+      if (direct) {
+        dependencyCache.set(cacheKey, direct);
+        return direct;
+      }
+      if (!member.body) continue;
+      let assigned: ResolvedClass | undefined;
+      visit(member.body, (node) => {
+        if (assigned || !ts.isBinaryExpression(node) || node.operatorToken.kind !== ts.SyntaxKind.EqualsToken
+          || !ts.isPropertyAccessExpression(node.left) || node.left.expression.kind !== ts.SyntaxKind.ThisKeyword
+          || node.left.name.text !== property) return;
+        assigned = resolveValueClass(owner.parsed, node.right, owner);
+        if (!assigned && ts.isIdentifier(unwrapExpression(node.right))) {
+          const local = (unwrapExpression(node.right) as ts.Identifier).text;
+          const parameter = member.parameters.find((item) => ts.isIdentifier(item.name) && item.name.text === local);
+          assigned = parameter && parameterClass(owner, parameter);
+        }
+      });
+      if (assigned) {
+        dependencyCache.set(cacheKey, assigned);
+        return assigned;
+      }
+    }
+    return undefined;
+  };
+
+  const classMethod = (owner: ResolvedClass, name: string): ResolvedFunction | undefined => {
+    for (const member of owner.declaration.members) {
+      if (propertyName(member.name) !== name) continue;
+      if (ts.isMethodDeclaration(member) && member.body) return { declaration: member, parsed: owner.parsed };
+      if (ts.isPropertyDeclaration(member) && member.initializer) {
+        const value = unwrapExpression(member.initializer);
+        if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) return { declaration: value, parsed: owner.parsed };
+      }
+    }
+    return undefined;
+  };
+  const classOwning = (resolved: ResolvedFunction): ResolvedClass | undefined => {
+    for (const owner of classes.values()) {
+      if (owner.parsed !== resolved.parsed) continue;
+      if (owner.declaration.members.some((member) => member === resolved.declaration
+        || (ts.isPropertyDeclaration(member) && member.initializer === resolved.declaration))) return owner;
+    }
+    return undefined;
+  };
+  const resolveCall = (
+    parsed: ParsedSource,
+    call: ts.CallExpression,
+    ownerClass: ResolvedClass | undefined,
+  ): { callable: ResolvedFunction; ownerClass?: ResolvedClass } | undefined => {
+    const direct = resolveFunction(parsed, call.expression, lookup, declarations);
+    if (direct) return { callable: direct, ownerClass: classOwning(direct) };
+    const expression = unwrapExpression(call.expression);
+    if (!ts.isPropertyAccessExpression(expression)) return undefined;
+    let targetClass: ResolvedClass | undefined;
+    if (expression.expression.kind === ts.SyntaxKind.ThisKeyword) targetClass = ownerClass;
+    else if (ts.isPropertyAccessExpression(expression.expression)
+      && expression.expression.expression.kind === ts.SyntaxKind.ThisKeyword && ownerClass) {
+      targetClass = resolveDependency(ownerClass, expression.expression.name.text);
+    } else targetClass = resolveValueClass(parsed, expression.expression, ownerClass);
+    const callable = targetClass && classMethod(targetClass, expression.name.text);
+    return callable ? { callable, ownerClass: targetClass } : undefined;
+  };
+
+  const identityDecorator = /^(?:CurrentUser|AuthenticatedUser|Principal|Identity|Actor)$/i;
+  const expressionCarriesIdentity = (expression: ts.Expression, aliases: Set<string>): boolean => {
+    const current = unwrapExpression(expression);
+    if (ts.isAwaitExpression(current)) return expressionCarriesIdentity(current.expression, aliases);
+    if (ts.isIdentifier(current)) return aliases.has(current.text);
+    const segments = accessSegments(current);
+    if (!segments || segments.length === 0) return false;
+    const root = segments[0]!;
+    if (aliases.has(root)) return true;
+    if (!/^(?:req|request|ctx|context)$/.test(root)) return false;
+    const requestOffset = segments[1] === "request" ? 2 : 1;
+    return /^(?:user|auth|session)$/.test(segments[requestOffset] ?? "");
+  };
+  const collectBindingIdentifiers = (name: ts.BindingName, result: Set<string>): void => {
+    if (ts.isIdentifier(name)) result.add(name.text);
+    else for (const element of name.elements) if (!ts.isOmittedExpression(element)) collectBindingIdentifiers(element.name, result);
+  };
+  const identityAliases = (declaration: ts.FunctionLikeDeclaration, incoming: Set<string>): Set<string> => {
+    const aliases = new Set(incoming);
+    for (const parameter of declaration.parameters) {
+      if (!ts.isIdentifier(parameter.name)) continue;
+      if (decorators(parameter).map(decoratorDetails).some((item) => identityDecorator.test(item.name))) aliases.add(parameter.name.text);
+    }
+    let changed = true;
+    while (changed) {
+      changed = false;
+      visit(declaration, (node) => {
+        if (ts.isVariableDeclaration(node) && node.initializer && expressionCarriesIdentity(node.initializer, aliases)) {
+          const additions = new Set<string>();
+          collectBindingIdentifiers(node.name, additions);
+          for (const addition of additions) if (!aliases.has(addition)) {
+            aliases.add(addition);
+            changed = true;
+          }
+        }
+        if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.EqualsToken
+          && ts.isIdentifier(node.left) && expressionCarriesIdentity(node.right, aliases) && !aliases.has(node.left.text)) {
+          aliases.add(node.left.text);
+          changed = true;
+        }
+      });
+    }
+    return aliases;
+  };
+  const ownerExpression = (expression: ts.Expression): boolean => {
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) return OWNER_FIELD.test(current.text);
+    const segments = accessSegments(current);
+    return Boolean(segments?.at(-1) && OWNER_FIELD.test(segments.at(-1)!));
+  };
+  const astOwnershipBinding = (declaration: ts.FunctionLikeDeclaration, aliases: Set<string>): boolean => {
+    let protectedByOwner = false;
+    const insideObjectOperation = (node: ts.Node): boolean => {
+      let current = node.parent;
+      while (current && current !== declaration) {
+        if (ts.isCallExpression(current)) {
+          const name = expressionName(current.expression).replace(/\(\)/g, "");
+          if (ID_OPERATION.test(name)) return true;
+        }
+        current = current.parent;
+      }
+      return false;
+    };
+    const relationBindsIdentity = (expression: ts.Expression): boolean => {
+      const current = unwrapExpression(expression);
+      if (!ts.isObjectLiteralExpression(current)) return false;
+      let bound = false;
+      visit(current, (node) => {
+        if (bound) return;
+        if (ts.isPropertyAssignment(node)) {
+          const name = propertyName(node.name);
+          if ((name === "id" || Boolean(name && OWNER_FIELD.test(name)))
+            && expressionCarriesIdentity(node.initializer, aliases)) bound = true;
+        } else if (ts.isShorthandPropertyAssignment(node)
+          && (node.name.text === "id" || OWNER_FIELD.test(node.name.text)) && aliases.has(node.name.text)) bound = true;
+      });
+      return bound;
+    };
+    visit(declaration, (node) => {
+      if (protectedByOwner) return;
+      if (ts.isPropertyAssignment(node)) {
+        const name = propertyName(node.name);
+        if (insideObjectOperation(node) && name && OWNER_FIELD.test(name)
+          && expressionCarriesIdentity(node.initializer, aliases)) protectedByOwner = true;
+        else if (insideObjectOperation(node) && name && OWNER_RELATION_FIELD.test(name)
+          && relationBindsIdentity(node.initializer)) protectedByOwner = true;
+      } else if (ts.isShorthandPropertyAssignment(node) && insideObjectOperation(node)
+        && OWNER_FIELD.test(node.name.text) && aliases.has(node.name.text)) {
+        protectedByOwner = true;
+      } else if (ts.isBinaryExpression(node) && [
+        ts.SyntaxKind.EqualsEqualsToken,
+        ts.SyntaxKind.EqualsEqualsEqualsToken,
+        ts.SyntaxKind.ExclamationEqualsToken,
+        ts.SyntaxKind.ExclamationEqualsEqualsToken,
+      ].includes(node.operatorToken.kind)) {
+        if ((ownerExpression(node.left) && expressionCarriesIdentity(node.right, aliases))
+          || (ownerExpression(node.right) && expressionCarriesIdentity(node.left, aliases))) protectedByOwner = true;
+      }
+    });
+    return protectedByOwner;
+  };
+
+  const cache = new Map<string, LocalCallSemantics>();
+  const analyze = (
+    parsed: ParsedSource,
+    declaration: ts.FunctionLikeDeclaration,
+    ownerClass: ResolvedClass | undefined,
+    objectIdFields: string[],
+  ): LocalCallSemantics => {
+    const cacheKey = `${parsed.file.relativePath}\u0000${declaration.pos}\u0000${objectIdFields.join(",")}`;
+    const cached = cache.get(cacheKey);
+    if (cached) return cached;
+    const queue: Array<{
+      callable: ResolvedFunction;
+      ownerClass?: ResolvedClass;
+      aliases: Set<string>;
+      depth: number;
+    }> = [{ callable: { declaration, parsed }, ownerClass, aliases: new Set(), depth: 0 }];
+    const visited = new Set<string>();
+    const semanticSources: string[] = [];
+    const responseFields = new Set<string>();
+    let ownershipProtected = false;
+    let roleProtected = false;
+    let objectOperation = false;
+    const maxDepth = 4;
+    const maxCallables = 32;
+    while (queue.length > 0 && visited.size < maxCallables) {
+      const current = queue.shift()!;
+      const aliases = identityAliases(current.callable.declaration, current.aliases);
+      const visitKey = `${current.callable.parsed.file.relativePath}\u0000${current.callable.declaration.pos}\u0000${[...aliases].sort().join(",")}`;
+      if (visited.has(visitKey)) continue;
+      visited.add(visitKey);
+      const source = current.callable.declaration.getText(current.callable.parsed.source);
+      semanticSources.push(source);
+      ownershipProtected ||= (current.depth === 0 && ownershipGuard(source, false))
+        || ACCESS_GUARD_NAME.test(source) || astOwnershipBinding(current.callable.declaration, aliases);
+      roleProtected ||= roleGuard(source);
+      objectOperation ||= hasObjectOperation(current.callable.declaration, objectIdFields);
+      for (const field of responseOwnerFields(current.callable.declaration)) responseFields.add(field);
+      if (current.depth >= maxDepth) continue;
+      visit(current.callable.declaration, (node) => {
+        if (!ts.isCallExpression(node)) return;
+        const target = resolveCall(current.callable.parsed, node, current.ownerClass);
+        if (!target) return;
+        const incoming = new Set<string>();
+        for (let index = 0; index < Math.min(node.arguments.length, target.callable.declaration.parameters.length); index += 1) {
+          const argument = node.arguments[index];
+          const parameter = target.callable.declaration.parameters[index];
+          if (!argument || !parameter || !ts.isIdentifier(parameter.name)) continue;
+          if (expressionCarriesIdentity(argument, aliases)) incoming.add(parameter.name.text);
+        }
+        queue.push({ callable: target.callable, ownerClass: target.ownerClass, aliases: incoming, depth: current.depth + 1 });
+      });
+    }
+    const result = {
+      source: semanticSources.join("\n"),
+      ownershipProtected,
+      roleProtected,
+      objectOperation,
+      responseOwnerFields: [...responseFields].sort(),
+    };
+    cache.set(cacheKey, result);
+    return result;
+  };
+  return { analyze };
+}
+
 function isExpressFactoryCall(expression: ts.Expression, expressFactories: Set<string>, routerFactories: Set<string>): "app" | "router" | undefined {
   const current = unwrapExpression(expression);
   if (!ts.isCallExpression(current)) return undefined;
@@ -654,7 +1002,10 @@ function expressFactoryChain(
   return parent ? { kind: parent.kind, expressions: [...parent.expressions, current] } : undefined;
 }
 
-function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unresolvedHandlers: number; unresolvedMounts: number } {
+function expressRoutes(
+  sources: ParsedSource[],
+  localCalls: LocalCallAnalyzer,
+): { routes: NodeApiRoute[]; unresolvedHandlers: number; unresolvedMounts: number } {
   const lookup = parsedSourceLookup(sources);
   const declarations = new Map(sources.map((parsed) => [parsed.file.relativePath, functionDeclarations(parsed.source)]));
   const variableInitializers = new Map<string, { parsed: ParsedSource; expression: ts.Expression }>();
@@ -874,6 +1225,7 @@ function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unres
       candidates.push({
         receiver,
         parsed,
+        handlerParsed,
         method: callName === "all" ? "ALL" : callName.toUpperCase(),
         path,
         offset: node.getStart(parsed.source),
@@ -915,6 +1267,15 @@ function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unres
   for (const candidate of candidates) {
     for (const variant of routeVariants(candidate.receiver, candidate.path)) {
       const fields = objectIdFields(candidate.handler, variant.path, new Set(), new Set());
+      const semantics = candidate.handler
+        ? localCalls.analyze(candidate.handlerParsed, candidate.handler, undefined, fields)
+        : {
+          source: candidate.handlerSource,
+          ownershipProtected: ownershipGuard(candidate.handlerSource),
+          roleProtected: roleGuard(candidate.handlerSource),
+          objectOperation: false,
+          responseOwnerFields: [],
+        };
       routes.push({
         framework: "Express",
         method: candidate.method,
@@ -926,13 +1287,13 @@ function expressRoutes(sources: ParsedSource[]): { routes: NodeApiRoute[]; unres
         location: candidate.location,
         authenticationProtected: candidate.locallyAuthenticated || variant.inheritedAuthentication
           || protectedByMiddleware(candidate.receiver, candidate.path, candidate.offset, candidate.parsed.file.relativePath),
-        ownershipProtected: ownershipGuard(candidate.handlerSource),
-        roleProtected: candidate.locallyRoleProtected || variant.inheritedRoleProtection
+        ownershipProtected: semantics.ownershipProtected,
+        roleProtected: semantics.roleProtected || candidate.locallyRoleProtected || variant.inheritedRoleProtection
           || roleProtectedByMiddleware(candidate.receiver, candidate.path, candidate.offset, candidate.parsed.file.relativePath),
-        privilegedOperation: privilegedOperation(variant.path, candidate.handlerName, candidate.handlerSource),
-        objectOperation: hasObjectOperation(candidate.handler, fields),
+        privilegedOperation: privilegedOperation(variant.path, candidate.handlerName, semantics.source),
+        objectOperation: semantics.objectOperation,
         objectIdFields: fields,
-        responseOwnerFields: responseOwnerFields(candidate.handler),
+        responseOwnerFields: semantics.responseOwnerFields,
       });
     }
   }
@@ -1175,35 +1536,6 @@ function nestInputDetails(method: ts.MethodDeclaration): { roots: Set<string>; f
   return { roots, fields };
 }
 
-function nestMethodSemanticSource(
-  method: ts.MethodDeclaration,
-  controller: ts.ClassDeclaration,
-  source: ts.SourceFile,
-): string {
-  const methods = new Map<string, ts.MethodDeclaration>();
-  for (const member of controller.members) {
-    if (ts.isMethodDeclaration(member) && member.body) {
-      const name = propertyName(member.name);
-      if (name) methods.set(name, member);
-    }
-  }
-  const collected: string[] = [];
-  const seen = new Set<ts.MethodDeclaration>();
-  const collect = (current: ts.MethodDeclaration, depth: number): void => {
-    if (seen.has(current) || depth > 3) return;
-    seen.add(current);
-    collected.push(current.getText(source));
-    visit(current, (node) => {
-      if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)
-        || node.expression.expression.kind !== ts.SyntaxKind.ThisKeyword) return;
-      const helper = methods.get(node.expression.name.text);
-      if (helper) collect(helper, depth + 1);
-    });
-  };
-  collect(method, 0);
-  return collected.join("\n");
-}
-
 function objectProperty(expression: ts.Expression | undefined, name: string): ts.Expression | undefined {
   const current = expression && unwrapExpression(expression);
   if (!current || !ts.isObjectLiteralExpression(current)) return undefined;
@@ -1290,6 +1622,7 @@ function nestRoutes(
   semantics: NestSecuritySemantics,
   lookup: Map<string, ParsedSource>,
   routing: NestRoutingConfig,
+  localCalls: LocalCallAnalyzer,
 ): NodeApiRoute[] {
   const routes: NodeApiRoute[] = [];
   for (const statement of parsed.source.statements) {
@@ -1310,12 +1643,12 @@ function nestRoutes(
       const methodAuthenticated = nestDecoratorAuthentication(methodDecorators, parsed, semantics, lookup);
       const methodRole = nestDecoratorRole(methodDecorators, parsed, semantics, lookup);
       const source = member.getText(parsed.source);
-      const semanticSource = nestMethodSemanticSource(member, statement, parsed.source);
       const inputs = nestInputDetails(member);
       for (const routeDecorator of routeDecorators) {
         const localPath = joinPath(prefix, literalText(routeDecorator.arguments[0]) ?? "");
         for (const path of nestRoutePaths(localPath, methodDecorators, classDecorators, routing)) {
           const fields = objectIdFields(member, path, inputs.roots, inputs.fields);
+          const callSemantics = localCalls.analyze(parsed, member, { parsed, declaration: statement }, fields);
           routes.push({
             framework: "NestJS",
             method: routeDecorator.name === "All" ? "ALL" : routeDecorator.name.toUpperCase(),
@@ -1326,14 +1659,14 @@ function nestRoutes(
             handlerSource: source,
             location: location(parsed, member),
             authenticationProtected: methodAuthenticated
-              || (!isPublic && (classAuthenticated || globalSecurity.authentication)) || explicitAuthentication(semanticSource),
+              || (!isPublic && (classAuthenticated || globalSecurity.authentication)) || explicitAuthentication(callSemantics.source),
             ownershipProtected: classOwnership || (!isPublic && globalSecurity.ownership)
-              || nestDecoratorOwnership(methodDecorators, parsed, semantics, lookup) || ownershipGuard(semanticSource),
-            roleProtected: classRole || methodRole || (!isPublic && globalSecurity.role) || roleGuard(semanticSource),
-            privilegedOperation: privilegedOperation(path, propertyName(member.name) ?? "anonymous", semanticSource),
-            objectOperation: hasObjectOperation(member, fields),
+              || nestDecoratorOwnership(methodDecorators, parsed, semantics, lookup) || callSemantics.ownershipProtected,
+            roleProtected: classRole || methodRole || (!isPublic && globalSecurity.role) || callSemantics.roleProtected,
+            privilegedOperation: privilegedOperation(path, propertyName(member.name) ?? "anonymous", callSemantics.source),
+            objectOperation: callSemantics.objectOperation,
             objectIdFields: fields,
-            responseOwnerFields: responseOwnerFields(member),
+            responseOwnerFields: callSemantics.responseOwnerFields,
           });
         }
       }
@@ -1361,21 +1694,22 @@ export function analyzeNodeApi(files: ProjectFile[]): NodeApiAnalysis {
   const detectedExpress = packages.has("express") || parsed.some((item) => item.modules.has("express"));
   const detectedNest = packages.has("@nestjs/core") || packages.has("@nestjs/common")
     || parsed.some((item) => [...item.modules].some((name) => name === "@nestjs/core" || name === "@nestjs/common"));
+  const lookup = parsedSourceLookup(parsed);
+  const localCalls = createLocalCallAnalyzer(parsed, lookup);
   const routes: NodeApiRoute[] = [];
   let unresolvedHandlers = 0;
   let unresolvedMounts = 0;
   if (detectedExpress) {
-    const result = expressRoutes(parsed);
+    const result = expressRoutes(parsed, localCalls);
     routes.push(...result.routes);
     unresolvedHandlers += result.unresolvedHandlers;
     unresolvedMounts += result.unresolvedMounts;
   }
   if (detectedNest) {
-    const lookup = parsedSourceLookup(parsed);
     const semantics = discoverNestSecurity(parsed, lookup);
     const globalSecurity = globalNestSecurity(parsed, semantics, lookup);
     const routing = nestRoutingConfig(parsed);
-    for (const item of parsed) routes.push(...nestRoutes(item, globalSecurity, semantics, lookup, routing));
+    for (const item of parsed) routes.push(...nestRoutes(item, globalSecurity, semantics, lookup, routing, localCalls));
   }
   const deduplicated = [...new Map(routes.map((route) => [routeKey(route), route])).values()]
     .sort((left, right) => left.path.localeCompare(right.path) || left.method.localeCompare(right.method));

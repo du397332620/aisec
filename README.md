@@ -40,10 +40,16 @@ and selected handlers or middleware exposed by locally constructed instances.
 NestJS coverage recognizes common `CanActivate` guard implementations, composed
 decorator factories such as `applyDecorators(UseGuards(...))`, same-controller
 authorization helpers, static global prefixes and URI versions. Both analyzers
-distinguish visible object ownership/tenant constraints from role or permission
-checks on privileged operations. Package aliases, computed/dynamic route
-registration, dependency-injected policy wrappers and external authorization
-engines remain partial static coverage and require review.
+follow bounded local controller/handler-to-service-to-repository calls for up to
+four edges, including common constructed properties and typed NestJS constructor
+dependencies. A common ORM owner predicate reached through these calls is
+accepted only when its value can be traced from an authenticated subject such as
+`request.user`, rather than from a route parameter that merely has an owner-like
+name. They also distinguish ownership or
+tenant constraints from role or permission checks on privileged operations.
+Package aliases, computed/dynamic route registration, factory-provided
+dependencies, deeper or complex ORM wrappers and external authorization engines
+remain partial static coverage and require review.
 
 Other ecosystems receive baseline coverage when optional Opengrep, Gitleaks and
 Trivy engines are installed. A report explicitly records `complete`, `partial`,
@@ -275,7 +281,7 @@ binaries and prepare the Trivy database before scanning.
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; some findings are explicitly `inferred` and require review |
 | FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
-| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative-module and parameter-passed Express apps/routers, selected constructed handlers, and NestJS controllers, custom guards, composed decorators, same-controller helpers, global prefixes and URI versions; reports missing object ownership and privileged role/permission checks as inferred findings; dynamic registrations, package aliases and external policy engines still require review |
+| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, NestJS controllers and guards, and up to four local controller/service/repository call edges; traces authenticated-subject identity into common ORM owner predicates; reports missing ownership and privileged role/permission checks as inferred findings; dynamic registrations, package aliases, factory dependencies, complex wrappers and external policy engines still require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |
