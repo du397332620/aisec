@@ -31,6 +31,7 @@ export interface NodeApiAnalysis {
   filesWithParseErrors: number;
   unresolvedHandlers: number;
   unresolvedMounts: number;
+  unresolvedRegistrations: number;
 }
 
 interface ParsedSource {
@@ -148,6 +149,8 @@ const NEST_AUTH_GUARD_HINT = /(?:auth|jwt|session|identity|loggedIn|signedIn|use
 const NEST_OWNERSHIP_GUARD_HINT = /(?:owner|ownership|tenant|role|permission|policy|ability|access|admin)/i;
 const PRIVILEGED_ROUTE_HINT = /(?:^|\/)(?:admin|administration|manage|management|permissions?|roles?)(?:\/|$)/i;
 const PRIVILEGED_HANDLER_HINT = /(?:admin|nonAdmin|allUsers?|manageUsers?|permissions?|roles?)/i;
+const MAX_STATIC_ROUTE_ENTRIES = 128;
+const MAX_STATIC_ROUTE_EXPANSIONS = 512;
 
 function scriptKind(path: string): ts.ScriptKind {
   const extension = extname(path).toLowerCase();
@@ -1005,15 +1008,29 @@ function expressFactoryChain(
 function expressRoutes(
   sources: ParsedSource[],
   localCalls: LocalCallAnalyzer,
-): { routes: NodeApiRoute[]; unresolvedHandlers: number; unresolvedMounts: number } {
+): { routes: NodeApiRoute[]; unresolvedHandlers: number; unresolvedMounts: number; unresolvedRegistrations: number } {
   const lookup = parsedSourceLookup(sources);
   const declarations = new Map(sources.map((parsed) => [parsed.file.relativePath, functionDeclarations(parsed.source)]));
   const variableInitializers = new Map<string, { parsed: ParsedSource; expression: ts.Expression }>();
+  const staticInitializers = new Map<string, { parsed: ParsedSource; expression: ts.Expression }>();
   for (const parsed of sources) visit(parsed.source, (node) => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       variableInitializers.set(`${parsed.file.relativePath}\u0000${node.name.text}`, { parsed, expression: node.initializer });
     }
   });
+  for (const parsed of sources) {
+    for (const statement of parsed.source.statements) {
+      if (!ts.isVariableStatement(statement) || !(statement.declarationList.flags & ts.NodeFlags.Const)) continue;
+      for (const declaration of statement.declarationList.declarations) {
+        if (ts.isIdentifier(declaration.name) && declaration.initializer) {
+          staticInitializers.set(`${parsed.file.relativePath}\u0000${declaration.name.text}`, {
+            parsed,
+            expression: declaration.initializer,
+          });
+        }
+      }
+    }
+  }
   const receivers = new Map<string, "app" | "router">();
   const expressionReceivers = new Map<ts.Expression, string>();
   const receiverKey = (parsed: ParsedSource, local: string): string => `${parsed.file.relativePath}\u0000${local}`;
@@ -1072,7 +1089,7 @@ function expressRoutes(
       for (const item of chain.expressions) expressionReceivers.set(item, key);
     });
   }
-  if (receivers.size === 0) return { routes: [], unresolvedHandlers: 0, unresolvedMounts: 0 };
+  if (receivers.size === 0) return { routes: [], unresolvedHandlers: 0, unresolvedMounts: 0, unresolvedRegistrations: 0 };
 
   const resolvedReceiver = (parsed: ParsedSource, expression: ts.Expression): string | undefined => {
     const current = unwrapExpression(expression);
@@ -1158,18 +1175,221 @@ function expressRoutes(
     const resolved = resolveExpressFunction(parsed, expression);
     return Boolean(resolved && roleGuard(resolved.declaration.getText(resolved.parsed.source)));
   };
+
+  type StaticBindings = Map<string, ts.Expression>;
+  const objectMemberExpression = (object: ts.ObjectLiteralExpression, name: string): ts.Expression | undefined => {
+    for (const member of object.properties) {
+      if (propertyName(member.name) !== name) continue;
+      if (ts.isPropertyAssignment(member)) return member.initializer;
+      if (ts.isShorthandPropertyAssignment(member)) return member.name;
+    }
+    return undefined;
+  };
+  const staticExpression = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+    bindings: StaticBindings,
+    seen = new Set<string>(),
+    depth = 0,
+  ): ts.Expression | undefined => {
+    if (depth > 12 || ts.isSpreadElement(expression)) return undefined;
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) {
+      const bound = bindings.get(current.text);
+      if (bound && (!ts.isIdentifier(bound) || bound.text !== current.text)) {
+        return staticExpression(parsed, bound, bindings, seen, depth + 1);
+      }
+      const key = `${parsed.file.relativePath}\u0000${current.text}`;
+      if (seen.has(key)) return undefined;
+      const initializer = staticInitializers.get(key);
+      return initializer
+        ? staticExpression(initializer.parsed, initializer.expression, bindings, new Set(seen).add(key), depth + 1)
+        : current;
+    }
+    if (ts.isPropertyAccessExpression(current)) {
+      const owner = staticExpression(parsed, current.expression, bindings, seen, depth + 1);
+      if (owner && ts.isObjectLiteralExpression(unwrapExpression(owner))) {
+        const member = objectMemberExpression(unwrapExpression(owner) as ts.ObjectLiteralExpression, current.name.text);
+        return member ? staticExpression(parsed, member, bindings, seen, depth + 1) : undefined;
+      }
+      return current;
+    }
+    if (ts.isElementAccessExpression(current) && current.argumentExpression) {
+      const owner = staticExpression(parsed, current.expression, bindings, seen, depth + 1);
+      const memberName = literalText(current.argumentExpression);
+      if (owner && memberName !== undefined && ts.isObjectLiteralExpression(unwrapExpression(owner))) {
+        const member = objectMemberExpression(unwrapExpression(owner) as ts.ObjectLiteralExpression, memberName);
+        return member ? staticExpression(parsed, member, bindings, seen, depth + 1) : undefined;
+      }
+      return current;
+    }
+    return current;
+  };
+  const staticString = (
+    parsed: ParsedSource,
+    expression: ts.Expression | undefined,
+    bindings: StaticBindings,
+  ): string | undefined => {
+    if (!expression) return undefined;
+    const resolved = staticExpression(parsed, expression, bindings);
+    return resolved && literalText(resolved);
+  };
+  const staticArrayElements = (parsed: ParsedSource, expression: ts.Expression): ts.Expression[] | undefined => {
+    const resolved = staticExpression(parsed, expression, new Map());
+    const current = resolved && unwrapExpression(resolved);
+    if (!current || !ts.isArrayLiteralExpression(current) || current.elements.length > MAX_STATIC_ROUTE_ENTRIES) return undefined;
+    const elements: ts.Expression[] = [];
+    for (const element of current.elements) {
+      if (!ts.isExpression(element) || ts.isSpreadElement(element)) return undefined;
+      elements.push(element);
+    }
+    return elements;
+  };
+  const bindingsForElement = (
+    parsed: ParsedSource,
+    parameter: ts.ParameterDeclaration,
+    element: ts.Expression,
+  ): StaticBindings | undefined => {
+    const resolved = staticExpression(parsed, element, new Map());
+    if (!resolved) return undefined;
+    const bindings: StaticBindings = new Map();
+    if (ts.isIdentifier(parameter.name)) {
+      bindings.set(parameter.name.text, resolved);
+      return bindings;
+    }
+    if (!ts.isObjectBindingPattern(parameter.name)) return undefined;
+    const object = unwrapExpression(resolved);
+    if (!ts.isObjectLiteralExpression(object)) return undefined;
+    for (const binding of parameter.name.elements) {
+      if (binding.dotDotDotToken || !ts.isIdentifier(binding.name)) return undefined;
+      const sourceName = propertyName(binding.propertyName) ?? binding.name.text;
+      const member = objectMemberExpression(object, sourceName) ?? binding.initializer;
+      if (!member) return undefined;
+      bindings.set(binding.name.text, member);
+    }
+    return bindings;
+  };
+  const resolvedArguments = (
+    parsed: ParsedSource,
+    values: readonly ts.Expression[],
+    bindings: StaticBindings,
+  ): ts.Expression[] | undefined => {
+    const result: ts.Expression[] = [];
+    for (const value of values) {
+      const resolved = staticExpression(parsed, value, bindings);
+      if (!resolved) return undefined;
+      result.push(resolved);
+    }
+    return result;
+  };
+
   const candidates: ExpressRouteCandidate[] = [];
   const middleware: ExpressMiddleware[] = [];
   const mounts: ExpressMount[] = [];
   let unresolvedHandlers = 0;
   let unresolvedMounts = 0;
+  let expandedRouteCount = 0;
+  const unresolvedRegistrationCalls = new Set<ts.CallExpression>();
+  const expandedRegistrationCalls = new Set<ts.CallExpression>();
+  const registrationTarget = (
+    parsed: ParsedSource,
+    node: ts.CallExpression,
+    bindings: StaticBindings,
+  ): { receiver: string; method?: string } | undefined => {
+    const called = unwrapExpression(node.expression);
+    let receiverExpression: ts.Expression;
+    let method: string | undefined;
+    if (ts.isPropertyAccessExpression(called)) {
+      receiverExpression = called.expression;
+      method = called.name.text.toLowerCase();
+    } else if (ts.isElementAccessExpression(called) && called.argumentExpression) {
+      receiverExpression = called.expression;
+      method = staticString(parsed, called.argumentExpression, bindings)?.toLowerCase();
+    } else return undefined;
+    const receiver = resolvedReceiver(parsed, receiverExpression);
+    return receiver ? { receiver, method } : undefined;
+  };
+  const addRouteCandidate = (
+    parsed: ParsedSource,
+    node: ts.CallExpression,
+    receiver: string,
+    callName: string,
+    expressions: ts.Expression[],
+    evidenceNode: ts.Node = node,
+  ): boolean => {
+    if (!HTTP_METHODS.has(callName) || expressions.length < 2) return false;
+    const rawPath = literalText(expressions[0]);
+    if (rawPath === undefined) return false;
+    const path = normalizePath(rawPath);
+    const handlerExpression = expressions.at(-1)!;
+    const resolvedHandler = resolveExpressFunction(parsed, handlerExpression);
+    if (!resolvedHandler) unresolvedHandlers += 1;
+    const handler = resolvedHandler?.declaration;
+    const handlerParsed = resolvedHandler?.parsed ?? parsed;
+    const handlerSource = handler?.getText(handlerParsed.source) ?? handlerExpression.getText(parsed.source);
+    const middlewareExpressions = expressions.slice(1, -1);
+    const locallyAuthenticated = middlewareExpressions.some((expression) => authenticatedExpression(parsed, expression))
+      || explicitAuthentication(handlerSource);
+    const locallyRoleProtected = middlewareExpressions.some((expression) => roleExpression(parsed, expression))
+      || roleGuard(handlerSource);
+    const currentHandler = unwrapExpression(handlerExpression);
+    const handlerName = ts.isIdentifier(currentHandler) ? currentHandler.text
+      : ts.isPropertyAccessExpression(currentHandler) ? currentHandler.name.text
+        : handler && "name" in handler && handler.name && ts.isIdentifier(handler.name) ? handler.name.text : "anonymous";
+    candidates.push({
+      receiver,
+      parsed,
+      handlerParsed,
+      method: callName === "all" ? "ALL" : callName.toUpperCase(),
+      path,
+      offset: node.getStart(parsed.source),
+      handlerName,
+      handler,
+      handlerSource,
+      location: location(parsed, evidenceNode),
+      locallyAuthenticated,
+      locallyRoleProtected,
+    });
+    return true;
+  };
+
   for (const parsed of sources) visit(parsed.source, (node) => {
-      if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return;
-      const receiver = resolvedReceiver(parsed, node.expression.expression);
-      if (!receiver) return;
-      const callName = node.expression.name.text.toLowerCase();
+    if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)
+      || node.expression.name.text !== "forEach" || !node.arguments[0]) return;
+    const elements = staticArrayElements(parsed, node.expression.expression);
+    const callback = unwrapExpression(node.arguments[0]);
+    if (!elements || (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) || !callback.parameters[0]) return;
+    visit(callback, (candidate) => {
+      if (!ts.isCallExpression(candidate) || candidate.arguments.length < 2) return;
+      const unboundTarget = registrationTarget(parsed, candidate, new Map());
+      if (!unboundTarget) return;
+      const called = unwrapExpression(candidate.expression);
+      if (ts.isPropertyAccessExpression(called) && !HTTP_METHODS.has(called.name.text.toLowerCase())) return;
+      expandedRegistrationCalls.add(candidate);
+      let fullyExpanded = true;
+      for (const element of elements) {
+        const bindings = bindingsForElement(parsed, callback.parameters[0]!, element);
+        const target = bindings && registrationTarget(parsed, candidate, bindings);
+        const expressions = bindings && resolvedArguments(parsed, candidate.arguments, bindings);
+        if (!bindings || !target?.method || !expressions || expandedRouteCount >= MAX_STATIC_ROUTE_EXPANSIONS
+          || !addRouteCandidate(parsed, candidate, target.receiver, target.method, expressions, expressions[0])) fullyExpanded = false;
+        else expandedRouteCount += 1;
+      }
+      if (!fullyExpanded) unresolvedRegistrationCalls.add(candidate);
+    });
+  });
+
+  for (const parsed of sources) visit(parsed.source, (node) => {
+      if (!ts.isCallExpression(node) || expandedRegistrationCalls.has(node)) return;
+      const target = registrationTarget(parsed, node, new Map());
+      if (!target) return;
+      if (!target.method) {
+        if (node.arguments.length >= 2) unresolvedRegistrationCalls.add(node);
+        return;
+      }
+      const { receiver, method: callName } = target;
       if (callName === "use") {
-        const prefixText = literalText(node.arguments[0]);
+        const prefixText = staticString(parsed, node.arguments[0], new Map());
         const prefix = prefixText === undefined ? "" : normalizePath(prefixText);
         const expressions = node.arguments.slice(prefix ? 1 : 0);
         const childExpression = expressions.at(-1);
@@ -1204,38 +1424,10 @@ function expressRoutes(
         return;
       }
       if (!HTTP_METHODS.has(callName) || node.arguments.length < 2) return;
-      const rawPath = literalText(node.arguments[0]);
-      if (rawPath === undefined) return;
-      const path = normalizePath(rawPath);
-      const handlerExpression = node.arguments.at(-1)!;
-      const resolvedHandler = resolveExpressFunction(parsed, handlerExpression);
-      if (!resolvedHandler) unresolvedHandlers += 1;
-      const handler = resolvedHandler?.declaration;
-      const handlerParsed = resolvedHandler?.parsed ?? parsed;
-      const handlerSource = handler?.getText(handlerParsed.source) ?? handlerExpression.getText(parsed.source);
-      const middlewareExpressions = node.arguments.slice(1, -1);
-      const locallyAuthenticated = middlewareExpressions.some((expression) => authenticatedExpression(parsed, expression))
-        || explicitAuthentication(handlerSource);
-      const locallyRoleProtected = middlewareExpressions.some((expression) => roleExpression(parsed, expression))
-        || roleGuard(handlerSource);
-      const currentHandler = unwrapExpression(handlerExpression);
-      const handlerName = ts.isIdentifier(currentHandler) ? currentHandler.text
-        : ts.isPropertyAccessExpression(currentHandler) ? currentHandler.name.text
-          : handler && "name" in handler && handler.name && ts.isIdentifier(handler.name) ? handler.name.text : "anonymous";
-      candidates.push({
-        receiver,
-        parsed,
-        handlerParsed,
-        method: callName === "all" ? "ALL" : callName.toUpperCase(),
-        path,
-        offset: node.getStart(parsed.source),
-        handlerName,
-        handler,
-        handlerSource,
-        location: location(parsed, node),
-        locallyAuthenticated,
-        locallyRoleProtected,
-      });
+      const expressions = resolvedArguments(parsed, node.arguments, new Map());
+      if (!expressions || !addRouteCandidate(parsed, node, receiver, callName, expressions)) {
+        unresolvedRegistrationCalls.add(node);
+      }
     });
 
   const protectedByMiddleware = (receiver: string, path: string, before: number, sourcePath: string): boolean => middleware.some((item) => item.receiver === receiver
@@ -1297,7 +1489,7 @@ function expressRoutes(
       });
     }
   }
-  return { routes, unresolvedHandlers, unresolvedMounts };
+  return { routes, unresolvedHandlers, unresolvedMounts, unresolvedRegistrations: unresolvedRegistrationCalls.size };
 }
 
 interface NestSecuritySemantics {
@@ -1699,11 +1891,13 @@ export function analyzeNodeApi(files: ProjectFile[]): NodeApiAnalysis {
   const routes: NodeApiRoute[] = [];
   let unresolvedHandlers = 0;
   let unresolvedMounts = 0;
+  let unresolvedRegistrations = 0;
   if (detectedExpress) {
     const result = expressRoutes(parsed, localCalls);
     routes.push(...result.routes);
     unresolvedHandlers += result.unresolvedHandlers;
     unresolvedMounts += result.unresolvedMounts;
+    unresolvedRegistrations += result.unresolvedRegistrations;
   }
   if (detectedNest) {
     const semantics = discoverNestSecurity(parsed, lookup);
@@ -1720,5 +1914,6 @@ export function analyzeNodeApi(files: ProjectFile[]): NodeApiAnalysis {
     filesWithParseErrors,
     unresolvedHandlers,
     unresolvedMounts,
+    unresolvedRegistrations,
   };
 }

@@ -790,6 +790,168 @@ app.get("/documents/:documentId", requireSession, async (req, res) => {
   }
 });
 
+test("Express analysis expands local configuration-driven routes without losing authorization semantics", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-config-routes-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+const app = express();
+
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+
+async function readDocument(req, res) {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  return res.json({ id: document.id, userId: document.userId });
+}
+
+async function readOwnedDocument(req, res) {
+  const document = await db.document.findFirst({
+    where: { id: req.params.documentId, userId: req.user.id },
+  });
+  return res.json({ id: document.id, userId: document.userId });
+}
+
+const vulnerableRoutes = [{
+  method: "get",
+  path: "/configured/documents/:documentId",
+  guard: requireSession,
+  handler: readDocument,
+}, {
+  method: "get",
+  path: "/configured/archived-documents/:documentId",
+  guard: requireSession,
+  handler: readDocument,
+}] as const;
+
+const safeRoutes = [{
+  method: "get",
+  path: "/configured/owned-documents/:documentId",
+  guard: requireSession,
+  handler: readOwnedDocument,
+}] as const;
+
+const method = "get";
+const path = "/configured/shorthand-documents/:documentId";
+const guard = requireSession;
+const handler = readOwnedDocument;
+const shorthandRoutes = [{ method, path, guard, handler }] as const;
+
+vulnerableRoutes.forEach((route) => {
+  app[route.method](route.path, route.guard, route.handler);
+});
+safeRoutes.forEach(({ method, path, guard, handler }) => {
+  app[method](path, guard, handler);
+});
+shorthandRoutes.forEach(({ method, path, guard, handler }) => {
+  app[method](path, guard, handler);
+});
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const vulnerableRoute = "GET /configured/documents/:documentId";
+    const secondVulnerableRoute = "GET /configured/archived-documents/:documentId";
+    const safeRoute = "GET /configured/owned-documents/:documentId";
+    const shorthandRoute = "GET /configured/shorthand-documents/:documentId";
+    assert.ok(report.profile.routes.includes(vulnerableRoute));
+    assert.ok(report.profile.routes.includes(secondVulnerableRoute));
+    assert.ok(report.profile.routes.includes(safeRoute));
+    assert.ok(report.profile.routes.includes(shorthandRoute));
+    const vulnerableSignals = report.signals.filter((signal) => signal.ruleId === "express.authorization.object-without-ownership-check"
+      && [vulnerableRoute, secondVulnerableRoute].includes(String(signal.metadata?.route)));
+    assert.deepEqual(vulnerableSignals.map((signal) => signal.metadata?.route).sort(), [secondVulnerableRoute, vulnerableRoute].sort());
+    assert.equal(new Set(vulnerableSignals.map((signal) => signal.fingerprint)).size, 2);
+    assert.ok(!report.signals.some((signal) => /^(?:express)\.authorization\./.test(signal.ruleId)
+      && signal.metadata?.route === safeRoute));
+    assert.ok(!report.signals.some((signal) => /^(?:express)\.authorization\./.test(signal.ruleId)
+      && signal.metadata?.route === shorthandRoute));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.doesNotMatch(coverage?.reason ?? "", /route registration site/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Express analysis reports dynamic registration sites that cannot be statically expanded", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-unresolved-config-routes-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+const app = express();
+
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+async function readDocument(req, res) {
+  return res.json(await db.document.findUnique({ where: { id: req.params.documentId } }));
+}
+
+const runtimeRoutes = loadRoutesFromEnvironment();
+runtimeRoutes.forEach((route) => {
+  app[route.method](route.path, route.guard, route.handler);
+});
+let mutableRoutes = [{
+  method: "get",
+  path: "/mutable/documents/:documentId",
+  guard: requireSession,
+  handler: readDocument,
+}];
+mutableRoutes.forEach((route) => {
+  app[route.method](route.path, route.guard, route.handler);
+});
+app.get(buildDocumentPath(), requireSession, readDocument);
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.deepEqual(report.profile.routes, []);
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("express.")));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /3 Express route registration site\(s\) could not be statically expanded/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Express configuration-driven route expansion refuses arrays above its static entry limit", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-config-route-limit-"));
+  try {
+    const routeRecords = Array.from({ length: 129 }, (_, index) => `{
+      method: "get",
+      path: "/oversized/${index}/:documentId",
+      guard: requireSession,
+      handler: readDocument,
+    }`).join(",\n");
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+const app = express();
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+async function readDocument(req, res) {
+  return res.json(await db.document.findUnique({ where: { id: req.params.documentId } }));
+}
+const oversizedRoutes = [${routeRecords}] as const;
+oversizedRoutes.forEach((route) => {
+  app[route.method](route.path, route.guard, route.handler);
+});
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.deepEqual(report.profile.routes, []);
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /1 Express route registration site\(s\) could not be statically expanded/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("NestJS analysis does not treat a tenant guard as an administrator role guard", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-tenant-not-admin-"));
   try {
