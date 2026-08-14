@@ -50,6 +50,9 @@ try {
   assert.equal(packed[0].name, packageMetadata.name);
   assert.equal(packed[0].version, packageMetadata.version);
   assert.match(packed[0].filename, /^[A-Za-z0-9._-]+\.tgz$/);
+  const packedPaths = new Set(packed[0].files.map((file) => file.path));
+  assert.ok(!packedPaths.has("scripts/node-api-calibration.mjs"), "networked calibration runner must stay out of the npm package");
+  assert.ok(!packedPaths.has("scripts/calibration/node-api-targets.json"), "real-project calibration manifest must stay out of the npm package");
   const tarball = join(tarballs, packed[0].filename);
   await access(tarball, constants.R_OK);
 

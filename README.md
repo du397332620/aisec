@@ -528,6 +528,36 @@ child processes and enforces broad cross-platform regression ceilings. These
 measurements are guards against major performance or memory regressions, not a
 promise for every repository or machine.
 
+### Fixed-commit Node API calibration
+
+Maintainers can also repeat the reviewed static scans of Ghostfolio, RealWorld
+Express and OWASP NodeGoat. This is intentionally excluded from the default
+tests and the npm package because it needs network access and is a calibration
+check, not a bundled benchmark:
+
+```bash
+# Explicitly downloads the three allowlisted repositories at fixed commits
+npm run calibrate:node-api -- --confirm-download
+
+# Download and scan only one target
+npm run calibrate:node-api -- --confirm-download --target nodegoat
+
+# Reuse an already available, clean worktree at the expected commit
+npm run calibrate:node-api -- \
+  --target nodegoat \
+  --local nodegoat=/absolute/path/to/NodeGoat
+```
+
+Without `--confirm-download`, a target that has no `--local` source fails before
+Git is invoked. Local worktrees must have the exact recorded `HEAD`, no tracked
+or untracked changes, and no target-owned AIsec configuration. Downloads use
+HTTPS into a temporary directory and are removed afterward. The harness only
+runs AIsec's native static scanner: it does not install dependencies, build or
+execute target code, start services, send target HTTP requests, or retain raw
+reports. A passing result confirms the recorded route/finding expectations for
+those commits; it is neither proof of exploitability nor proof that a project is
+secure.
+
 ## Project status
 
 This repository implements a usable beta foundation, not the entire long-term

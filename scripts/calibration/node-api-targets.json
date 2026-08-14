@@ -1,0 +1,111 @@
+{
+  "schemaVersion": 1,
+  "description": "Fixed-commit, static-only Node API calibration. Passing checks demonstrates expected scanner behavior on these revisions; it does not prove exploitability or security.",
+  "targets": [
+    {
+      "id": "ghostfolio",
+      "repository": "https://github.com/ghostfolio/ghostfolio.git",
+      "commit": "c5c822ed6e8f2b057336cad81303b8a47909e8c8",
+      "expected": {
+        "routeCount": 117,
+        "requiredRoutes": [
+          "GET /api/v1/portfolio/details",
+          "GET /api/v2/portfolio/performance",
+          "GET /sitemap.xml"
+        ],
+        "decision": "incomplete",
+        "coverage": [
+          {
+            "domain": "mobile-source-config",
+            "status": "not_run"
+          },
+          {
+            "domain": "node-api-security",
+            "status": "partial"
+          }
+        ],
+        "nodeFindings": [],
+        "requiredSignalCounts": [
+          {
+            "ruleId": "privacy.sensitive-logging",
+            "count": 3
+          }
+        ]
+      }
+    },
+    {
+      "id": "realworld-express",
+      "repository": "https://github.com/gothinkster/node-express-realworld-example-app.git",
+      "commit": "30b68e1e881462b2f4164ea09ab4c4f5699c7b0b",
+      "expected": {
+        "routeCount": 20,
+        "requiredRoutes": [
+          "GET /",
+          "GET /api/articles",
+          "POST /api/users",
+          "POST /api/users/login"
+        ],
+        "decision": "incomplete",
+        "coverage": [
+          {
+            "domain": "mobile-source-config",
+            "status": "not_run"
+          },
+          {
+            "domain": "node-api-security",
+            "status": "partial"
+          }
+        ],
+        "nodeFindings": [],
+        "requiredSignalCounts": []
+      }
+    },
+    {
+      "id": "nodegoat",
+      "repository": "https://github.com/OWASP/NodeGoat.git",
+      "commit": "c5cb68a7084e4ae7dcc60e6a98768720a81841e8",
+      "expected": {
+        "routeCount": 19,
+        "requiredRoutes": [
+          "GET /allocations/:userId",
+          "GET /benefits",
+          "POST /benefits"
+        ],
+        "decision": "block",
+        "coverage": [
+          {
+            "domain": "mobile-source-config",
+            "status": "not_run"
+          },
+          {
+            "domain": "node-api-security",
+            "status": "partial"
+          }
+        ],
+        "nodeFindings": [
+          {
+            "ruleId": "express.authorization.object-without-ownership-check",
+            "count": 1,
+            "routes": [
+              "GET /allocations/:userId"
+            ]
+          },
+          {
+            "ruleId": "express.authorization.privileged-operation-without-role-check",
+            "count": 2,
+            "routes": [
+              "GET /benefits",
+              "POST /benefits"
+            ]
+          }
+        ],
+        "requiredSignalCounts": [
+          {
+            "ruleId": "dataflow.command-injection",
+            "count": 3
+          }
+        ]
+      }
+    }
+  ]
+}
