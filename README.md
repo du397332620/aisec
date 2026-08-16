@@ -62,7 +62,13 @@ owner-like name. This includes common object-literal predicates, literal
 TypeORM named-parameter `where` / `andWhere` conditions, literal Knex
 owner-column/value conditions, and the bounded Mongoose
 `.where("ownerField").equals(identity)` form. Sequelize `findByPk` is recognized
-as a single-object operation. An owner condition found only inside MongoDB
+as a single-object operation. A locally resolved function, arrow function or
+class method may also return an owner filter when its body is exactly one direct
+object-literal return and the result is consumed directly as `where`, as the
+first argument of a supported lookup, or as the final spread in such a filter.
+Returned-object spreads, conditional or mutable returns, computed aliases,
+later spread/property overrides, response objects and non-filter options do not
+count. An owner condition found only inside MongoDB
 `$or` / `$nor`, Sequelize `[Op.or]`, or a query widened by `.or()` / `orWhere*`
 does not count as mandatory ownership; an owner field outside a nested
 object-literal OR group still does. A local boolean policy such as
@@ -309,7 +315,7 @@ binaries and prepare the Trivy database before scanning.
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; some findings are explicitly `inferred` and require review |
 | FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
-| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local-constant `forEach` route tables, NestJS controllers/guards/local token providers, up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; directly enforced local boolean policies are also recognized; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries, unsupported operators/scopes, unresolved providers/registration sites, package or mixin bases, complex wrappers and external policy engines still require review |
+| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local-constant `forEach` route tables, NestJS controllers/guards/local token providers, up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed single-return local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; directly enforced local boolean policies are also recognized; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, unsupported operators/scopes, unresolved providers/registration sites, package or mixin bases, complex wrappers and external policy engines still require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |

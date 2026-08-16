@@ -1541,6 +1541,244 @@ export class DocumentController {
   }
 });
 
+test("Express analysis accepts only directly consumed static local owner-filter helper results", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-filter-helpers-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "filters.ts"), `
+export function buildDocumentFilter(documentId: string, ownerId: string) {
+  return { id: documentId, ownerId };
+}
+
+export function buildOwnerFilter(ownerId: string) {
+  return { ownerId };
+}
+
+export const buildRelationFilter = (ownerId: string) => ({
+  author: { id: ownerId },
+});
+
+export function buildOrFilter(documentId: string, ownerId: string) {
+  return {
+    id: documentId,
+    $or: [{ ownerId }, { isPublic: true }],
+  };
+}
+
+export function buildMandatoryOwnerWithOr(documentId: string, ownerId: string) {
+  return {
+    id: documentId,
+    ownerId,
+    $or: [{ state: "draft" }, { state: "published" }],
+  };
+}
+
+export function buildConditionalFilter(documentId: string, ownerId: string, strict: boolean) {
+  if (strict) return { id: documentId, ownerId };
+  return { id: documentId };
+}
+
+export function buildMutableFilter(documentId: string, ownerId: string) {
+  const filter: Record<string, unknown> = { id: documentId };
+  filter.ownerId = ownerId;
+  return filter;
+}
+
+export function buildSpreadFilter(documentId: string, ownerId: string, override: object) {
+  return { id: documentId, ownerId, ...override };
+}
+
+export class FilterRepository {
+  findOwned(documentId: string, ownerId: string) {
+    return this.model.findFirst({ where: this.buildClassFilter(documentId, ownerId) });
+  }
+
+  private buildClassFilter(documentId: string, ownerId: string) {
+    return { id: documentId, ownerId };
+  }
+}
+`);
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+import {
+  FilterRepository,
+  buildConditionalFilter,
+  buildDocumentFilter,
+  buildMandatoryOwnerWithOr,
+  buildMutableFilter,
+  buildOrFilter,
+  buildOwnerFilter,
+  buildRelationFilter,
+  buildSpreadFilter,
+} from "./filters";
+
+const app = express();
+const repository = new FilterRepository();
+const selectedFilter = buildDocumentFilter;
+
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+
+app.get("/filter-helper/direct/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findFirst({
+    where: buildDocumentFilter(req.params.documentId, req.user.id),
+  });
+  return res.json(document);
+});
+
+app.get("/filter-helper/spread/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findFirst({
+    where: { id: req.params.documentId, ...buildOwnerFilter(req.user.id) },
+  });
+  return res.json(document);
+});
+
+app.get("/filter-helper/relation/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findFirst({
+    where: { id: req.params.documentId, ...buildRelationFilter(req.user.id) },
+  });
+  return res.json(document);
+});
+
+app.get("/filter-helper/class/:documentId", requireSession, async (req, res) => {
+  const document = await repository.findOwned(req.params.documentId, req.user.id);
+  return res.json(document);
+});
+
+app.get("/filter-helper/direct-argument/:documentId", requireSession, async (req, res) => {
+  const document = await db.documents.findOne(
+    buildDocumentFilter(req.params.documentId, req.user.id),
+  );
+  return res.json(document);
+});
+
+app.get("/filter-helper/mandatory-owner-with-or/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findFirst({
+    where: buildMandatoryOwnerWithOr(req.params.documentId, req.user.id),
+  });
+  return res.json(document);
+});
+
+app.get("/filter-helper/users/:userId/documents/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findFirst({
+    where: buildDocumentFilter(req.params.documentId, req.params.userId),
+  });
+  return res.json(document);
+});
+
+app.get("/filter-helper/or/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findFirst({
+    where: buildOrFilter(req.params.documentId, req.user.id),
+  });
+  return res.json(document);
+});
+
+app.get("/filter-helper/conditional/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findFirst({
+    where: buildConditionalFilter(req.params.documentId, req.user.id, req.query.strict === "true"),
+  });
+  return res.json(document);
+});
+
+app.get("/filter-helper/mutable/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findFirst({
+    where: buildMutableFilter(req.params.documentId, req.user.id),
+  });
+  return res.json(document);
+});
+
+app.get("/filter-helper/returned-spread/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findFirst({
+    where: buildSpreadFilter(req.params.documentId, req.user.id, req.query),
+  });
+  return res.json(document);
+});
+
+app.get("/filter-helper/spread-override/users/:userId/documents/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findFirst({
+    where: {
+      id: req.params.documentId,
+      ...buildOwnerFilter(req.user.id),
+      ownerId: req.params.userId,
+    },
+  });
+  return res.json(document);
+});
+
+app.get("/filter-helper/where-override/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findFirst({
+    where: buildDocumentFilter(req.params.documentId, req.user.id),
+    ...req.query,
+  });
+  return res.json(document);
+});
+
+app.get("/filter-helper/secondary-options/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findByPk(req.params.documentId, {
+    where: buildOwnerFilter(req.user.id),
+  });
+  return res.json(document);
+});
+
+app.get("/filter-helper/response-decoy/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  return res.json({ document, suggestedFilter: buildOwnerFilter(req.user.id) });
+});
+
+app.get("/filter-helper/option-decoy/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findFirst({
+    where: { id: req.params.documentId },
+    include: buildOwnerFilter(req.user.id),
+  });
+  return res.json(document);
+});
+
+app.get("/filter-helper/computed/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findFirst({
+    where: selectedFilter(req.params.documentId, req.user.id),
+  });
+  return res.json(document);
+});
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const safeRoutes = [
+      "GET /filter-helper/direct/:documentId",
+      "GET /filter-helper/spread/:documentId",
+      "GET /filter-helper/relation/:documentId",
+      "GET /filter-helper/class/:documentId",
+      "GET /filter-helper/direct-argument/:documentId",
+      "GET /filter-helper/mandatory-owner-with-or/:documentId",
+    ];
+    const unsafeRoutes = [
+      "GET /filter-helper/users/:userId/documents/:documentId",
+      "GET /filter-helper/or/:documentId",
+      "GET /filter-helper/conditional/:documentId",
+      "GET /filter-helper/mutable/:documentId",
+      "GET /filter-helper/returned-spread/:documentId",
+      "GET /filter-helper/spread-override/users/:userId/documents/:documentId",
+      "GET /filter-helper/where-override/:documentId",
+      "GET /filter-helper/secondary-options/:documentId",
+      "GET /filter-helper/response-decoy/:documentId",
+      "GET /filter-helper/option-decoy/:documentId",
+      "GET /filter-helper/computed/:documentId",
+    ];
+    for (const route of [...safeRoutes, ...unsafeRoutes]) assert.ok(report.profile.routes.includes(route));
+    for (const route of safeRoutes) {
+      assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("express.authorization.")
+        && signal.metadata?.route === route), `${route} should accept the mandatory static helper filter`);
+    }
+    for (const route of unsafeRoutes) {
+      assert.ok(report.signals.some((signal) => signal.ruleId === "express.authorization.object-without-ownership-check"
+        && signal.metadata?.route === route), `${route} should remain unsafe`);
+    }
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("Node API analysis does not treat relation-shaped response metadata as an ORM owner predicate", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-response-owner-decoy-"));
   try {

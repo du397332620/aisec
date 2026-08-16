@@ -155,6 +155,7 @@ const AUTH_GUARD_NAME = /(?:^|[._])(?:auth(?:Middleware|Guard)?|authenticate|aut
 const ACCESS_GUARD_NAME = /(?:^|[._])(?:require|verify|check|ensure|authorize|assert|can)[A-Za-z0-9_]*(?:access|owner|ownership|permission|policy|role|admin|tenant)|(?:owner|ownership|permission|policy|ability|role|admin|tenant)[A-Za-z0-9_]*(?:guard|check)(?:$|[.(])/i;
 const ROLE_GUARD_NAME = /(?:^|[._])(?:require|verify|check|ensure|authorize|assert|can)[A-Za-z0-9_]*(?:permission|policy|role|admin)|(?:permission|policy|ability|role|admin)[A-Za-z0-9_]*(?:guard|check|only|middleware)(?:$|[.(])/i;
 const ID_OPERATION = /(?:^|\.)(?:findById|findByIdAndUpdate|findByIdAndDelete|findByPk|findUnique|findUniqueOrThrow|findFirst|findFirstOrThrow|findOne|findOneBy|findOneByOrFail|findMany|getById|getBy[A-Z][A-Za-z0-9_]*|getOne|getOneOrFail|getRawOne|loadById|detail|update|updateOne|updateMany|delete|deleteOne|deleteMany|remove|destroy|where)$/;
+const DIRECT_FILTER_ARGUMENT_OPERATION = /(?:^|\.)(?:findUnique|findUniqueOrThrow|findFirst|findFirstOrThrow|findOne|findOneBy|findOneByOrFail|findMany|where)$/;
 const NEST_AUTH_GUARD_HINT = /(?:auth|jwt|session|identity|loggedIn|signedIn|user|role|permission|policy|ability|access|owner|admin)/i;
 const NEST_OWNERSHIP_GUARD_HINT = /(?:owner|ownership|tenant|role|permission|policy|ability|access|admin)/i;
 const PRIVILEGED_ROUTE_HINT = /(?:^|\/)(?:admin|administration|manage|management|permissions?|roles?)(?:\/|$)/i;
@@ -1301,7 +1302,82 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     });
     return protectedByAccessCall;
   };
-  const astOwnershipBinding = (declaration: ts.FunctionLikeDeclaration, aliases: Set<string>): boolean => {
+  const expressionUse = (expression: ts.Expression): ts.Expression => {
+    let current = expression;
+    while (true) {
+      const parent = current.parent;
+      if ((ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent)
+        || ts.isTypeAssertionExpression(parent) || ts.isNonNullExpression(parent)
+        || ts.isSatisfiesExpression(parent) || ts.isAwaitExpression(parent))
+        && parent.expression === current) {
+        current = parent;
+        continue;
+      }
+      return current;
+    }
+  };
+  const directCallArgument = (
+    expression: ts.Expression,
+  ): { call: ts.CallExpression; index: number } | undefined => {
+    const current = expressionUse(expression);
+    if (!ts.isCallExpression(current.parent)) return undefined;
+    const index = current.parent.arguments.findIndex((argument) => argument === current);
+    return index >= 0 ? { call: current.parent, index } : undefined;
+  };
+  const operationName = (call: ts.CallExpression): string => expressionName(call.expression).replace(/\(\)/g, "");
+  const directWhereProperty = (property: ts.PropertyAssignment): boolean => {
+    if (propertyName(property.name) !== "where" || !ts.isObjectLiteralExpression(property.parent)) return false;
+    const properties = property.parent.properties;
+    const index = properties.findIndex((candidate) => candidate === property);
+    if (index < 0) return false;
+    const canOverrideWhere = properties.slice(index + 1).some((candidate) => {
+      if (ts.isSpreadAssignment(candidate)) return true;
+      return ts.isComputedPropertyName(candidate.name) || propertyName(candidate.name) === "where";
+    });
+    if (canOverrideWhere) return false;
+    const argument = directCallArgument(property.parent);
+    return Boolean(argument?.index === 0 && ID_OPERATION.test(operationName(argument.call)));
+  };
+  const filterObjectConsumed = (object: ts.ObjectLiteralExpression): boolean => {
+    const argument = directCallArgument(object);
+    if (argument?.index === 0 && DIRECT_FILTER_ARGUMENT_OPERATION.test(operationName(argument.call))) return true;
+    const current = expressionUse(object);
+    return ts.isPropertyAssignment(current.parent) && current.parent.initializer === current
+      && directWhereProperty(current.parent);
+  };
+  const callResultFeedsObjectFilter = (call: ts.CallExpression): boolean => {
+    const direct = directCallArgument(call);
+    if (direct?.index === 0 && DIRECT_FILTER_ARGUMENT_OPERATION.test(operationName(direct.call))) return true;
+    const current = expressionUse(call);
+    const parent = current.parent;
+    if (ts.isPropertyAssignment(parent) && parent.initializer === current) return directWhereProperty(parent);
+    if (!ts.isSpreadAssignment(parent) || !ts.isObjectLiteralExpression(parent.parent)) return false;
+    const properties = parent.parent.properties;
+    return properties[properties.length - 1] === parent && filterObjectConsumed(parent.parent);
+  };
+  const staticReturnedFilter = (
+    declaration: ts.FunctionLikeDeclaration,
+  ): ts.ObjectLiteralExpression | undefined => {
+    if (!declaration.body) return undefined;
+    let expression: ts.Expression | undefined;
+    if (ts.isBlock(declaration.body)) {
+      const statement = declaration.body.statements[0];
+      if (declaration.body.statements.length !== 1 || !statement || !ts.isReturnStatement(statement)) return undefined;
+      expression = statement.expression;
+    } else expression = declaration.body;
+    const current = expression && unwrapExpression(expression);
+    if (!current || !ts.isObjectLiteralExpression(current)) return undefined;
+    let containsSpread = false;
+    visit(current, (node) => {
+      if (ts.isSpreadAssignment(node) || ts.isSpreadElement(node)) containsSpread = true;
+    });
+    return containsSpread ? undefined : current;
+  };
+  const astOwnershipBinding = (
+    declaration: ts.FunctionLikeDeclaration,
+    aliases: Set<string>,
+    filterResultConsumed: boolean,
+  ): boolean => {
     let protectedByOwner = false;
     let disjunctiveQueryBuilder = false;
     visit(declaration, (node) => {
@@ -1359,6 +1435,24 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       });
       return bound;
     };
+    const returnedFilterBindsIdentity = (): boolean => {
+      const filter = filterResultConsumed ? staticReturnedFilter(declaration) : undefined;
+      if (!filter) return false;
+      let bound = false;
+      visit(filter, (node) => {
+        if (bound) return;
+        if (ts.isPropertyAssignment(node)) {
+          const name = propertyName(node.name);
+          if (!insideNonMandatoryObjectFilter(node) && name && OWNER_FIELD.test(name)
+            && expressionCarriesIdentity(node.initializer, aliases)) bound = true;
+          else if (!insideNonMandatoryObjectFilter(node) && name && OWNER_RELATION_FIELD.test(name)
+            && relationBindsIdentity(node.initializer)) bound = true;
+        } else if (ts.isShorthandPropertyAssignment(node) && !insideNonMandatoryObjectFilter(node)
+          && OWNER_FIELD.test(node.name.text) && aliases.has(node.name.text)) bound = true;
+      });
+      return bound;
+    };
+    if (returnedFilterBindsIdentity()) return true;
     visit(declaration, (node) => {
       if (protectedByOwner) return;
       if (ts.isCallExpression(node) && !disjunctiveQueryBuilder && queryBuilderBindsIdentity(node, aliases)) {
@@ -1405,7 +1499,15 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       aliases: Set<string>;
       depth: number;
       authorizationEnforced: boolean;
-    }> = [{ callable: { declaration, parsed }, ownerClass, aliases: new Set(), depth: 0, authorizationEnforced: false }];
+      filterResultConsumed: boolean;
+    }> = [{
+      callable: { declaration, parsed },
+      ownerClass,
+      aliases: new Set(),
+      depth: 0,
+      authorizationEnforced: false,
+      filterResultConsumed: false,
+    }];
     const visited = new Set<string>();
     const semanticSources: string[] = [];
     const responseFields = new Set<string>();
@@ -1418,18 +1520,18 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       const current = queue.shift()!;
       const aliases = identityAliases(current.callable.declaration, current.aliases);
       const currentOwnerKey = current.ownerClass ? resolvedClassIdentity(current.ownerClass) : "";
-      const visitKey = `${current.callable.parsed.file.relativePath}\u0000${current.callable.declaration.pos}\u0000${currentOwnerKey}\u0000${[...aliases].sort().join(",")}\u0000${current.authorizationEnforced ? "enforced" : "observed"}`;
+      const visitKey = `${current.callable.parsed.file.relativePath}\u0000${current.callable.declaration.pos}\u0000${currentOwnerKey}\u0000${[...aliases].sort().join(",")}\u0000${current.authorizationEnforced ? "enforced" : "observed"}\u0000${current.filterResultConsumed ? "filter" : "value"}`;
       if (visited.has(visitKey)) continue;
       visited.add(visitKey);
       const source = current.callable.declaration.getText(current.callable.parsed.source);
       semanticSources.push(source);
       const predicate = authorizationPredicateName(callableName(current.callable.declaration));
-      const binding = astOwnershipBinding(current.callable.declaration, aliases);
+      const binding = astOwnershipBinding(current.callable.declaration, aliases, current.filterResultConsumed);
       const callableProtection = accessGuardCall(current.callable.declaration) || binding;
       // Boolean policy methods are evidence only when the caller directly uses
       // their result to take a statically visible denial branch.
       ownershipProtected ||= (current.depth === 0 && ownershipGuard(source, false, false))
-        || (callableProtection && (!predicate || current.authorizationEnforced));
+        || (callableProtection && (current.filterResultConsumed || !predicate || current.authorizationEnforced));
       roleProtected ||= roleGuard(source);
       objectOperation ||= hasObjectOperation(current.callable.declaration, objectIdFields);
       for (const field of responseOwnerFields(current.callable.declaration)) responseFields.add(field);
@@ -1451,6 +1553,7 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
           aliases: incoming,
           depth: current.depth + 1,
           authorizationEnforced: callAuthorizationEnforced(node, current.callable.declaration),
+          filterResultConsumed: callResultFeedsObjectFilter(node),
         });
       });
     }
