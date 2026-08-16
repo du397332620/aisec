@@ -56,13 +56,20 @@ Both analyzers follow bounded local
 controller/handler-to-service-to-repository calls for up to four edges. A common
 ORM owner predicate reached through these calls is accepted only when its value
 can be traced from an authenticated subject such as `request.user`, rather than
-from a route parameter that merely has an owner-like name. They also distinguish
-ownership or tenant constraints from role or permission checks on privileged
-operations. Package aliases, imported or mutable/generated route tables,
-`for...of`, chained collection transforms, dynamic module metadata,
-`forwardRef`, arbitrary `useValue` objects, factories without a visible local
-class result, deeper or complex ORM wrappers and external authorization engines
-remain partial static coverage and require review.
+from a route parameter that merely has an owner-like name. This includes common
+object-literal predicates, literal TypeORM named-parameter `where` / `andWhere`
+conditions, and literal Knex owner-column/value conditions. A local boolean
+policy such as `canRead(actor, object)` must both compare the object owner with
+the authenticated actor and have its result directly enforced by a visible
+403/forbidden branch; merely calling it, or relying on an access-shaped name,
+does not count as authorization. Query fragments with interpolation, computed
+parameter maps, `OR` / `orWhere`, and unknown wrappers fail closed. The analyzers
+also distinguish ownership or tenant constraints from role or permission checks
+on privileged operations. Package aliases, imported or mutable/generated route
+tables, `for...of`, chained collection transforms, dynamic module metadata,
+`forwardRef`, arbitrary `useValue` objects, providers/factories without a
+visible local class result, deeper ORM/control-flow wrappers and external
+authorization engines remain partial static coverage and require review.
 
 Other ecosystems receive baseline coverage when optional Opengrep, Gitleaks and
 Trivy engines are installed. A report explicitly records `complete`, `partial`,
@@ -294,7 +301,7 @@ binaries and prepare the Trivy database before scanning.
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; some findings are explicitly `inferred` and require review |
 | FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
-| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local-constant `forEach` route tables, NestJS controllers and guards, and up to four local controller/service/repository call edges; traces authenticated-subject identity into common ORM owner predicates; reports missing ownership and privileged role/permission checks as inferred findings; unresolved dynamic registration sites are counted, while imported/generated tables, package aliases, factory dependencies, complex wrappers and external policy engines still require review |
+| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local-constant `forEach` route tables, NestJS controllers/guards/local token providers, and up to four local controller/service/repository call edges; traces authenticated identity into object-literal plus bounded TypeORM/Knex QueryBuilder owner predicates and directly enforced local boolean policies; reports missing ownership and privileged role/permission checks as inferred findings; dynamic/interpolated or disjunctive queries, unresolved providers/registration sites, package aliases, complex wrappers and external policy engines still require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |

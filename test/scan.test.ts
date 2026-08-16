@@ -1004,6 +1004,275 @@ class DocumentsModule {}
   }
 });
 
+test("NestJS analysis distinguishes authenticated ORM QueryBuilder ownership from route-controlled and dynamic predicates", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-typeorm-query-builder-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+      knex: "3.1.0",
+      typeorm: "0.3.26",
+    } }));
+    await writeFile(join(temporary, "document.controller.ts"), `
+import { Controller, Get, Param, Req, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+import { DocumentService } from "./document.service";
+
+@Controller("query-builder")
+@UseGuards(AuthGuard("jwt"))
+export class DocumentController {
+  constructor(private readonly service: DocumentService) {}
+
+  @Get("users/:userId/documents/:documentId")
+  readByRouteOwner(@Param("documentId") documentId: string, @Param("userId") userId: string) {
+    return this.service.readByRouteOwner(documentId, userId);
+  }
+
+  @Get("documents/:documentId")
+  readForActor(@Param("documentId") documentId: string, @Req() request: any) {
+    return this.service.readForActor(documentId, request.user.id);
+  }
+
+  @Get("dynamic/:documentId")
+  readWithDynamicClause(@Param("documentId") documentId: string, @Req() request: any) {
+    return this.service.readWithDynamicClause(documentId, request.user.id);
+  }
+
+  @Get("computed-params/:documentId")
+  readWithComputedParams(@Param("documentId") documentId: string, @Req() request: any) {
+    return this.service.readWithComputedParams(documentId, request.user.id);
+  }
+
+  @Get("or-clause/:documentId")
+  readWithOrClause(@Param("documentId") documentId: string, @Req() request: any) {
+    return this.service.readWithOrClause(documentId, request.user.id);
+  }
+
+  @Get("or-method/:documentId")
+  readWithOrMethod(@Param("documentId") documentId: string, @Req() request: any) {
+    return this.service.readWithOrMethod(documentId, request.user.id);
+  }
+
+  @Get("knex/users/:userId/documents/:documentId")
+  readKnexByRouteOwner(@Param("documentId") documentId: string, @Param("userId") userId: string) {
+    return this.service.readKnexByRouteOwner(documentId, userId);
+  }
+
+  @Get("knex/documents/:documentId")
+  readKnexForActor(@Param("documentId") documentId: string, @Req() request: any) {
+    return this.service.readKnexForActor(documentId, request.user.id);
+  }
+
+  @Get("lookup/:documentId")
+  readUnscoped(@Param("documentId") documentId: string) {
+    return this.service.readUnscoped(documentId);
+  }
+}
+`);
+    await writeFile(join(temporary, "document.service.ts"), `
+import { Injectable } from "@nestjs/common";
+import { DocumentRepository } from "./document.repository";
+
+@Injectable()
+export class DocumentService {
+  constructor(private readonly repository: DocumentRepository) {}
+
+  readByRouteOwner(documentId: string, userId: string) {
+    return this.repository.queryDocument(documentId, userId);
+  }
+
+  readForActor(documentId: string, authenticatedUserId: string) {
+    return this.repository.queryDocument(documentId, authenticatedUserId);
+  }
+
+  readWithDynamicClause(documentId: string, authenticatedUserId: string) {
+    return this.repository.queryDocumentDynamically(documentId, authenticatedUserId);
+  }
+
+  readWithComputedParams(documentId: string, authenticatedUserId: string) {
+    return this.repository.queryDocumentWithComputedParams(documentId, authenticatedUserId);
+  }
+
+  readWithOrClause(documentId: string, authenticatedUserId: string) {
+    return this.repository.queryDocumentWithOr(documentId, authenticatedUserId);
+  }
+
+  readWithOrMethod(documentId: string, authenticatedUserId: string) {
+    return this.repository.queryDocumentWithOrMethod(documentId, authenticatedUserId);
+  }
+
+  readKnexByRouteOwner(documentId: string, userId: string) {
+    return this.repository.queryKnexDocument(documentId, userId);
+  }
+
+  readKnexForActor(documentId: string, authenticatedUserId: string) {
+    return this.repository.queryKnexDocument(documentId, authenticatedUserId);
+  }
+
+  readUnscoped(documentId: string) {
+    return this.repository.findUnscoped(documentId);
+  }
+}
+`);
+    await writeFile(join(temporary, "document.repository.ts"), `
+export class DocumentRepository {
+  queryDocument(documentId: string, actorId: string) {
+    return this.dataSource
+      .createQueryBuilder("document")
+      .where("document.id = :documentId", { documentId })
+      .andWhere("document.user_id = :actorId", { actorId })
+      .getOneOrFail();
+  }
+
+  queryDocumentDynamically(documentId: string, actorId: string) {
+    const ownerColumn = "user_id";
+    return this.dataSource
+      .createQueryBuilder("document")
+      .where("document.id = :documentId", { documentId })
+      .andWhere(\`document.\${ownerColumn} = :actorId\`, { actorId })
+      .getOneOrFail();
+  }
+
+  queryDocumentWithComputedParams(documentId: string, actorId: string) {
+    const parameters = { actorId };
+    return this.dataSource
+      .createQueryBuilder("document")
+      .where("document.id = :documentId", { documentId })
+      .andWhere("document.user_id = :actorId", parameters)
+      .getOneOrFail();
+  }
+
+  queryDocumentWithOr(documentId: string, actorId: string) {
+    return this.dataSource
+      .createQueryBuilder("document")
+      .where("document.id = :documentId", { documentId })
+      .andWhere("document.deleted_at IS NULL OR document.user_id = :actorId", { actorId })
+      .getOneOrFail();
+  }
+
+  queryDocumentWithOrMethod(documentId: string, actorId: string) {
+    return this.dataSource
+      .createQueryBuilder("document")
+      .where("document.id = :documentId", { documentId })
+      .andWhere("document.user_id = :actorId", { actorId })
+      .orWhere("document.is_public = true")
+      .getOneOrFail();
+  }
+
+  queryKnexDocument(documentId: string, actorId: string) {
+    return this.knex("documents")
+      .where("documents.id", documentId)
+      .andWhere("documents.user_id", "=", actorId)
+      .first();
+  }
+
+  findUnscoped(documentId: string) {
+    return this.repository.findOneByOrFail({ id: documentId });
+  }
+}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const unsafeRoutes = [
+      "GET /query-builder/users/:userId/documents/:documentId",
+      "GET /query-builder/dynamic/:documentId",
+      "GET /query-builder/computed-params/:documentId",
+      "GET /query-builder/or-clause/:documentId",
+      "GET /query-builder/or-method/:documentId",
+      "GET /query-builder/knex/users/:userId/documents/:documentId",
+      "GET /query-builder/lookup/:documentId",
+    ];
+    for (const route of unsafeRoutes) {
+      assert.ok(report.profile.routes.includes(route));
+      assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.authorization.object-without-ownership-check"
+        && signal.metadata?.route === route), `${route} should remain unsafe`);
+    }
+    for (const safeRoute of [
+      "GET /query-builder/documents/:documentId",
+      "GET /query-builder/knex/documents/:documentId",
+    ]) {
+      assert.ok(report.profile.routes.includes(safeRoute));
+      assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+        && signal.metadata?.route === safeRoute), `${safeRoute} should bind the literal owner predicate to the authenticated subject`);
+    }
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Express analysis requires a local boolean ownership policy result to be enforced", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-policy-enforcement-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "document.policy.ts"), `
+export class DocumentPolicy {
+  canRead(actor: any, document: any) {
+    return document.userId === actor.id;
+  }
+
+  canAccess(_actor: any, _document: any) {
+    return true;
+  }
+}
+`);
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+import { DocumentPolicy } from "./document.policy";
+
+const app = express();
+const policy = new DocumentPolicy();
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+
+app.get("/policy/enforced/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.canRead(req.user, document)) return res.status(403).end();
+  return res.json(document);
+});
+
+app.get("/policy/ignored/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  void policy.canRead(req.user, document);
+  return res.json(document);
+});
+
+app.get("/policy/conditional-denial/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.canRead(req.user, document)) {
+    if (req.query.strict) return res.status(403).end();
+  }
+  return res.json(document);
+});
+
+app.get("/policy/name-only/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.canAccess(req.user, document)) return res.status(403).end();
+  return res.json(document);
+});
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const enforcedRoute = "GET /policy/enforced/:documentId";
+    const unsafeRoutes = [
+      "GET /policy/ignored/:documentId",
+      "GET /policy/conditional-denial/:documentId",
+      "GET /policy/name-only/:documentId",
+    ];
+    assert.ok(report.profile.routes.includes(enforcedRoute));
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("express.authorization.")
+      && signal.metadata?.route === enforcedRoute), `${enforcedRoute} should accept the directly enforced policy predicate`);
+    for (const route of unsafeRoutes) {
+      assert.ok(report.profile.routes.includes(route));
+      assert.ok(report.signals.some((signal) => signal.ruleId === "express.authorization.object-without-ownership-check"
+        && signal.metadata?.route === route), `${route} should not accept incomplete policy enforcement`);
+    }
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("Node API analysis does not treat relation-shaped response metadata as an ORM owner predicate", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-response-owner-decoy-"));
   try {

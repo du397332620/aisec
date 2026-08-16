@@ -154,7 +154,7 @@ const OWNER_RELATION_FIELD = /^(?:owner|author|user|tenant|creator|account|organ
 const AUTH_GUARD_NAME = /(?:^|[._])(?:auth(?:Middleware|Guard)?|authenticate|authenticated|authentication(?:Middleware)?|requireAuth|requireUser|ensureAuthenticated|isAuthenticated|verifyToken|verifySession|jwtAuth(?:Guard)?|jwtGuard|sessionAuth(?:Guard)?|bearerAuth|protect|passport\.authenticate)(?:$|[.(])/i;
 const ACCESS_GUARD_NAME = /(?:^|[._])(?:require|verify|check|ensure|authorize|assert|can)[A-Za-z0-9_]*(?:access|owner|ownership|permission|policy|role|admin|tenant)|(?:owner|ownership|permission|policy|ability|role|admin|tenant)[A-Za-z0-9_]*(?:guard|check)(?:$|[.(])/i;
 const ROLE_GUARD_NAME = /(?:^|[._])(?:require|verify|check|ensure|authorize|assert|can)[A-Za-z0-9_]*(?:permission|policy|role|admin)|(?:permission|policy|ability|role|admin)[A-Za-z0-9_]*(?:guard|check|only|middleware)(?:$|[.(])/i;
-const ID_OPERATION = /(?:^|\.)(?:findById|findByIdAndUpdate|findByIdAndDelete|findUnique|findUniqueOrThrow|findFirst|findFirstOrThrow|findOne|findMany|getById|getBy[A-Z][A-Za-z0-9_]*|getOne|loadById|detail|update|updateOne|updateMany|delete|deleteOne|deleteMany|remove|destroy|where)$/;
+const ID_OPERATION = /(?:^|\.)(?:findById|findByIdAndUpdate|findByIdAndDelete|findUnique|findUniqueOrThrow|findFirst|findFirstOrThrow|findOne|findOneBy|findOneByOrFail|findMany|getById|getBy[A-Z][A-Za-z0-9_]*|getOne|getOneOrFail|getRawOne|loadById|detail|update|updateOne|updateMany|delete|deleteOne|deleteMany|remove|destroy|where)$/;
 const NEST_AUTH_GUARD_HINT = /(?:auth|jwt|session|identity|loggedIn|signedIn|user|role|permission|policy|ability|access|owner|admin)/i;
 const NEST_OWNERSHIP_GUARD_HINT = /(?:owner|ownership|tenant|role|permission|policy|ability|access|admin)/i;
 const PRIVILEGED_ROUTE_HINT = /(?:^|\/)(?:admin|administration|manage|management|permissions?|roles?)(?:\/|$)/i;
@@ -504,8 +504,12 @@ function explicitAuthentication(source: string): boolean {
   return deniedWhenAbsent || continuesWhenPresent;
 }
 
-function ownershipGuard(source: string, allowUnscopedDirectBinding = true): boolean {
-  if (ACCESS_GUARD_NAME.test(source)) return true;
+function ownershipGuard(
+  source: string,
+  allowUnscopedDirectBinding = true,
+  allowNamedAccessGuard = true,
+): boolean {
+  if (allowNamedAccessGuard && ACCESS_GUARD_NAME.test(source)) return true;
   const identity = String.raw`(?:(?:req(?:uest)?|ctx|context)\s*(?:\?\.)?\.\s*(?:user|auth|session)(?:\s*(?:\?\.)?\.\s*(?:id|userId|tenantId|role|isAdmin))?|(?:currentUser|authenticatedUser|principal|identity)(?:\s*(?:\?\.)?\.\s*(?:id|userId|tenantId|role|isAdmin))?)`;
   const owner = String.raw`(?:owner_id|user_id|tenant_id|creator_id|created_by|account_id|organization_id|org_id|ownerId|userId|tenantId|creatorId|createdBy|accountId|organizationId|orgId)`;
   const directBinding = new RegExp(`${owner}\\s*:\\s*${identity}`, "i");
@@ -516,7 +520,7 @@ function ownershipGuard(source: string, allowUnscopedDirectBinding = true): bool
 
 function roleGuard(source: string): boolean {
   if (ROLE_GUARD_NAME.test(source)) return true;
-  const role = /(?:isAdmin|admin|roles?|permissions?|policies|abilities|canAccess)/i;
+  const role = /(?:isAdmin|admin|roles?|permissions?|policies|abilities)/i;
   const denial = /(?:Forbidden|AccessDenied|status\s*\(\s*403|sendStatus\s*\(\s*403|\.redirect\s*\(\s*["'][^"']*(?:login|log-in|sign-in))/i;
   return role.test(source) && denial.test(source);
 }
@@ -1113,8 +1117,165 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     const segments = accessSegments(current);
     return Boolean(segments?.at(-1) && OWNER_FIELD.test(segments.at(-1)!));
   };
+  const queryOwnerColumn = (value: string): boolean => {
+    const identifiers = value.match(/[A-Za-z_][A-Za-z0-9_]*/g);
+    const field = identifiers?.at(-1);
+    return Boolean(field && OWNER_FIELD.test(field));
+  };
+  const objectLiteralBinding = (
+    expression: ts.Expression | undefined,
+    parameter: string,
+  ): ts.Expression | undefined => {
+    const current = expression && unwrapExpression(expression);
+    if (!current || !ts.isObjectLiteralExpression(current)) return undefined;
+    for (const property of current.properties) {
+      if (ts.isPropertyAssignment(property) && propertyName(property.name) === parameter) return property.initializer;
+      if (ts.isShorthandPropertyAssignment(property) && property.name.text === parameter) return property.name;
+    }
+    return undefined;
+  };
+  const queryBuilderBindsIdentity = (call: ts.CallExpression, aliases: Set<string>): boolean => {
+    const callee = unwrapExpression(call.expression);
+    const method = ts.isPropertyAccessExpression(callee)
+      ? callee.name.text
+      : ts.isElementAccessExpression(callee) && callee.argumentExpression && ts.isStringLiteral(callee.argumentExpression)
+        ? callee.argumentExpression.text
+        : undefined;
+    if (method !== "where" && method !== "andWhere") return false;
+    // Query text stays literal-only: resolving or evaluating target-owned query
+    // builders would cross the scanner's no-execution trust boundary.
+    const query = literalText(call.arguments[0]);
+    if (query === undefined || /\bOR\b/i.test(query)) return false;
+
+    const parameters = call.arguments[1];
+    for (const match of query.matchAll(/:([A-Za-z_$][A-Za-z0-9_$]*)/g)) {
+      const placeholder = match[1];
+      const offset = match.index;
+      if (!placeholder || offset === undefined) continue;
+      const end = offset + match[0].length;
+      const before = query.slice(0, offset);
+      const after = query.slice(end);
+      const leftColumn = before.match(/([A-Za-z_][A-Za-z0-9_.$`"\[\]]*)\s*=\s*$/)?.[1];
+      const rightColumn = after.match(/^\s*=\s*([A-Za-z_][A-Za-z0-9_.$`"\[\]]*)/)?.[1];
+      if ((!leftColumn || !queryOwnerColumn(leftColumn)) && (!rightColumn || !queryOwnerColumn(rightColumn))) continue;
+      const binding = objectLiteralBinding(parameters, placeholder);
+      if (binding && expressionCarriesIdentity(binding, aliases)) return true;
+    }
+
+    if (!queryOwnerColumn(query)) return false;
+    let binding = call.arguments[1];
+    if (call.arguments.length >= 3) {
+      if (literalText(call.arguments[1]) !== "=") return false;
+      binding = call.arguments[2];
+    }
+    return Boolean(binding && expressionCarriesIdentity(binding, aliases));
+  };
+  const callableName = (declaration: ts.FunctionLikeDeclaration): string | undefined => {
+    if (ts.isMethodDeclaration(declaration) || ts.isFunctionDeclaration(declaration)
+      || ts.isFunctionExpression(declaration) || ts.isGetAccessorDeclaration(declaration)
+      || ts.isSetAccessorDeclaration(declaration)) return propertyName(declaration.name);
+    const parent = declaration.parent;
+    if ((ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration))
+      && (ts.isPropertyDeclaration(parent) || ts.isPropertyAssignment(parent))) return propertyName(parent.name);
+    if ((ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration))
+      && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return parent.name.text;
+    return undefined;
+  };
+  const authorizationPredicateName = (name: string | undefined): boolean => Boolean(name && /^(?:(?:can|may|allow|allows|permit|permits)(?:Read|Write|View|Edit|Update|Delete|Access|Manage|Own|Use)[A-Za-z0-9_]*|(?:is|has)(?:Owner|Ownership|Authorized|Allowed|Permission|Access)[A-Za-z0-9_]*)$/i.test(name));
+  const expressionDeniesAccess = (node: ts.Node): boolean => {
+    let denied = false;
+    visit(node, (candidate) => {
+      if (denied || !ts.isCallExpression(candidate)) return;
+      const name = expressionName(candidate.expression).replace(/\(\)/g, "");
+      if (!/(?:^|\.)(?:status|sendStatus)$/.test(name)) return;
+      const status = candidate.arguments[0];
+      if (status && ts.isNumericLiteral(status) && status.text === "403") denied = true;
+    });
+    return denied;
+  };
+  const statementDeniesAccess = (statement: ts.Statement): boolean => {
+    if (ts.isThrowStatement(statement)) {
+      return Boolean(statement.expression
+        && /(?:Forbidden|AccessDenied|PermissionDenied|Unauthorized)/i.test(statement.expression.getText()));
+    }
+    if (ts.isReturnStatement(statement)) return Boolean(statement.expression && expressionDeniesAccess(statement.expression));
+    if (ts.isExpressionStatement(statement)) return expressionDeniesAccess(statement.expression);
+    if (ts.isIfStatement(statement)) {
+      return statementDeniesAccess(statement.thenStatement)
+        && Boolean(statement.elseStatement && statementDeniesAccess(statement.elseStatement));
+    }
+    if (!ts.isBlock(statement)) return false;
+    for (const item of statement.statements) {
+      if (statementDeniesAccess(item)) return true;
+      if (!ts.isExpressionStatement(item) && !ts.isVariableStatement(item) && !ts.isEmptyStatement(item)) return false;
+    }
+    return false;
+  };
+  const authorizationCondition = (expression: ts.Expression): ts.Expression => {
+    let current = expression;
+    while (true) {
+      const unwrapped = unwrapExpression(current);
+      if (unwrapped !== current) {
+        current = unwrapped;
+        continue;
+      }
+      if (ts.isAwaitExpression(current)) {
+        current = current.expression;
+        continue;
+      }
+      return current;
+    }
+  };
+  const callAuthorizationEnforced = (
+    call: ts.CallExpression,
+    declaration: ts.FunctionLikeDeclaration,
+  ): boolean => {
+    const inside = (node: ts.Node, ancestor: ts.Node): boolean => {
+      let current: ts.Node | undefined = node;
+      while (current && current !== declaration) {
+        if (current === ancestor) return true;
+        current = current.parent;
+      }
+      return false;
+    };
+    let current: ts.Node | undefined = call.parent;
+    while (current && current !== declaration) {
+      if (ts.isIfStatement(current) && inside(call, current.expression)) {
+        const condition = authorizationCondition(current.expression);
+        if (ts.isPrefixUnaryExpression(condition) && condition.operator === ts.SyntaxKind.ExclamationToken
+          && authorizationCondition(condition.operand) === call && statementDeniesAccess(current.thenStatement)) return true;
+        if (condition === call && current.elseStatement && statementDeniesAccess(current.elseStatement)) return true;
+      }
+      current = current.parent;
+    }
+    return false;
+  };
+  const accessGuardCall = (declaration: ts.FunctionLikeDeclaration): boolean => {
+    let protectedByAccessCall = false;
+    visit(declaration, (node) => {
+      if (protectedByAccessCall || !ts.isCallExpression(node)) return;
+      const name = expressionName(node.expression).replace(/\(\)/g, "");
+      if (!ACCESS_GUARD_NAME.test(name)) return;
+      const terminal = name.split(".").at(-1);
+      if (!authorizationPredicateName(terminal)) protectedByAccessCall = true;
+    });
+    return protectedByAccessCall;
+  };
   const astOwnershipBinding = (declaration: ts.FunctionLikeDeclaration, aliases: Set<string>): boolean => {
     let protectedByOwner = false;
+    let disjunctiveQueryBuilder = false;
+    visit(declaration, (node) => {
+      if (disjunctiveQueryBuilder || !ts.isCallExpression(node)) return;
+      const callee = unwrapExpression(node.expression);
+      const method = ts.isPropertyAccessExpression(callee)
+        ? callee.name.text
+        : ts.isElementAccessExpression(callee) && callee.argumentExpression && ts.isStringLiteral(callee.argumentExpression)
+          ? callee.argumentExpression.text
+          : undefined;
+      // A later disjunction can widen an otherwise owner-scoped query, so one
+      // visible orWhere invalidates query-derived ownership for this callable.
+      if (method && /^orWhere/.test(method)) disjunctiveQueryBuilder = true;
+    });
     const insideObjectOperation = (node: ts.Node): boolean => {
       let current = node.parent;
       while (current && current !== declaration) {
@@ -1143,13 +1304,15 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     };
     visit(declaration, (node) => {
       if (protectedByOwner) return;
-      if (ts.isPropertyAssignment(node)) {
+      if (ts.isCallExpression(node) && !disjunctiveQueryBuilder && queryBuilderBindsIdentity(node, aliases)) {
+        protectedByOwner = true;
+      } else if (ts.isPropertyAssignment(node)) {
         const name = propertyName(node.name);
-        if (insideObjectOperation(node) && name && OWNER_FIELD.test(name)
+        if (!disjunctiveQueryBuilder && insideObjectOperation(node) && name && OWNER_FIELD.test(name)
           && expressionCarriesIdentity(node.initializer, aliases)) protectedByOwner = true;
-        else if (insideObjectOperation(node) && name && OWNER_RELATION_FIELD.test(name)
+        else if (!disjunctiveQueryBuilder && insideObjectOperation(node) && name && OWNER_RELATION_FIELD.test(name)
           && relationBindsIdentity(node.initializer)) protectedByOwner = true;
-      } else if (ts.isShorthandPropertyAssignment(node) && insideObjectOperation(node)
+      } else if (ts.isShorthandPropertyAssignment(node) && !disjunctiveQueryBuilder && insideObjectOperation(node)
         && OWNER_FIELD.test(node.name.text) && aliases.has(node.name.text)) {
         protectedByOwner = true;
       } else if (ts.isBinaryExpression(node) && [
@@ -1181,7 +1344,8 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       ownerClass?: ResolvedClass;
       aliases: Set<string>;
       depth: number;
-    }> = [{ callable: { declaration, parsed }, ownerClass, aliases: new Set(), depth: 0 }];
+      authorizationEnforced: boolean;
+    }> = [{ callable: { declaration, parsed }, ownerClass, aliases: new Set(), depth: 0, authorizationEnforced: false }];
     const visited = new Set<string>();
     const semanticSources: string[] = [];
     const responseFields = new Set<string>();
@@ -1194,13 +1358,18 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       const current = queue.shift()!;
       const aliases = identityAliases(current.callable.declaration, current.aliases);
       const currentOwnerKey = current.ownerClass ? resolvedClassIdentity(current.ownerClass) : "";
-      const visitKey = `${current.callable.parsed.file.relativePath}\u0000${current.callable.declaration.pos}\u0000${currentOwnerKey}\u0000${[...aliases].sort().join(",")}`;
+      const visitKey = `${current.callable.parsed.file.relativePath}\u0000${current.callable.declaration.pos}\u0000${currentOwnerKey}\u0000${[...aliases].sort().join(",")}\u0000${current.authorizationEnforced ? "enforced" : "observed"}`;
       if (visited.has(visitKey)) continue;
       visited.add(visitKey);
       const source = current.callable.declaration.getText(current.callable.parsed.source);
       semanticSources.push(source);
-      ownershipProtected ||= (current.depth === 0 && ownershipGuard(source, false))
-        || ACCESS_GUARD_NAME.test(source) || astOwnershipBinding(current.callable.declaration, aliases);
+      const predicate = authorizationPredicateName(callableName(current.callable.declaration));
+      const binding = astOwnershipBinding(current.callable.declaration, aliases);
+      const callableProtection = accessGuardCall(current.callable.declaration) || binding;
+      // Boolean policy methods are evidence only when the caller directly uses
+      // their result to take a statically visible denial branch.
+      ownershipProtected ||= (current.depth === 0 && ownershipGuard(source, false, false))
+        || (callableProtection && (!predicate || current.authorizationEnforced));
       roleProtected ||= roleGuard(source);
       objectOperation ||= hasObjectOperation(current.callable.declaration, objectIdFields);
       for (const field of responseOwnerFields(current.callable.declaration)) responseFields.add(field);
@@ -1216,7 +1385,13 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
           if (!argument || !parameter || !ts.isIdentifier(parameter.name)) continue;
           if (expressionCarriesIdentity(argument, aliases)) incoming.add(parameter.name.text);
         }
-        queue.push({ callable: target.callable, ownerClass: target.ownerClass, aliases: incoming, depth: current.depth + 1 });
+        queue.push({
+          callable: target.callable,
+          ownerClass: target.ownerClass,
+          aliases: incoming,
+          depth: current.depth + 1,
+          authorizationEnforced: callAuthorizationEnforced(node, current.callable.declaration),
+        });
       });
     }
     const result = {
