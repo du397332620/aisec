@@ -36,24 +36,33 @@ a complete Python semantic analysis or proof of exploitability.
 
 Express coverage resolves common ESM and CommonJS relative imports, nested and
 chained `Router` mounts, route registrars that receive an app/router parameter,
-and selected handlers or middleware exposed by locally constructed instances. It
-also expands top-level local `const` route arrays used by an inline `forEach`
-callback, capped at 128 entries per array and 512 expanded routes per scan;
-registration sites outside that form are counted in the coverage reason rather
-than assigned invented paths.
+and selected handlers or middleware exposed by locally constructed CommonJS or
+ES-class instances. Bound methods such as
+`controller.read.bind(controller)` retain their instance context, including
+statically visible constructor arguments. Express also expands top-level local
+`const` route arrays used by an inline `forEach` callback, capped at 128
+entries per array and 512 expanded routes per scan; registration sites outside
+that form are counted in the coverage reason rather than assigned invented
+paths.
 NestJS coverage recognizes common `CanActivate` guard implementations, composed
 decorator factories such as `applyDecorators(UseGuards(...))`, same-controller
-authorization helpers, static global prefixes and URI versions. Both analyzers
-follow bounded local controller/handler-to-service-to-repository calls for up to
-four edges, including common constructed properties and typed NestJS constructor
-dependencies. A common ORM owner predicate reached through these calls is
-accepted only when its value can be traced from an authenticated subject such as
-`request.user`, rather than from a route parameter that merely has an owner-like
-name. They also distinguish ownership or tenant constraints from role or
-permission checks on privileged operations. Package aliases, imported or
-mutable/generated route tables, `for...of` and chained collection transforms,
-factory-provided dependencies, deeper or complex ORM wrappers and external
-authorization engines remain partial static coverage and require review.
+authorization helpers, static global prefixes and URI versions. Local
+`@Inject(TOKEN)` dependencies can be mapped through `@Module` providers that
+use `useClass`, `useExisting`, or a bounded `useFactory` with one statically
+visible local `new Class(...)` result. Reachable injected dependencies outside
+that form are counted in the coverage reason.
+
+Both analyzers follow bounded local
+controller/handler-to-service-to-repository calls for up to four edges. A common
+ORM owner predicate reached through these calls is accepted only when its value
+can be traced from an authenticated subject such as `request.user`, rather than
+from a route parameter that merely has an owner-like name. They also distinguish
+ownership or tenant constraints from role or permission checks on privileged
+operations. Package aliases, imported or mutable/generated route tables,
+`for...of`, chained collection transforms, dynamic module metadata,
+`forwardRef`, arbitrary `useValue` objects, factories without a visible local
+class result, deeper or complex ORM wrappers and external authorization engines
+remain partial static coverage and require review.
 
 Other ecosystems receive baseline coverage when optional Opengrep, Gitleaks and
 Trivy engines are installed. A report explicitly records `complete`, `partial`,

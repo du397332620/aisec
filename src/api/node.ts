@@ -32,6 +32,7 @@ export interface NodeApiAnalysis {
   unresolvedHandlers: number;
   unresolvedMounts: number;
   unresolvedRegistrations: number;
+  unresolvedProviderDependencies: number;
 }
 
 interface ParsedSource {
@@ -68,11 +69,17 @@ function commonJsExportName(expression: ts.Expression): string | undefined {
 interface ResolvedFunction {
   declaration: ts.FunctionLikeDeclaration;
   parsed: ParsedSource;
+  ownerClass?: ResolvedClass;
 }
 
 interface ResolvedClass {
   declaration: ts.ClassDeclaration;
   parsed: ParsedSource;
+  construction?: {
+    parsed: ParsedSource;
+    expression: ts.NewExpression;
+    ownerClass?: ResolvedClass;
+  };
 }
 
 interface LocalCallSemantics {
@@ -90,6 +97,8 @@ interface LocalCallAnalyzer {
     ownerClass: ResolvedClass | undefined,
     objectIdFields: string[],
   ): LocalCallSemantics;
+  resolveMethod(parsed: ParsedSource, expression: ts.Expression): ResolvedFunction | undefined;
+  unresolvedProviderDependencies(): number;
 }
 
 interface ExpressRouteCandidate {
@@ -101,6 +110,7 @@ interface ExpressRouteCandidate {
   offset: number;
   handlerName: string;
   handler?: ts.FunctionLikeDeclaration;
+  handlerOwnerClass?: ResolvedClass;
   handlerSource: string;
   location: SourceLocation;
   locallyAuthenticated: boolean;
@@ -151,6 +161,8 @@ const PRIVILEGED_ROUTE_HINT = /(?:^|\/)(?:admin|administration|manage|management
 const PRIVILEGED_HANDLER_HINT = /(?:admin|nonAdmin|allUsers?|manageUsers?|permissions?|roles?)/i;
 const MAX_STATIC_ROUTE_ENTRIES = 128;
 const MAX_STATIC_ROUTE_EXPANSIONS = 512;
+const MAX_STATIC_PROVIDER_ENTRIES = 256;
+const MAX_PROVIDER_RESOLUTION_DEPTH = 8;
 
 function scriptKind(path: string): ts.ScriptKind {
   const extension = extname(path).toLowerCase();
@@ -657,13 +669,26 @@ function resolveFunction(
 
 function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, ParsedSource>): LocalCallAnalyzer {
   const declarations = new Map(sources.map((parsed) => [parsed.file.relativePath, functionDeclarations(parsed.source)]));
-  const variables = new Map<string, { parsed: ParsedSource; expression: ts.Expression }>();
+  const variables = new Map<string, {
+    parsed: ParsedSource;
+    expression: ts.Expression;
+    constant: boolean;
+    topLevel: boolean;
+  }>();
   const classes = new Map<string, ResolvedClass>();
   const classKey = (parsed: ParsedSource, local: string): string => `${parsed.file.relativePath}\u0000${local}`;
+  const resolvedClassIdentity = (resolved: ResolvedClass): string => resolved.construction
+    ? `new:${resolved.construction.parsed.file.relativePath}:${resolved.construction.expression.pos}`
+    : `class:${resolved.parsed.file.relativePath}:${resolved.declaration.pos}`;
   for (const parsed of sources) {
     visit(parsed.source, (node) => {
       if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
-        variables.set(classKey(parsed, node.name.text), { parsed, expression: node.initializer });
+        variables.set(classKey(parsed, node.name.text), {
+          parsed,
+          expression: node.initializer,
+          constant: (node.parent.flags & ts.NodeFlags.Const) !== 0,
+          topLevel: node.parent.parent.parent === parsed.source,
+        });
       }
     });
     for (const statement of parsed.source.statements) {
@@ -696,6 +721,179 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     return undefined;
   };
 
+  interface ProviderTarget {
+    implementation?: ResolvedClass;
+    alias?: string;
+    unresolved?: boolean;
+    signature: string;
+  }
+  const classTokens = new Map<string, ResolvedClass>();
+  const providerTargets = new Map<string, ProviderTarget>();
+  const unresolvedInjectedDependencies = new Set<string>();
+  const providerTokenKey = (parsed: ParsedSource, expression: ts.Expression | undefined): string | undefined => {
+    if (!expression) return undefined;
+    const current = unwrapExpression(expression);
+    const literal = literalText(current);
+    if (literal !== undefined) return `string:${literal}`;
+    if (ts.isNumericLiteral(current)) return `number:${current.text}`;
+    if (current.kind === ts.SyntaxKind.TrueKeyword || current.kind === ts.SyntaxKind.FalseKeyword) {
+      return `boolean:${current.kind === ts.SyntaxKind.TrueKeyword}`;
+    }
+    const symbol = resolveExpressionSymbol(parsed, current, lookup);
+    return symbol ? `symbol:${classKey(symbol.parsed, symbol.local)}` : undefined;
+  };
+  for (const [key, resolved] of classes) classTokens.set(`symbol:${key}`, resolved);
+  const registerProvider = (key: string, target: ProviderTarget): void => {
+    const existing = providerTargets.get(key);
+    if (!existing || existing.signature === target.signature) {
+      providerTargets.set(key, target);
+      return;
+    }
+    providerTargets.set(key, { unresolved: true, signature: "ambiguous" });
+  };
+  const providerClass = (key: string, seen = new Set<string>()): ResolvedClass | undefined => {
+    if (seen.has(key)) return undefined;
+    const target = providerTargets.get(key);
+    if (!target) return classTokens.get(key);
+    if (target.unresolved) return undefined;
+    if (target.implementation) return target.implementation;
+    return target.alias ? providerClass(target.alias, new Set(seen).add(key)) : undefined;
+  };
+  const nestDecoratorArguments = (
+    parsed: ParsedSource,
+    node: ts.Node,
+    importedName: "Inject" | "Module",
+  ): readonly ts.Expression[] | undefined => {
+    for (const decorator of decorators(node)) {
+      if (!ts.isCallExpression(decorator.expression)) continue;
+      const callee = unwrapExpression(decorator.expression.expression);
+      if (ts.isIdentifier(callee)) {
+        const binding = parsed.imports.get(callee.text);
+        if (binding?.module === "@nestjs/common" && !binding.namespace && binding.imported === importedName) {
+          return decorator.expression.arguments;
+        }
+      }
+      if (ts.isPropertyAccessExpression(callee) && ts.isIdentifier(callee.expression)
+        && callee.name.text === importedName) {
+        const binding = parsed.imports.get(callee.expression.text);
+        if (binding?.module === "@nestjs/common" && binding.namespace) return decorator.expression.arguments;
+      }
+    }
+    return undefined;
+  };
+  const injectedProvider = (parsed: ParsedSource, node: ts.Node): { declared: boolean; key?: string } => {
+    const arguments_ = nestDecoratorArguments(parsed, node, "Inject");
+    return arguments_ ? { declared: true, key: providerTokenKey(parsed, arguments_[0]) } : { declared: false };
+  };
+  const factoryResultClass = (parsed: ParsedSource, expression: ts.Expression): ResolvedClass | undefined => {
+    const current = unwrapExpression(expression);
+    const factory = ts.isArrowFunction(current) || ts.isFunctionExpression(current)
+      ? { declaration: current, parsed }
+      : resolveFunction(parsed, current, lookup, declarations);
+    if (!factory?.declaration.body) return undefined;
+    let returned: ts.Expression | undefined;
+    if (!ts.isBlock(factory.declaration.body)) returned = factory.declaration.body;
+    else {
+      const returns = factory.declaration.body.statements.filter(ts.isReturnStatement);
+      if (returns.length !== 1) return undefined;
+      returned = returns[0]?.expression;
+    }
+    const value = returned && unwrapExpression(returned);
+    if (!value || !ts.isNewExpression(value)) return undefined;
+    return classFromSymbol(resolveExpressionSymbol(factory.parsed, value.expression, lookup));
+  };
+  const providerArray = (
+    parsed: ParsedSource,
+    expression: ts.Expression | undefined,
+    seen = new Set<string>(),
+    depth = 0,
+  ): Array<{ parsed: ParsedSource; expression: ts.Expression }> | undefined => {
+    if (!expression || depth > MAX_PROVIDER_RESOLUTION_DEPTH) return undefined;
+    const current = unwrapExpression(expression);
+    if (ts.isArrayLiteralExpression(current)) {
+      if (current.elements.length > MAX_STATIC_PROVIDER_ENTRIES || current.elements.some(ts.isSpreadElement)) return undefined;
+      return current.elements.filter(ts.isExpression).map((item) => ({ parsed, expression: item }));
+    }
+    if (!ts.isIdentifier(current)) return undefined;
+    const symbol = resolveLocalSymbol(parsed, current.text, lookup);
+    if (!symbol) return undefined;
+    const key = classKey(symbol.parsed, symbol.local);
+    if (seen.has(key)) return undefined;
+    const initializer = variables.get(key);
+    return initializer?.constant && initializer.topLevel
+      ? providerArray(initializer.parsed, initializer.expression, new Set(seen).add(key), depth + 1)
+      : undefined;
+  };
+  const providerObject = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+    seen = new Set<string>(),
+    depth = 0,
+  ): { parsed: ParsedSource; object: ts.ObjectLiteralExpression } | undefined => {
+    if (depth > MAX_PROVIDER_RESOLUTION_DEPTH) return undefined;
+    const current = unwrapExpression(expression);
+    if (ts.isObjectLiteralExpression(current)) return { parsed, object: current };
+    if (!ts.isIdentifier(current)) return undefined;
+    const symbol = resolveLocalSymbol(parsed, current.text, lookup);
+    if (!symbol) return undefined;
+    const key = classKey(symbol.parsed, symbol.local);
+    if (seen.has(key)) return undefined;
+    const initializer = variables.get(key);
+    return initializer?.constant && initializer.topLevel
+      ? providerObject(initializer.parsed, initializer.expression, new Set(seen).add(key), depth + 1)
+      : undefined;
+  };
+  for (const parsed of sources) {
+    for (const statement of parsed.source.statements) {
+      if (!ts.isClassDeclaration(statement)) continue;
+      const moduleArguments = nestDecoratorArguments(parsed, statement, "Module");
+      const entries = providerArray(parsed, objectProperty(moduleArguments?.[0], "providers"));
+      for (const entry of entries ?? []) {
+        const directKey = providerTokenKey(entry.parsed, entry.expression);
+        const directClass = classFromSymbol(resolveExpressionSymbol(entry.parsed, entry.expression, lookup));
+        if (directKey && directClass) {
+          registerProvider(directKey, {
+            implementation: directClass,
+            signature: `class:${directClass.parsed.file.relativePath}:${directClass.declaration.pos}`,
+          });
+          continue;
+        }
+        const record = providerObject(entry.parsed, entry.expression);
+        if (!record) continue;
+        const provide = objectProperty(record.object, "provide");
+        const key = providerTokenKey(record.parsed, provide);
+        if (!key) continue;
+        const useClass = objectProperty(record.object, "useClass");
+        const implementation = useClass
+          ? classFromSymbol(resolveExpressionSymbol(record.parsed, useClass, lookup))
+          : undefined;
+        if (implementation) {
+          registerProvider(key, {
+            implementation,
+            signature: `class:${implementation.parsed.file.relativePath}:${implementation.declaration.pos}`,
+          });
+          continue;
+        }
+        const useExisting = objectProperty(record.object, "useExisting");
+        const alias = providerTokenKey(record.parsed, useExisting);
+        if (alias) {
+          registerProvider(key, { alias, signature: `alias:${alias}` });
+          continue;
+        }
+        const useFactory = objectProperty(record.object, "useFactory");
+        const factoryClass = useFactory && factoryResultClass(record.parsed, useFactory);
+        if (factoryClass) {
+          registerProvider(key, {
+            implementation: factoryClass,
+            signature: `factory-class:${factoryClass.parsed.file.relativePath}:${factoryClass.declaration.pos}`,
+          });
+          continue;
+        }
+        registerProvider(key, { unresolved: true, signature: "unresolved" });
+      }
+    }
+  }
+
   const dependencyCache = new Map<string, ResolvedClass | null>();
   const resolveValueClass = (
     parsed: ParsedSource,
@@ -705,7 +903,14 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
   ): ResolvedClass | undefined => {
     const current = unwrapExpression(expression);
     const nextSeen = seen ?? new Set<string>();
-    if (ts.isNewExpression(current)) return resolveValueClass(parsed, current.expression, ownerClass, nextSeen);
+    if (ts.isNewExpression(current)) {
+      const constructed = resolveValueClass(parsed, current.expression, ownerClass, nextSeen);
+      return constructed ? {
+        declaration: constructed.declaration,
+        parsed: constructed.parsed,
+        construction: { parsed, expression: current, ownerClass },
+      } : undefined;
+    }
     if (ts.isIdentifier(current)) {
       const symbol = resolveLocalSymbol(parsed, current.text, lookup);
       const resolved = classFromSymbol(symbol);
@@ -726,6 +931,23 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     return undefined;
   };
   const parameterClass = (owner: ResolvedClass, parameter: ts.ParameterDeclaration): ResolvedClass | undefined => {
+    const injected = injectedProvider(owner.parsed, parameter);
+    if (injected.declared) {
+      const resolved = injected.key && providerClass(injected.key);
+      if (resolved) return resolved;
+      unresolvedInjectedDependencies.add(`${owner.parsed.file.relativePath}\u0000${owner.declaration.pos}\u0000${parameter.pos}\u0000${injected.key ?? "unknown"}`);
+      return undefined;
+    }
+    if (owner.construction && ts.isConstructorDeclaration(parameter.parent)) {
+      const index = parameter.parent.parameters.indexOf(parameter);
+      const argument = index >= 0 ? owner.construction.expression.arguments?.[index] : undefined;
+      const resolved = argument && resolveValueClass(
+        owner.construction.parsed,
+        argument,
+        owner.construction.ownerClass,
+      );
+      if (resolved) return resolved;
+    }
     if (parameter.initializer) {
       const initialized = resolveValueClass(owner.parsed, parameter.initializer, owner);
       if (initialized) return initialized;
@@ -733,12 +955,22 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     return classFromType(owner.parsed, parameter.type);
   };
   const resolveDependency = (owner: ResolvedClass, property: string): ResolvedClass | undefined => {
-    const cacheKey = `${owner.parsed.file.relativePath}\u0000${owner.declaration.pos}\u0000${property}`;
+    const cacheKey = `${resolvedClassIdentity(owner)}\u0000${property}`;
     const cached = dependencyCache.get(cacheKey);
     if (cached !== undefined) return cached ?? undefined;
     dependencyCache.set(cacheKey, null);
     for (const member of owner.declaration.members) {
       if (ts.isPropertyDeclaration(member) && propertyName(member.name) === property) {
+        const injected = injectedProvider(owner.parsed, member);
+        if (injected.declared) {
+          const provider = injected.key && providerClass(injected.key);
+          if (provider) {
+            dependencyCache.set(cacheKey, provider);
+            return provider;
+          }
+          unresolvedInjectedDependencies.add(`${owner.parsed.file.relativePath}\u0000${owner.declaration.pos}\u0000${member.pos}\u0000${injected.key ?? "unknown"}`);
+          return undefined;
+        }
         const initialized = member.initializer && resolveValueClass(owner.parsed, member.initializer, owner);
         const resolved = initialized || classFromType(owner.parsed, member.type);
         if (resolved) {
@@ -777,21 +1009,40 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
   const classMethod = (owner: ResolvedClass, name: string): ResolvedFunction | undefined => {
     for (const member of owner.declaration.members) {
       if (propertyName(member.name) !== name) continue;
-      if (ts.isMethodDeclaration(member) && member.body) return { declaration: member, parsed: owner.parsed };
+      if (ts.isMethodDeclaration(member) && member.body) return { declaration: member, parsed: owner.parsed, ownerClass: owner };
       if (ts.isPropertyDeclaration(member) && member.initializer) {
         const value = unwrapExpression(member.initializer);
-        if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) return { declaration: value, parsed: owner.parsed };
+        if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
+          return { declaration: value, parsed: owner.parsed, ownerClass: owner };
+        }
       }
     }
     return undefined;
   };
   const classOwning = (resolved: ResolvedFunction): ResolvedClass | undefined => {
+    if (resolved.ownerClass) return resolved.ownerClass;
     for (const owner of classes.values()) {
       if (owner.parsed !== resolved.parsed) continue;
       if (owner.declaration.members.some((member) => member === resolved.declaration
         || (ts.isPropertyDeclaration(member) && member.initializer === resolved.declaration))) return owner;
     }
     return undefined;
+  };
+  const resolveMethod = (parsed: ParsedSource, expression: ts.Expression): ResolvedFunction | undefined => {
+    const current = unwrapExpression(expression);
+    let methodExpression: ts.Expression = current;
+    let boundClass: ResolvedClass | undefined;
+    if (ts.isCallExpression(current) && ts.isPropertyAccessExpression(current.expression)
+      && current.expression.name.text === "bind") {
+      methodExpression = unwrapExpression(current.expression.expression);
+      const boundTarget = current.arguments[0];
+      boundClass = boundTarget && resolveValueClass(parsed, boundTarget, undefined);
+      if (!boundClass) return undefined;
+    }
+    if (!ts.isPropertyAccessExpression(methodExpression)) return undefined;
+    const targetClass = resolveValueClass(parsed, methodExpression.expression, undefined);
+    if (!targetClass || (boundClass && resolvedClassIdentity(boundClass) !== resolvedClassIdentity(targetClass))) return undefined;
+    return classMethod(targetClass, methodExpression.name.text);
   };
   const resolveCall = (
     parsed: ParsedSource,
@@ -921,7 +1172,8 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     ownerClass: ResolvedClass | undefined,
     objectIdFields: string[],
   ): LocalCallSemantics => {
-    const cacheKey = `${parsed.file.relativePath}\u0000${declaration.pos}\u0000${objectIdFields.join(",")}`;
+    const ownerKey = ownerClass ? resolvedClassIdentity(ownerClass) : "";
+    const cacheKey = `${parsed.file.relativePath}\u0000${declaration.pos}\u0000${ownerKey}\u0000${objectIdFields.join(",")}`;
     const cached = cache.get(cacheKey);
     if (cached) return cached;
     const queue: Array<{
@@ -941,7 +1193,8 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     while (queue.length > 0 && visited.size < maxCallables) {
       const current = queue.shift()!;
       const aliases = identityAliases(current.callable.declaration, current.aliases);
-      const visitKey = `${current.callable.parsed.file.relativePath}\u0000${current.callable.declaration.pos}\u0000${[...aliases].sort().join(",")}`;
+      const currentOwnerKey = current.ownerClass ? resolvedClassIdentity(current.ownerClass) : "";
+      const visitKey = `${current.callable.parsed.file.relativePath}\u0000${current.callable.declaration.pos}\u0000${currentOwnerKey}\u0000${[...aliases].sort().join(",")}`;
       if (visited.has(visitKey)) continue;
       visited.add(visitKey);
       const source = current.callable.declaration.getText(current.callable.parsed.source);
@@ -976,7 +1229,11 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     cache.set(cacheKey, result);
     return result;
   };
-  return { analyze };
+  return {
+    analyze,
+    resolveMethod,
+    unresolvedProviderDependencies: () => unresolvedInjectedDependencies.size,
+  };
 }
 
 function isExpressFactoryCall(expression: ts.Expression, expressFactories: Set<string>, routerFactories: Set<string>): "app" | "router" | undefined {
@@ -1151,6 +1408,8 @@ function expressRoutes(
   ): ResolvedFunction | undefined => {
     const direct = resolveFunction(parsed, expression, lookup, declarations);
     if (direct) return direct;
+    const localMethod = localCalls.resolveMethod(parsed, expression);
+    if (localMethod) return localMethod;
     const current = unwrapExpression(expression);
     const seenKey = `${parsed.file.relativePath}\u0000${current.getText(parsed.source)}`;
     if (seen.has(seenKey)) return undefined;
@@ -1345,6 +1604,7 @@ function expressRoutes(
       offset: node.getStart(parsed.source),
       handlerName,
       handler,
+      handlerOwnerClass: resolvedHandler?.ownerClass,
       handlerSource,
       location: location(parsed, evidenceNode),
       locallyAuthenticated,
@@ -1460,7 +1720,7 @@ function expressRoutes(
     for (const variant of routeVariants(candidate.receiver, candidate.path)) {
       const fields = objectIdFields(candidate.handler, variant.path, new Set(), new Set());
       const semantics = candidate.handler
-        ? localCalls.analyze(candidate.handlerParsed, candidate.handler, undefined, fields)
+        ? localCalls.analyze(candidate.handlerParsed, candidate.handler, candidate.handlerOwnerClass, fields)
         : {
           source: candidate.handlerSource,
           ownershipProtected: ownershipGuard(candidate.handlerSource),
@@ -1915,5 +2175,6 @@ export function analyzeNodeApi(files: ProjectFile[]): NodeApiAnalysis {
     unresolvedHandlers,
     unresolvedMounts,
     unresolvedRegistrations,
+    unresolvedProviderDependencies: localCalls.unresolvedProviderDependencies(),
   };
 }

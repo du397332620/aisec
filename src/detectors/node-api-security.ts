@@ -157,11 +157,14 @@ export async function runNodeApiSecurity(context: ScanContext): Promise<Detector
 
   const detected = [analysis.detectedExpress ? "Express" : undefined, analysis.detectedNest ? "NestJS" : undefined].filter(Boolean).join(" and ");
   const reasons = [
-    `${detected} route and authorization coverage is bounded static inference; package aliases, dynamic registrations outside the supported local-constant forEach form, framework extensions, factory-provided dependencies, local call chains beyond the four-edge traversal limit, complex ORM wrappers, and external policy engines may require manual review`,
+    `${detected} route and authorization coverage is bounded static inference; package aliases, dynamic registrations outside the supported local-constant forEach form, framework extensions, dynamic module metadata and provider factories without a statically visible local class result, local call chains beyond the four-edge traversal limit, complex ORM wrappers, and external policy engines may require manual review`,
     analysis.filesWithParseErrors > 0 ? `${analysis.filesWithParseErrors} JavaScript/TypeScript source file(s) had parser diagnostics` : undefined,
     analysis.unresolvedHandlers > 0 ? `${analysis.unresolvedHandlers} Express handler reference(s) could not be resolved locally or through a relative module import` : undefined,
     analysis.unresolvedMounts > 0 ? `${analysis.unresolvedMounts} Express router mount(s) could not be resolved locally or through a relative module import` : undefined,
     analysis.unresolvedRegistrations > 0 ? `${analysis.unresolvedRegistrations} Express route registration site(s) could not be statically expanded` : undefined,
+    analysis.unresolvedProviderDependencies > 0
+      ? `${analysis.unresolvedProviderDependencies} NestJS injected provider ${analysis.unresolvedProviderDependencies === 1 ? "dependency" : "dependencies"} could not be statically resolved`
+      : undefined,
     analysis.routes.length === 0 ? `${detected} was detected but no supported routes were resolved` : undefined,
     truncated ? `finding output reached the ${MAX_SIGNALS_PER_DETECTOR} signal safety limit` : undefined,
   ].filter((value): value is string => Boolean(value));
