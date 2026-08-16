@@ -1273,6 +1273,213 @@ app.get("/policy/name-only/:documentId", requireSession, async (req, res) => {
   }
 });
 
+test("Express analysis derives local boolean ownership policies from return and denial semantics", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-policy-semantics-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "document.policy.ts"), `
+export class DocumentPolicy {
+  matchesDocument(actor: any, document: any) {
+    return document.userId === actor.id;
+  }
+
+  checkOwnership(actor: any, document: any) {
+    return document.userId === actor.id;
+  }
+
+  checkArrowOwnership = (actor: any, document: any) => document.userId === actor.id;
+
+  isOwner(actor: any, document: any) {
+    return document.userId === actor.id;
+  }
+
+  isOwnerMismatch(actor: any, document: any) {
+    return document.userId !== actor.id;
+  }
+
+  canReadObserved(actor: any, document: any) {
+    const observed = document.userId === actor.id;
+    void observed;
+    return true;
+  }
+
+  canReadThroughWrapper(actor: any, document: any) {
+    return this.isOwner(actor, document);
+  }
+
+  canReadThroughTwoWrappers(actor: any, document: any) {
+    return this.canReadThroughWrapper(actor, document);
+  }
+
+  assertOwnership(actor: any, document: any) {
+    if (document.userId !== actor.id) throw new ForbiddenError();
+  }
+}
+`);
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+import { DocumentPolicy } from "./document.policy";
+
+const app = express();
+const policy = new DocumentPolicy();
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+
+app.get("/policy-semantics/direct/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.matchesDocument(req.user, document)) return res.status(403).end();
+  return res.json(document);
+});
+
+app.get("/policy-semantics/named-guard/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.checkOwnership(req.user, document)) throw new ForbiddenError();
+  return res.json(document);
+});
+
+app.get("/policy-semantics/json-denial/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.matchesDocument(req.user, document)) {
+    return res.status(403).json({ error: "forbidden" });
+  }
+  return res.json(document);
+});
+
+app.get("/policy-semantics/wrapper/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.canReadThroughWrapper(req.user, document)) return res.sendStatus(403);
+  return res.json(document);
+});
+
+app.get("/policy-semantics/send-then-return/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.matchesDocument(req.user, document)) {
+    res.sendStatus(403);
+    return;
+  }
+  return res.json(document);
+});
+
+app.get("/policy-semantics/assert/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  policy.assertOwnership(req.user, document);
+  return res.json(document);
+});
+
+app.get("/policy-semantics/inline-denial/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (document.userId !== req.user.id) throw new ForbiddenError();
+  return res.json(document);
+});
+
+app.get("/policy-semantics/ignored/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  void policy.matchesDocument(req.user, document);
+  return res.json(document);
+});
+
+app.get("/policy-semantics/inline-comparison/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  void (document.userId === req.user.id);
+  return res.json(document);
+});
+
+app.get("/policy-semantics/named-guard-ignored/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  policy.checkOwnership(req.user, document);
+  return res.json(document);
+});
+
+app.get("/policy-semantics/named-arrow-ignored/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  policy.checkArrowOwnership(req.user, document);
+  return res.json(document);
+});
+
+app.get("/policy-semantics/mismatch/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.isOwnerMismatch(req.user, document)) return res.status(403).end();
+  return res.json(document);
+});
+
+app.get("/policy-semantics/side-comparison/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.canReadObserved(req.user, document)) return res.status(403).end();
+  return res.json(document);
+});
+
+app.get("/policy-semantics/status-only/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.matchesDocument(req.user, document)) res.status(403);
+  return res.json(document);
+});
+
+app.get("/policy-semantics/send-without-return/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.matchesDocument(req.user, document)) res.sendStatus(403);
+  await db.audit.create({ documentId: document.id });
+  return res.json(document);
+});
+
+app.get("/policy-semantics/forbidden-payload/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.matchesDocument(req.user, document)) return res.status(403).json(document);
+  return res.json(document);
+});
+
+app.get("/policy-semantics/two-wrappers/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.canReadThroughTwoWrappers(req.user, document)) return res.status(403).end();
+  return res.json(document);
+});
+
+app.get("/policy-semantics/users/:userId/documents/:documentId", requireSession, async (req, res) => {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  if (!policy.isOwner(req.params.userId, document)) return res.status(403).end();
+  return res.json(document);
+});
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const safeRoutes = [
+      "GET /policy-semantics/direct/:documentId",
+      "GET /policy-semantics/named-guard/:documentId",
+      "GET /policy-semantics/json-denial/:documentId",
+      "GET /policy-semantics/wrapper/:documentId",
+      "GET /policy-semantics/send-then-return/:documentId",
+      "GET /policy-semantics/assert/:documentId",
+      "GET /policy-semantics/inline-denial/:documentId",
+    ];
+    const unsafeRoutes = [
+      "GET /policy-semantics/ignored/:documentId",
+      "GET /policy-semantics/inline-comparison/:documentId",
+      "GET /policy-semantics/named-guard-ignored/:documentId",
+      "GET /policy-semantics/named-arrow-ignored/:documentId",
+      "GET /policy-semantics/mismatch/:documentId",
+      "GET /policy-semantics/side-comparison/:documentId",
+      "GET /policy-semantics/status-only/:documentId",
+      "GET /policy-semantics/send-without-return/:documentId",
+      "GET /policy-semantics/forbidden-payload/:documentId",
+      "GET /policy-semantics/two-wrappers/:documentId",
+      "GET /policy-semantics/users/:userId/documents/:documentId",
+    ];
+    for (const route of [...safeRoutes, ...unsafeRoutes]) assert.ok(report.profile.routes.includes(route));
+    const hasOwnershipFinding = (route: string): boolean => report.signals.some((signal) =>
+      signal.ruleId === "express.authorization.object-without-ownership-check" && signal.metadata?.route === route);
+    assert.deepEqual({
+      safeRoutesWithFindings: safeRoutes.filter(hasOwnershipFinding),
+      unsafeRoutesWithoutFindings: unsafeRoutes.filter((route) => !hasOwnershipFinding(route)),
+    }, {
+      safeRoutesWithFindings: [],
+      unsafeRoutesWithoutFindings: [],
+    });
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("NestJS analysis keeps Sequelize and Mongoose disjunctions distinct from mandatory owner predicates", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-orm-operators-"));
   try {

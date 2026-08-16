@@ -1211,18 +1211,52 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     }
     return Boolean(binding && expressionCarriesIdentity(binding, aliases));
   };
-  const callableName = (declaration: ts.FunctionLikeDeclaration): string | undefined => {
-    if (ts.isMethodDeclaration(declaration) || ts.isFunctionDeclaration(declaration)
-      || ts.isFunctionExpression(declaration) || ts.isGetAccessorDeclaration(declaration)
-      || ts.isSetAccessorDeclaration(declaration)) return propertyName(declaration.name);
-    const parent = declaration.parent;
-    if ((ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration))
-      && (ts.isPropertyDeclaration(parent) || ts.isPropertyAssignment(parent))) return propertyName(parent.name);
-    if ((ts.isArrowFunction(declaration) || ts.isFunctionExpression(declaration))
-      && ts.isVariableDeclaration(parent) && ts.isIdentifier(parent.name)) return parent.name.text;
-    return undefined;
-  };
   const authorizationPredicateName = (name: string | undefined): boolean => Boolean(name && /^(?:(?:can|may|allow|allows|permit|permits)(?:Read|Write|View|Edit|Update|Delete|Access|Manage|Own|Use)[A-Za-z0-9_]*|(?:is|has)(?:Owner|Ownership|Authorized|Allowed|Permission|Access)[A-Za-z0-9_]*)$/i.test(name));
+  const staticReturnedExpression = (
+    declaration: ts.FunctionLikeDeclaration,
+  ): ts.Expression | undefined => {
+    if (!declaration.body) return undefined;
+    if (!ts.isBlock(declaration.body)) return declaration.body;
+    const statement = declaration.body.statements[0];
+    if (declaration.body.statements.length !== 1 || !statement || !ts.isReturnStatement(statement)) return undefined;
+    return statement.expression;
+  };
+  const callableReturnsValue = (declaration: ts.FunctionLikeDeclaration): boolean => {
+    if (!declaration.body) return false;
+    if (!ts.isBlock(declaration.body)) return true;
+    let returnsValue = false;
+    const walk = (node: ts.Node): void => {
+      if (returnsValue) return;
+      if (node !== declaration.body && (ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node)
+        || ts.isArrowFunction(node) || ts.isMethodDeclaration(node) || ts.isConstructorDeclaration(node)
+        || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node))) return;
+      if (ts.isReturnStatement(node) && node.expression) {
+        returnsValue = true;
+        return;
+      }
+      ts.forEachChild(node, walk);
+    };
+    walk(declaration.body);
+    return returnsValue;
+  };
+  const staticDenialPayload = (expression: ts.Expression | undefined): boolean => {
+    if (!expression) return true;
+    const current = unwrapExpression(expression);
+    if (ts.isStringLiteral(current) || ts.isNumericLiteral(current)
+      || ts.isNoSubstitutionTemplateLiteral(current)
+      || current.kind === ts.SyntaxKind.TrueKeyword || current.kind === ts.SyntaxKind.FalseKeyword
+      || current.kind === ts.SyntaxKind.NullKeyword) return true;
+    if (ts.isPrefixUnaryExpression(current)) {
+      return (current.operator === ts.SyntaxKind.PlusToken || current.operator === ts.SyntaxKind.MinusToken)
+        && ts.isNumericLiteral(unwrapExpression(current.operand));
+    }
+    if (ts.isArrayLiteralExpression(current)) {
+      return current.elements.every((element) => !ts.isSpreadElement(element) && staticDenialPayload(element));
+    }
+    if (!ts.isObjectLiteralExpression(current)) return false;
+    return current.properties.every((property) => ts.isPropertyAssignment(property)
+      && !ts.isComputedPropertyName(property.name) && staticDenialPayload(property.initializer));
+  };
   const expressionDeniesAccess = (node: ts.Node): boolean => {
     let denied = false;
     visit(node, (candidate) => {
@@ -1230,7 +1264,16 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       const name = expressionName(candidate.expression).replace(/\(\)/g, "");
       if (!/(?:^|\.)(?:status|sendStatus)$/.test(name)) return;
       const status = candidate.arguments[0];
-      if (status && ts.isNumericLiteral(status) && status.text === "403") denied = true;
+      if (!status || !ts.isNumericLiteral(status) || status.text !== "403") return;
+      if (/(?:^|\.)sendStatus$/.test(name)) {
+        denied = true;
+        return;
+      }
+      const completion = candidate.parent;
+      if (!ts.isPropertyAccessExpression(completion) || completion.expression !== candidate
+        || !/^(?:end|send|json)$/.test(completion.name.text)) return;
+      if (ts.isCallExpression(completion.parent) && completion.parent.expression === completion
+        && staticDenialPayload(completion.parent.arguments[0])) denied = true;
     });
     return denied;
   };
@@ -1240,13 +1283,17 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
         && /(?:Forbidden|AccessDenied|PermissionDenied|Unauthorized)/i.test(statement.expression.getText()));
     }
     if (ts.isReturnStatement(statement)) return Boolean(statement.expression && expressionDeniesAccess(statement.expression));
-    if (ts.isExpressionStatement(statement)) return expressionDeniesAccess(statement.expression);
+    if (ts.isExpressionStatement(statement)) return false;
     if (ts.isIfStatement(statement)) {
       return statementDeniesAccess(statement.thenStatement)
         && Boolean(statement.elseStatement && statementDeniesAccess(statement.elseStatement));
     }
     if (!ts.isBlock(statement)) return false;
-    for (const item of statement.statements) {
+    for (let index = 0; index < statement.statements.length; index += 1) {
+      const item = statement.statements[index]!;
+      const previous = index > 0 ? statement.statements[index - 1] : undefined;
+      if (ts.isReturnStatement(item) && !item.expression && previous && ts.isExpressionStatement(previous)
+        && expressionDeniesAccess(previous.expression)) return true;
       if (statementDeniesAccess(item)) return true;
       if (!ts.isExpressionStatement(item) && !ts.isVariableStatement(item) && !ts.isEmptyStatement(item)) return false;
     }
@@ -1267,9 +1314,10 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       return current;
     }
   };
-  const callAuthorizationEnforced = (
-    call: ts.CallExpression,
+  const authorizationExpressionEnforced = (
+    target: ts.Expression,
     declaration: ts.FunctionLikeDeclaration,
+    allowsAccessWhenTrue: boolean,
   ): boolean => {
     const inside = (node: ts.Node, ancestor: ts.Node): boolean => {
       let current: ts.Node | undefined = node;
@@ -1279,26 +1327,75 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       }
       return false;
     };
-    let current: ts.Node | undefined = call.parent;
+    let current: ts.Node | undefined = target.parent;
     while (current && current !== declaration) {
-      if (ts.isIfStatement(current) && inside(call, current.expression)) {
+      if (ts.isIfStatement(current) && inside(target, current.expression)) {
         const condition = authorizationCondition(current.expression);
-        if (ts.isPrefixUnaryExpression(condition) && condition.operator === ts.SyntaxKind.ExclamationToken
-          && authorizationCondition(condition.operand) === call && statementDeniesAccess(current.thenStatement)) return true;
-        if (condition === call && current.elseStatement && statementDeniesAccess(current.elseStatement)) return true;
+        const negated = ts.isPrefixUnaryExpression(condition)
+          && condition.operator === ts.SyntaxKind.ExclamationToken
+          && authorizationCondition(condition.operand) === target;
+        if (allowsAccessWhenTrue) {
+          if (negated && statementDeniesAccess(current.thenStatement)) return true;
+          if (condition === target && current.elseStatement && statementDeniesAccess(current.elseStatement)) return true;
+        } else {
+          if (condition === target && statementDeniesAccess(current.thenStatement)) return true;
+          if (negated && current.elseStatement && statementDeniesAccess(current.elseStatement)) return true;
+        }
       }
       current = current.parent;
     }
     return false;
   };
-  const accessGuardCall = (declaration: ts.FunctionLikeDeclaration): boolean => {
+  const ownershipComparisonAllowsAccessWhenTrue = (
+    expression: ts.Expression,
+    aliases: Set<string>,
+  ): boolean | undefined => {
+    const current = authorizationCondition(expression);
+    if (!ts.isBinaryExpression(current)) return undefined;
+    const binding = (ownerExpression(current.left) && expressionCarriesIdentity(current.right, aliases))
+      || (ownerExpression(current.right) && expressionCarriesIdentity(current.left, aliases));
+    if (!binding) return undefined;
+    if (current.operatorToken.kind === ts.SyntaxKind.EqualsEqualsToken
+      || current.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken) return true;
+    if (current.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsToken
+      || current.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken) return false;
+    return undefined;
+  };
+  const returnedOwnershipPredicate = (
+    declaration: ts.FunctionLikeDeclaration,
+    aliases: Set<string>,
+  ): boolean => {
+    const expression = staticReturnedExpression(declaration);
+    return Boolean(expression && ownershipComparisonAllowsAccessWhenTrue(expression, aliases) === true);
+  };
+  const callAuthorizationEnforced = (
+    call: ts.CallExpression,
+    declaration: ts.FunctionLikeDeclaration,
+  ): boolean => authorizationExpressionEnforced(call, declaration, true);
+  const callDirectlyReturnsResult = (
+    call: ts.CallExpression,
+    declaration: ts.FunctionLikeDeclaration,
+  ): boolean => {
+    const expression = staticReturnedExpression(declaration);
+    return Boolean(expression && authorizationCondition(expression) === call);
+  };
+  const accessGuardCall = (
+    declaration: ts.FunctionLikeDeclaration,
+    parsed: ParsedSource,
+    ownerClass: ResolvedClass | undefined,
+  ): boolean => {
     let protectedByAccessCall = false;
     visit(declaration, (node) => {
       if (protectedByAccessCall || !ts.isCallExpression(node)) return;
       const name = expressionName(node.expression).replace(/\(\)/g, "");
       if (!ACCESS_GUARD_NAME.test(name)) return;
       const terminal = name.split(".").at(-1);
-      if (!authorizationPredicateName(terminal)) protectedByAccessCall = true;
+      if (authorizationPredicateName(terminal)) return;
+      const target = resolveCall(parsed, node, ownerClass);
+      // A locally visible value-returning helper may be a boolean predicate;
+      // its name alone cannot make an ignored result an imperative guard.
+      if (target && callableReturnsValue(target.callable.declaration)) return;
+      protectedByAccessCall = true;
     });
     return protectedByAccessCall;
   };
@@ -1358,13 +1455,7 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
   const staticReturnedFilter = (
     declaration: ts.FunctionLikeDeclaration,
   ): ts.ObjectLiteralExpression | undefined => {
-    if (!declaration.body) return undefined;
-    let expression: ts.Expression | undefined;
-    if (ts.isBlock(declaration.body)) {
-      const statement = declaration.body.statements[0];
-      if (declaration.body.statements.length !== 1 || !statement || !ts.isReturnStatement(statement)) return undefined;
-      expression = statement.expression;
-    } else expression = declaration.body;
+    const expression = staticReturnedExpression(declaration);
     const current = expression && unwrapExpression(expression);
     if (!current || !ts.isObjectLiteralExpression(current)) return undefined;
     let containsSpread = false;
@@ -1469,14 +1560,10 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
         && !insideNonMandatoryObjectFilter(node) && insideObjectOperation(node)
         && OWNER_FIELD.test(node.name.text) && aliases.has(node.name.text)) {
         protectedByOwner = true;
-      } else if (ts.isBinaryExpression(node) && [
-        ts.SyntaxKind.EqualsEqualsToken,
-        ts.SyntaxKind.EqualsEqualsEqualsToken,
-        ts.SyntaxKind.ExclamationEqualsToken,
-        ts.SyntaxKind.ExclamationEqualsEqualsToken,
-      ].includes(node.operatorToken.kind)) {
-        if ((ownerExpression(node.left) && expressionCarriesIdentity(node.right, aliases))
-          || (ownerExpression(node.right) && expressionCarriesIdentity(node.left, aliases))) protectedByOwner = true;
+      } else if (ts.isBinaryExpression(node)) {
+        const allowsAccessWhenTrue = ownershipComparisonAllowsAccessWhenTrue(node, aliases);
+        if (allowsAccessWhenTrue !== undefined
+          && authorizationExpressionEnforced(node, declaration, allowsAccessWhenTrue)) protectedByOwner = true;
       }
     });
     return protectedByOwner;
@@ -1499,6 +1586,7 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       aliases: Set<string>;
       depth: number;
       authorizationEnforced: boolean;
+      authorizationForwardDepth: number;
       filterResultConsumed: boolean;
     }> = [{
       callable: { declaration, parsed },
@@ -1506,6 +1594,7 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       aliases: new Set(),
       depth: 0,
       authorizationEnforced: false,
+      authorizationForwardDepth: 0,
       filterResultConsumed: false,
     }];
     const visited = new Set<string>();
@@ -1516,22 +1605,26 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     let objectOperation = false;
     const maxDepth = 4;
     const maxCallables = 32;
+    const maxAuthorizationForwardDepth = 1;
     while (queue.length > 0 && visited.size < maxCallables) {
       const current = queue.shift()!;
       const aliases = identityAliases(current.callable.declaration, current.aliases);
       const currentOwnerKey = current.ownerClass ? resolvedClassIdentity(current.ownerClass) : "";
-      const visitKey = `${current.callable.parsed.file.relativePath}\u0000${current.callable.declaration.pos}\u0000${currentOwnerKey}\u0000${[...aliases].sort().join(",")}\u0000${current.authorizationEnforced ? "enforced" : "observed"}\u0000${current.filterResultConsumed ? "filter" : "value"}`;
+      const visitKey = `${current.callable.parsed.file.relativePath}\u0000${current.callable.declaration.pos}\u0000${currentOwnerKey}\u0000${[...aliases].sort().join(",")}\u0000${current.authorizationEnforced ? "enforced" : "observed"}\u0000forward:${current.authorizationForwardDepth}\u0000${current.filterResultConsumed ? "filter" : "value"}`;
       if (visited.has(visitKey)) continue;
       visited.add(visitKey);
       const source = current.callable.declaration.getText(current.callable.parsed.source);
       semanticSources.push(source);
-      const predicate = authorizationPredicateName(callableName(current.callable.declaration));
+      const predicateBinding = returnedOwnershipPredicate(current.callable.declaration, aliases);
       const binding = astOwnershipBinding(current.callable.declaration, aliases, current.filterResultConsumed);
-      const callableProtection = accessGuardCall(current.callable.declaration) || binding;
-      // Boolean policy methods are evidence only when the caller directly uses
-      // their result to take a statically visible denial branch.
-      ownershipProtected ||= (current.depth === 0 && ownershipGuard(source, false, false))
-        || (callableProtection && (current.filterResultConsumed || !predicate || current.authorizationEnforced));
+      const callableProtection = accessGuardCall(
+        current.callable.declaration,
+        current.callable.parsed,
+        current.ownerClass,
+      ) || binding;
+      // A local boolean predicate contributes evidence only through its return
+      // shape and a statically proven caller denial path, never through its name.
+      ownershipProtected ||= callableProtection || (predicateBinding && current.authorizationEnforced);
       roleProtected ||= roleGuard(source);
       objectOperation ||= hasObjectOperation(current.callable.declaration, objectIdFields);
       for (const field of responseOwnerFields(current.callable.declaration)) responseFields.add(field);
@@ -1547,12 +1640,17 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
           if (!argument || !parameter || !ts.isIdentifier(parameter.name)) continue;
           if (expressionCarriesIdentity(argument, aliases)) incoming.add(parameter.name.text);
         }
+        const directlyEnforced = callAuthorizationEnforced(node, current.callable.declaration);
+        const forwardedEnforcement = !directlyEnforced && current.authorizationEnforced
+          && current.authorizationForwardDepth < maxAuthorizationForwardDepth
+          && callDirectlyReturnsResult(node, current.callable.declaration);
         queue.push({
           callable: target.callable,
           ownerClass: target.ownerClass,
           aliases: incoming,
           depth: current.depth + 1,
-          authorizationEnforced: callAuthorizationEnforced(node, current.callable.declaration),
+          authorizationEnforced: directlyEnforced || forwardedEnforcement,
+          authorizationForwardDepth: forwardedEnforcement ? current.authorizationForwardDepth + 1 : 0,
           filterResultConsumed: callResultFeedsObjectFilter(node),
         });
       });
