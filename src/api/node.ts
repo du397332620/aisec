@@ -1442,15 +1442,51 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     return ts.isPropertyAssignment(current.parent) && current.parent.initializer === current
       && directWhereProperty(current.parent);
   };
-  const callResultFeedsObjectFilter = (call: ts.CallExpression): boolean => {
-    const direct = directCallArgument(call);
+  const expressionFeedsObjectFilter = (expression: ts.Expression): boolean => {
+    const direct = directCallArgument(expression);
     if (direct?.index === 0 && DIRECT_FILTER_ARGUMENT_OPERATION.test(operationName(direct.call))) return true;
-    const current = expressionUse(call);
+    const current = expressionUse(expression);
     const parent = current.parent;
     if (ts.isPropertyAssignment(parent) && parent.initializer === current) return directWhereProperty(parent);
     if (!ts.isSpreadAssignment(parent) || !ts.isObjectLiteralExpression(parent.parent)) return false;
     const properties = parent.parent.properties;
     return properties[properties.length - 1] === parent && filterObjectConsumed(parent.parent);
+  };
+  const callResultFeedsObjectFilter = (
+    call: ts.CallExpression,
+    declaration: ts.FunctionLikeDeclaration,
+  ): boolean => {
+    if (expressionFeedsObjectFilter(call)) return true;
+    const current = expressionUse(call);
+    const variable = current.parent;
+    if (!ts.isVariableDeclaration(variable) || variable.initializer !== current
+      || !ts.isIdentifier(variable.name)) return false;
+    const variableName = variable.name.text;
+    const declarationList = variable.parent;
+    if (!ts.isVariableDeclarationList(declarationList)
+      || (declarationList.flags & ts.NodeFlags.Const) === 0
+      || !ts.isVariableStatement(declarationList.parent)) return false;
+    const directlyInsideCallable = (node: ts.Node): boolean => {
+      let ancestor: ts.Node | undefined = node.parent;
+      while (ancestor && ancestor !== declaration) {
+        if (ts.isFunctionDeclaration(ancestor) || ts.isFunctionExpression(ancestor)
+          || ts.isArrowFunction(ancestor) || ts.isMethodDeclaration(ancestor)
+          || ts.isConstructorDeclaration(ancestor) || ts.isGetAccessorDeclaration(ancestor)
+          || ts.isSetAccessorDeclaration(ancestor)) return false;
+        ancestor = ancestor.parent;
+      }
+      return ancestor === declaration;
+    };
+    if (!directlyInsideCallable(declarationList.parent)) return false;
+    const uses: ts.Identifier[] = [];
+    // Any second same-named reference, shadow or nested capture is an escape
+    // from this deliberately syntax-only single-use seam.
+    visit(declaration, (node) => {
+      if (ts.isIdentifier(node) && node !== variable.name && node.text === variableName) uses.push(node);
+    });
+    const use = uses[0];
+    return uses.length === 1 && Boolean(use && use.getStart() > variable.getEnd()
+      && directlyInsideCallable(use) && expressionFeedsObjectFilter(use));
   };
   const staticReturnedFilter = (
     declaration: ts.FunctionLikeDeclaration,
@@ -1651,7 +1687,7 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
           depth: current.depth + 1,
           authorizationEnforced: directlyEnforced || forwardedEnforcement,
           authorizationForwardDepth: forwardedEnforcement ? current.authorizationForwardDepth + 1 : 0,
-          filterResultConsumed: callResultFeedsObjectFilter(node),
+          filterResultConsumed: callResultFeedsObjectFilter(node, current.callable.declaration),
         });
       });
     }

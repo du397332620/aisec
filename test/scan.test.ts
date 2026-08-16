@@ -1986,6 +1986,243 @@ app.get("/filter-helper/computed/:documentId", requireSession, async (req, res) 
   }
 });
 
+test("Express analysis accepts a static owner-filter helper through one immutable single-use binding", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-cached-filter-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "filters.ts"), `
+export function buildDocumentFilter(documentId: string, ownerId: string) {
+  return { id: documentId, ownerId };
+}
+
+export function buildOwnerFilter(ownerId: string) {
+  return { ownerId };
+}
+
+export async function buildAsyncDocumentFilter(documentId: string, ownerId: string) {
+  return { id: documentId, ownerId };
+}
+
+export class FilterFactory {
+  buildDocumentFilter(documentId: string, ownerId: string) {
+    return { id: documentId, ownerId };
+  }
+}
+`);
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+import {
+  FilterFactory,
+  buildAsyncDocumentFilter,
+  buildDocumentFilter,
+  buildOwnerFilter,
+} from "./filters";
+
+const app = express();
+const factory = new FilterFactory();
+
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+
+app.get("/cached-filter/where/:documentId", requireSession, async (req, res) => {
+  const filter = buildDocumentFilter(req.params.documentId, req.user.id);
+  const document = await db.document.findFirst({ where: filter });
+  return res.json(document);
+});
+
+app.get("/cached-filter/direct-argument/:documentId", requireSession, async (req, res) => {
+  const filter = buildDocumentFilter(req.params.documentId, req.user.id);
+  const document = await db.document.findOne(filter);
+  return res.json(document);
+});
+
+app.get("/cached-filter/spread/:documentId", requireSession, async (req, res) => {
+  const ownerFilter = buildOwnerFilter(req.user.id);
+  const document = await db.document.findFirst({
+    where: { id: req.params.documentId, ...ownerFilter },
+  });
+  return res.json(document);
+});
+
+app.get("/cached-filter/class/:documentId", requireSession, async (req, res) => {
+  const filter = factory.buildDocumentFilter(req.params.documentId, req.user.id);
+  const document = await db.document.findFirst({ where: filter });
+  return res.json(document);
+});
+
+app.get("/cached-filter/await/:documentId", requireSession, async (req, res) => {
+  const filter = await buildAsyncDocumentFilter(req.params.documentId, req.user.id);
+  const document = await db.document.findFirst({ where: filter });
+  return res.json(document);
+});
+
+app.get("/cached-filter/users/:userId/documents/:documentId", requireSession, async (req, res) => {
+  const filter = buildDocumentFilter(req.params.documentId, req.params.userId);
+  const document = await db.document.findFirst({ where: filter });
+  return res.json(document);
+});
+
+app.get("/cached-filter/let/:documentId", requireSession, async (req, res) => {
+  let filter = buildDocumentFilter(req.params.documentId, req.user.id);
+  const document = await db.document.findFirst({ where: filter });
+  return res.json(document);
+});
+
+app.get("/cached-filter/reassigned/users/:userId/documents/:documentId", requireSession, async (req, res) => {
+  let filter = buildDocumentFilter(req.params.documentId, req.user.id);
+  filter = buildDocumentFilter(req.params.documentId, req.params.userId);
+  const document = await db.document.findFirst({ where: filter });
+  return res.json(document);
+});
+
+app.get("/cached-filter/mutated/users/:userId/documents/:documentId", requireSession, async (req, res) => {
+  const filter = buildDocumentFilter(req.params.documentId, req.user.id);
+  filter.ownerId = req.params.userId;
+  const document = await db.document.findFirst({ where: filter });
+  return res.json(document);
+});
+
+app.get("/cached-filter/duplicate-read/:documentId", requireSession, async (req, res) => {
+  const filter = buildDocumentFilter(req.params.documentId, req.user.id);
+  logger.debug(filter);
+  const document = await db.document.findFirst({ where: filter });
+  return res.json(document);
+});
+
+app.get("/cached-filter/alias/:documentId", requireSession, async (req, res) => {
+  const filter = buildDocumentFilter(req.params.documentId, req.user.id);
+  const alias = filter;
+  const document = await db.document.findFirst({ where: alias });
+  return res.json(document);
+});
+
+app.get("/cached-filter/escaped/:documentId", requireSession, async (req, res) => {
+  const filter = buildDocumentFilter(req.params.documentId, req.user.id);
+  auditFilter(filter);
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  return res.json(document);
+});
+
+app.get("/cached-filter/response-decoy/:documentId", requireSession, async (req, res) => {
+  const filter = buildDocumentFilter(req.params.documentId, req.user.id);
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  return res.json({ document, filter });
+});
+
+app.get("/cached-filter/option-decoy/:documentId", requireSession, async (req, res) => {
+  const filter = buildOwnerFilter(req.user.id);
+  const document = await db.document.findFirst({
+    where: { id: req.params.documentId },
+    include: filter,
+  });
+  return res.json(document);
+});
+
+app.get("/cached-filter/spread-override/users/:userId/documents/:documentId", requireSession, async (req, res) => {
+  const filter = buildOwnerFilter(req.user.id);
+  const document = await db.document.findFirst({
+    where: { id: req.params.documentId, ...filter, ownerId: req.params.userId },
+  });
+  return res.json(document);
+});
+
+app.get("/cached-filter/where-override/:documentId", requireSession, async (req, res) => {
+  const filter = buildDocumentFilter(req.params.documentId, req.user.id);
+  const document = await db.document.findFirst({
+    where: filter,
+    ...req.query,
+  });
+  return res.json(document);
+});
+
+app.get("/cached-filter/multiple-consumers/:documentId", requireSession, async (req, res) => {
+  const filter = buildDocumentFilter(req.params.documentId, req.user.id);
+  const document = await db.document.findFirst({ where: filter });
+  await db.document.count({ where: filter });
+  return res.json(document);
+});
+
+app.get("/cached-filter/destructured/:documentId", requireSession, async (req, res) => {
+  const { where: filter } = { where: buildDocumentFilter(req.params.documentId, req.user.id) };
+  const document = await db.document.findFirst({ where: filter });
+  return res.json(document);
+});
+
+app.get("/cached-filter/conditional/:documentId", requireSession, async (req, res) => {
+  const filter = req.query.strict
+    ? buildDocumentFilter(req.params.documentId, req.user.id)
+    : { id: req.params.documentId };
+  const document = await db.document.findFirst({ where: filter });
+  return res.json(document);
+});
+
+app.get("/cached-filter/frozen/:documentId", requireSession, async (req, res) => {
+  const filter = Object.freeze(buildDocumentFilter(req.params.documentId, req.user.id));
+  const document = await db.document.findFirst({ where: filter });
+  return res.json(document);
+});
+
+app.get("/cached-filter/captured/:documentId", requireSession, async (req, res) => {
+  const filter = buildDocumentFilter(req.params.documentId, req.user.id);
+  const inspect = () => filter;
+  inspect();
+  const document = await db.document.findFirst({ where: filter });
+  return res.json(document);
+});
+
+app.get("/cached-filter/callback-only/:documentId", requireSession, async (req, res) => {
+  const filter = buildDocumentFilter(req.params.documentId, req.user.id);
+  const loadOwned = () => db.document.findFirst({ where: filter });
+  void loadOwned;
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  return res.json(document);
+});
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const safeRoutes = [
+      "GET /cached-filter/where/:documentId",
+      "GET /cached-filter/direct-argument/:documentId",
+      "GET /cached-filter/spread/:documentId",
+      "GET /cached-filter/class/:documentId",
+      "GET /cached-filter/await/:documentId",
+    ];
+    const unsafeRoutes = [
+      "GET /cached-filter/users/:userId/documents/:documentId",
+      "GET /cached-filter/let/:documentId",
+      "GET /cached-filter/reassigned/users/:userId/documents/:documentId",
+      "GET /cached-filter/mutated/users/:userId/documents/:documentId",
+      "GET /cached-filter/duplicate-read/:documentId",
+      "GET /cached-filter/alias/:documentId",
+      "GET /cached-filter/escaped/:documentId",
+      "GET /cached-filter/response-decoy/:documentId",
+      "GET /cached-filter/option-decoy/:documentId",
+      "GET /cached-filter/spread-override/users/:userId/documents/:documentId",
+      "GET /cached-filter/where-override/:documentId",
+      "GET /cached-filter/multiple-consumers/:documentId",
+      "GET /cached-filter/destructured/:documentId",
+      "GET /cached-filter/conditional/:documentId",
+      "GET /cached-filter/frozen/:documentId",
+      "GET /cached-filter/captured/:documentId",
+      "GET /cached-filter/callback-only/:documentId",
+    ];
+    for (const route of [...safeRoutes, ...unsafeRoutes]) assert.ok(report.profile.routes.includes(route));
+    const hasOwnershipFinding = (route: string): boolean => report.signals.some((signal) =>
+      signal.ruleId === "express.authorization.object-without-ownership-check" && signal.metadata?.route === route);
+    assert.deepEqual({
+      safeRoutesWithFindings: safeRoutes.filter(hasOwnershipFinding),
+      unsafeRoutesWithoutFindings: unsafeRoutes.filter((route) => !hasOwnershipFinding(route)),
+    }, {
+      safeRoutesWithFindings: [],
+      unsafeRoutesWithoutFindings: [],
+    });
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("Node API analysis does not treat relation-shaped response metadata as an ORM owner predicate", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-response-owner-decoy-"));
   try {
