@@ -1368,10 +1368,63 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     const expression = staticReturnedExpression(declaration);
     return Boolean(expression && ownershipComparisonAllowsAccessWhenTrue(expression, aliases) === true);
   };
+  const expressionUse = (expression: ts.Expression): ts.Expression => {
+    let current = expression;
+    while (true) {
+      const parent = current.parent;
+      if ((ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent)
+        || ts.isTypeAssertionExpression(parent) || ts.isNonNullExpression(parent)
+        || ts.isSatisfiesExpression(parent) || ts.isAwaitExpression(parent))
+        && parent.expression === current) {
+        current = parent;
+        continue;
+      }
+      return current;
+    }
+  };
+  const singleUseImmutableBinding = (
+    call: ts.CallExpression,
+    declaration: ts.FunctionLikeDeclaration,
+  ): ts.Identifier | undefined => {
+    const current = expressionUse(call);
+    const variable = current.parent;
+    if (!ts.isVariableDeclaration(variable) || variable.initializer !== current
+      || !ts.isIdentifier(variable.name)) return undefined;
+    const variableName = variable.name.text;
+    const declarationList = variable.parent;
+    if (!ts.isVariableDeclarationList(declarationList)
+      || (declarationList.flags & ts.NodeFlags.Const) === 0
+      || !ts.isVariableStatement(declarationList.parent)) return undefined;
+    const directlyInsideCallable = (node: ts.Node): boolean => {
+      let ancestor: ts.Node | undefined = node.parent;
+      while (ancestor && ancestor !== declaration) {
+        if (ts.isFunctionDeclaration(ancestor) || ts.isFunctionExpression(ancestor)
+          || ts.isArrowFunction(ancestor) || ts.isMethodDeclaration(ancestor)
+          || ts.isConstructorDeclaration(ancestor) || ts.isGetAccessorDeclaration(ancestor)
+          || ts.isSetAccessorDeclaration(ancestor)) return false;
+        ancestor = ancestor.parent;
+      }
+      return ancestor === declaration;
+    };
+    if (!directlyInsideCallable(declarationList.parent)) return undefined;
+    const uses: ts.Identifier[] = [];
+    // Any second same-named reference, shadow or nested capture is an escape
+    // from this deliberately syntax-only single-use seam.
+    visit(declaration, (node) => {
+      if (ts.isIdentifier(node) && node !== variable.name && node.text === variableName) uses.push(node);
+    });
+    const use = uses[0];
+    return uses.length === 1 && use && use.getStart() > variable.getEnd()
+      && directlyInsideCallable(use) ? use : undefined;
+  };
   const callAuthorizationEnforced = (
     call: ts.CallExpression,
     declaration: ts.FunctionLikeDeclaration,
-  ): boolean => authorizationExpressionEnforced(call, declaration, true);
+  ): boolean => {
+    if (authorizationExpressionEnforced(call, declaration, true)) return true;
+    const use = singleUseImmutableBinding(call, declaration);
+    return Boolean(use && authorizationExpressionEnforced(use, declaration, true));
+  };
   const callDirectlyReturnsResult = (
     call: ts.CallExpression,
     declaration: ts.FunctionLikeDeclaration,
@@ -1398,20 +1451,6 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       protectedByAccessCall = true;
     });
     return protectedByAccessCall;
-  };
-  const expressionUse = (expression: ts.Expression): ts.Expression => {
-    let current = expression;
-    while (true) {
-      const parent = current.parent;
-      if ((ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent)
-        || ts.isTypeAssertionExpression(parent) || ts.isNonNullExpression(parent)
-        || ts.isSatisfiesExpression(parent) || ts.isAwaitExpression(parent))
-        && parent.expression === current) {
-        current = parent;
-        continue;
-      }
-      return current;
-    }
   };
   const directCallArgument = (
     expression: ts.Expression,
@@ -1457,36 +1496,8 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     declaration: ts.FunctionLikeDeclaration,
   ): boolean => {
     if (expressionFeedsObjectFilter(call)) return true;
-    const current = expressionUse(call);
-    const variable = current.parent;
-    if (!ts.isVariableDeclaration(variable) || variable.initializer !== current
-      || !ts.isIdentifier(variable.name)) return false;
-    const variableName = variable.name.text;
-    const declarationList = variable.parent;
-    if (!ts.isVariableDeclarationList(declarationList)
-      || (declarationList.flags & ts.NodeFlags.Const) === 0
-      || !ts.isVariableStatement(declarationList.parent)) return false;
-    const directlyInsideCallable = (node: ts.Node): boolean => {
-      let ancestor: ts.Node | undefined = node.parent;
-      while (ancestor && ancestor !== declaration) {
-        if (ts.isFunctionDeclaration(ancestor) || ts.isFunctionExpression(ancestor)
-          || ts.isArrowFunction(ancestor) || ts.isMethodDeclaration(ancestor)
-          || ts.isConstructorDeclaration(ancestor) || ts.isGetAccessorDeclaration(ancestor)
-          || ts.isSetAccessorDeclaration(ancestor)) return false;
-        ancestor = ancestor.parent;
-      }
-      return ancestor === declaration;
-    };
-    if (!directlyInsideCallable(declarationList.parent)) return false;
-    const uses: ts.Identifier[] = [];
-    // Any second same-named reference, shadow or nested capture is an escape
-    // from this deliberately syntax-only single-use seam.
-    visit(declaration, (node) => {
-      if (ts.isIdentifier(node) && node !== variable.name && node.text === variableName) uses.push(node);
-    });
-    const use = uses[0];
-    return uses.length === 1 && Boolean(use && use.getStart() > variable.getEnd()
-      && directlyInsideCallable(use) && expressionFeedsObjectFilter(use));
+    const use = singleUseImmutableBinding(call, declaration);
+    return Boolean(use && expressionFeedsObjectFilter(use));
   };
   const staticReturnedFilter = (
     declaration: ts.FunctionLikeDeclaration,

@@ -77,14 +77,18 @@ does not count as mandatory ownership; an owner field outside a nested
 object-literal OR group still does. A local boolean policy such as
 `canRead(actor, object)` is recognized from one direct owner/actor equality
 return, independently of its name, and must have its result enforced by a
-visible completed 403/forbidden branch. Enforcement may cross one local wrapper
-whose entire body directly returns the policy call. Merely calling or logging a
-result, merely evaluating an inline owner comparison, returning owner
-inequality or a compound/constant expression, setting status 403 without ending
-the response, continuing execution after sending 403, sending a dynamic object
-as the 403 payload, relying on an access-shaped name, or adding another wrapper
-does not count as authorization. Query fragments with interpolation, computed
-parameter maps and unknown wrappers fail closed. The analyzers also distinguish
+visible completed 403/forbidden branch. The result may pass through one simple
+local `const` whose only reference is the complete denial condition, and
+enforcement may also cross one local wrapper whose entire body directly returns
+the policy call. `let`/`var`, reassignment, a second read or alias, callback
+capture, coercion/comparison or a logical/ternary condition do not count.
+Neither do merely calling or logging a result, merely evaluating or caching an
+inline owner comparison, returning owner inequality or a compound/constant
+expression, setting status 403 without ending the response, continuing
+execution after sending 403, sending a dynamic object as the 403 payload,
+relying on an access-shaped name, or adding another wrapper. Query fragments
+with interpolation, computed parameter maps and unknown wrappers fail closed.
+The analyzers also distinguish
 ownership or tenant constraints from role or permission checks on privileged
 operations. Package aliases or package-provided/mixin base classes, imported or
 mutable/generated route tables, `for...of`, chained collection transforms,
@@ -323,7 +327,7 @@ binaries and prepare the Trivy database before scanning.
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; some findings are explicitly `inferred` and require review |
 | FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
-| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local-constant `forEach` route tables, NestJS controllers/guards/local token providers, up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, unsupported operators/scopes, unresolved providers/registration sites, package or mixin bases, complex wrappers and external policy engines still require review |
+| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local-constant `forEach` route tables, NestJS controllers/guards/local token providers, up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced, consumed through one single-condition `const`, or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, unsupported operators/scopes, unresolved providers/registration sites, package or mixin bases, complex wrappers and external policy engines still require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |
