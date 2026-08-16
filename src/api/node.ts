@@ -154,7 +154,7 @@ const OWNER_RELATION_FIELD = /^(?:owner|author|user|tenant|creator|account|organ
 const AUTH_GUARD_NAME = /(?:^|[._])(?:auth(?:Middleware|Guard)?|authenticate|authenticated|authentication(?:Middleware)?|requireAuth|requireUser|ensureAuthenticated|isAuthenticated|verifyToken|verifySession|jwtAuth(?:Guard)?|jwtGuard|sessionAuth(?:Guard)?|bearerAuth|protect|passport\.authenticate)(?:$|[.(])/i;
 const ACCESS_GUARD_NAME = /(?:^|[._])(?:require|verify|check|ensure|authorize|assert|can)[A-Za-z0-9_]*(?:access|owner|ownership|permission|policy|role|admin|tenant)|(?:owner|ownership|permission|policy|ability|role|admin|tenant)[A-Za-z0-9_]*(?:guard|check)(?:$|[.(])/i;
 const ROLE_GUARD_NAME = /(?:^|[._])(?:require|verify|check|ensure|authorize|assert|can)[A-Za-z0-9_]*(?:permission|policy|role|admin)|(?:permission|policy|ability|role|admin)[A-Za-z0-9_]*(?:guard|check|only|middleware)(?:$|[.(])/i;
-const ID_OPERATION = /(?:^|\.)(?:findById|findByIdAndUpdate|findByIdAndDelete|findUnique|findUniqueOrThrow|findFirst|findFirstOrThrow|findOne|findOneBy|findOneByOrFail|findMany|getById|getBy[A-Z][A-Za-z0-9_]*|getOne|getOneOrFail|getRawOne|loadById|detail|update|updateOne|updateMany|delete|deleteOne|deleteMany|remove|destroy|where)$/;
+const ID_OPERATION = /(?:^|\.)(?:findById|findByIdAndUpdate|findByIdAndDelete|findByPk|findUnique|findUniqueOrThrow|findFirst|findFirstOrThrow|findOne|findOneBy|findOneByOrFail|findMany|getById|getBy[A-Z][A-Za-z0-9_]*|getOne|getOneOrFail|getRawOne|loadById|detail|update|updateOne|updateMany|delete|deleteOne|deleteMany|remove|destroy|where)$/;
 const NEST_AUTH_GUARD_HINT = /(?:auth|jwt|session|identity|loggedIn|signedIn|user|role|permission|policy|ability|access|owner|admin)/i;
 const NEST_OWNERSHIP_GUARD_HINT = /(?:owner|ownership|tenant|role|permission|policy|ability|access|admin)/i;
 const PRIVILEGED_ROUTE_HINT = /(?:^|\/)(?:admin|administration|manage|management|permissions?|roles?)(?:\/|$)/i;
@@ -163,6 +163,7 @@ const MAX_STATIC_ROUTE_ENTRIES = 128;
 const MAX_STATIC_ROUTE_EXPANSIONS = 512;
 const MAX_STATIC_PROVIDER_ENTRIES = 256;
 const MAX_PROVIDER_RESOLUTION_DEPTH = 8;
+const MAX_LOCAL_CLASS_HERITAGE_DEPTH = 4;
 
 function scriptKind(path: string): ts.ScriptKind {
   const extension = extname(path).toLowerCase();
@@ -1010,16 +1011,41 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     return undefined;
   };
 
+  const localBaseClass = (owner: ResolvedClass): ResolvedClass | undefined => {
+    const clause = owner.declaration.heritageClauses
+      ?.find((item) => item.token === ts.SyntaxKind.ExtendsKeyword);
+    if (!clause || clause.types.length !== 1) return undefined;
+    const expression = unwrapExpression(clause.types[0]!.expression);
+    // Calls represent mixins or runtime-generated bases. They intentionally stay
+    // outside the static inheritance boundary.
+    if (ts.isCallExpression(expression)) return undefined;
+    return classFromSymbol(resolveExpressionSymbol(owner.parsed, expression, lookup));
+  };
   const classMethod = (owner: ResolvedClass, name: string): ResolvedFunction | undefined => {
-    for (const member of owner.declaration.members) {
-      if (propertyName(member.name) !== name) continue;
-      if (ts.isMethodDeclaration(member) && member.body) return { declaration: member, parsed: owner.parsed, ownerClass: owner };
-      if (ts.isPropertyDeclaration(member) && member.initializer) {
-        const value = unwrapExpression(member.initializer);
-        if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
-          return { declaration: value, parsed: owner.parsed, ownerClass: owner };
+    const seen = new Set<string>();
+    let current: ResolvedClass | undefined = owner;
+    for (let depth = 0; current && depth <= MAX_LOCAL_CLASS_HERITAGE_DEPTH; depth += 1) {
+      const identity = resolvedClassIdentity(current);
+      if (seen.has(identity)) return undefined;
+      seen.add(identity);
+      let declaredByCurrentClass = false;
+      for (const member of current.declaration.members) {
+        if (propertyName(member.name) !== name) continue;
+        declaredByCurrentClass = true;
+        if (ts.isMethodDeclaration(member) && member.body) {
+          return { declaration: member, parsed: current.parsed, ownerClass: owner };
+        }
+        if (ts.isPropertyDeclaration(member) && member.initializer) {
+          const value = unwrapExpression(member.initializer);
+          if (ts.isArrowFunction(value) || ts.isFunctionExpression(value)) {
+            return { declaration: value, parsed: current.parsed, ownerClass: owner };
+          }
         }
       }
+      // An unsupported override shadows the base member. Falling through would
+      // attribute base-class semantics to code that is not actually invoked.
+      if (declaredByCurrentClass) return undefined;
+      current = localBaseClass(current);
     }
     return undefined;
   };
@@ -1141,6 +1167,20 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       : ts.isElementAccessExpression(callee) && callee.argumentExpression && ts.isStringLiteral(callee.argumentExpression)
         ? callee.argumentExpression.text
         : undefined;
+    if (method === "equals" && ts.isPropertyAccessExpression(callee)) {
+      const receiver = unwrapExpression(callee.expression);
+      if (!ts.isCallExpression(receiver)) return false;
+      const receiverCallee = unwrapExpression(receiver.expression);
+      const receiverMethod = ts.isPropertyAccessExpression(receiverCallee)
+        ? receiverCallee.name.text
+        : ts.isElementAccessExpression(receiverCallee) && receiverCallee.argumentExpression
+          && ts.isStringLiteral(receiverCallee.argumentExpression)
+          ? receiverCallee.argumentExpression.text
+          : undefined;
+      const field = receiverMethod === "where" ? literalText(receiver.arguments[0]) : undefined;
+      const binding = call.arguments[0];
+      return Boolean(field && queryOwnerColumn(field) && binding && expressionCarriesIdentity(binding, aliases));
+    }
     if (method !== "where" && method !== "andWhere") return false;
     // Query text stays literal-only: resolving or evaluating target-owned query
     // builders would cross the scanner's no-execution trust boundary.
@@ -1273,9 +1313,24 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
           ? callee.argumentExpression.text
           : undefined;
       // A later disjunction can widen an otherwise owner-scoped query, so one
-      // visible orWhere invalidates query-derived ownership for this callable.
-      if (method && /^orWhere/.test(method)) disjunctiveQueryBuilder = true;
+      // visible or/orWhere invalidates query-derived ownership for this callable.
+      if (method === "or" || (method && /^orWhere/.test(method))) disjunctiveQueryBuilder = true;
     });
+    const nonMandatoryFilterProperty = (name: ts.PropertyName | undefined): boolean => {
+      const direct = propertyName(name);
+      if (direct && /^\$(?:or|nor|not)$/.test(direct)) return true;
+      if (!name || !ts.isComputedPropertyName(name)) return false;
+      const terminal = expressionName(name.expression).split(".").at(-1);
+      return terminal === "or" || terminal === "nor" || terminal === "not";
+    };
+    const insideNonMandatoryObjectFilter = (node: ts.Node): boolean => {
+      let current = node.parent;
+      while (current && current !== declaration) {
+        if (ts.isPropertyAssignment(current) && nonMandatoryFilterProperty(current.name)) return true;
+        current = current.parent;
+      }
+      return false;
+    };
     const insideObjectOperation = (node: ts.Node): boolean => {
       let current = node.parent;
       while (current && current !== declaration) {
@@ -1296,8 +1351,10 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
         if (ts.isPropertyAssignment(node)) {
           const name = propertyName(node.name);
           if ((name === "id" || Boolean(name && OWNER_FIELD.test(name)))
+            && !insideNonMandatoryObjectFilter(node)
             && expressionCarriesIdentity(node.initializer, aliases)) bound = true;
         } else if (ts.isShorthandPropertyAssignment(node)
+          && !insideNonMandatoryObjectFilter(node)
           && (node.name.text === "id" || OWNER_FIELD.test(node.name.text)) && aliases.has(node.name.text)) bound = true;
       });
       return bound;
@@ -1308,11 +1365,14 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
         protectedByOwner = true;
       } else if (ts.isPropertyAssignment(node)) {
         const name = propertyName(node.name);
-        if (!disjunctiveQueryBuilder && insideObjectOperation(node) && name && OWNER_FIELD.test(name)
+        if (!disjunctiveQueryBuilder && !insideNonMandatoryObjectFilter(node)
+          && insideObjectOperation(node) && name && OWNER_FIELD.test(name)
           && expressionCarriesIdentity(node.initializer, aliases)) protectedByOwner = true;
-        else if (!disjunctiveQueryBuilder && insideObjectOperation(node) && name && OWNER_RELATION_FIELD.test(name)
+        else if (!disjunctiveQueryBuilder && !insideNonMandatoryObjectFilter(node)
+          && insideObjectOperation(node) && name && OWNER_RELATION_FIELD.test(name)
           && relationBindsIdentity(node.initializer)) protectedByOwner = true;
-      } else if (ts.isShorthandPropertyAssignment(node) && !disjunctiveQueryBuilder && insideObjectOperation(node)
+      } else if (ts.isShorthandPropertyAssignment(node) && !disjunctiveQueryBuilder
+        && !insideNonMandatoryObjectFilter(node) && insideObjectOperation(node)
         && OWNER_FIELD.test(node.name.text) && aliases.has(node.name.text)) {
         protectedByOwner = true;
       } else if (ts.isBinaryExpression(node) && [

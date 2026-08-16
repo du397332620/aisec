@@ -1273,6 +1273,274 @@ app.get("/policy/name-only/:documentId", requireSession, async (req, res) => {
   }
 });
 
+test("NestJS analysis keeps Sequelize and Mongoose disjunctions distinct from mandatory owner predicates", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-orm-operators-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+      mongoose: "8.18.0",
+      sequelize: "6.37.7",
+    } }));
+    await writeFile(join(temporary, "document.controller.ts"), `
+import { Controller, Get, Param, Req, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+import { DocumentService } from "./document.service";
+
+@Controller("orm-operators")
+@UseGuards(AuthGuard("jwt"))
+export class DocumentController {
+  constructor(private readonly service: DocumentService) {}
+
+  @Get("sequelize-or/:documentId")
+  readSequelizeOr(@Param("documentId") documentId: string, @Req() request: any) {
+    return this.service.readSequelizeOr(documentId, request.user.id);
+  }
+
+  @Get("sequelize-and/:documentId")
+  readSequelizeAnd(@Param("documentId") documentId: string, @Req() request: any) {
+    return this.service.readSequelizeAnd(documentId, request.user.id);
+  }
+
+  @Get("mongo-or/:documentId")
+  readMongoOr(@Param("documentId") documentId: string, @Req() request: any) {
+    return this.service.readMongoOr(documentId, request.user.id);
+  }
+
+  @Get("mongo-nor/:documentId")
+  readMongoNor(@Param("documentId") documentId: string, @Req() request: any) {
+    return this.service.readMongoNor(documentId, request.user.id);
+  }
+
+  @Get("mongoose/:documentId")
+  readMongoose(@Param("documentId") documentId: string, @Req() request: any) {
+    return this.service.readMongoose(documentId, request.user.id);
+  }
+
+  @Get("mongoose-or/:documentId")
+  readMongooseOr(@Param("documentId") documentId: string, @Req() request: any) {
+    return this.service.readMongooseOr(documentId, request.user.id);
+  }
+
+  @Get("mongoose/users/:userId/documents/:documentId")
+  readMongooseByRouteOwner(@Param("documentId") documentId: string, @Param("userId") userId: string) {
+    return this.service.readMongooseByRouteOwner(documentId, userId);
+  }
+
+  @Get("sequelize-pk/:documentId")
+  readSequelizePk(@Param("documentId") documentId: string) {
+    return this.service.readSequelizePk(documentId);
+  }
+}
+`);
+    await writeFile(join(temporary, "document.service.ts"), `
+import { Injectable } from "@nestjs/common";
+import { DocumentRepository } from "./document.repository";
+
+@Injectable()
+export class DocumentService {
+  constructor(private readonly repository: DocumentRepository) {}
+
+  readSequelizeOr(documentId: string, authenticatedUserId: string) {
+    return this.repository.findWithSequelizeOr(documentId, authenticatedUserId);
+  }
+
+  readSequelizeAnd(documentId: string, authenticatedUserId: string) {
+    return this.repository.findWithSequelizeAnd(documentId, authenticatedUserId);
+  }
+
+  readMongoOr(documentId: string, authenticatedUserId: string) {
+    return this.repository.findWithMongoOr(documentId, authenticatedUserId);
+  }
+
+  readMongoNor(documentId: string, authenticatedUserId: string) {
+    return this.repository.findWithMongoNor(documentId, authenticatedUserId);
+  }
+
+  readMongoose(documentId: string, authenticatedUserId: string) {
+    return this.repository.findWithMongoose(documentId, authenticatedUserId);
+  }
+
+  readMongooseOr(documentId: string, authenticatedUserId: string) {
+    return this.repository.findWithMongooseOr(documentId, authenticatedUserId);
+  }
+
+  readMongooseByRouteOwner(documentId: string, userId: string) {
+    return this.repository.findWithMongoose(documentId, userId);
+  }
+
+  readSequelizePk(documentId: string) {
+    return this.repository.findWithSequelizePk(documentId);
+  }
+}
+`);
+    await writeFile(join(temporary, "document.repository.ts"), `
+import { Op } from "sequelize";
+
+export class DocumentRepository {
+  findWithSequelizeOr(documentId: string, actorId: string) {
+    return this.sequelizeDocument.findOne({
+      where: {
+        [Op.or]: [
+          { id: documentId, ownerId: actorId },
+          { id: documentId, isPublic: true },
+        ],
+      },
+    });
+  }
+
+  findWithSequelizeAnd(documentId: string, actorId: string) {
+    return this.sequelizeDocument.findOne({
+      where: {
+        id: documentId,
+        ownerId: actorId,
+        [Op.or]: [
+          { state: "published" },
+          { state: "draft" },
+        ],
+      },
+    });
+  }
+
+  findWithMongoOr(documentId: string, actorId: string) {
+    return this.mongoDocuments.findOne({
+      _id: documentId,
+      $or: [
+        { ownerId: actorId },
+        { isPublic: true },
+      ],
+    });
+  }
+
+  findWithMongoNor(documentId: string, actorId: string) {
+    return this.mongoDocuments.findOne({
+      _id: documentId,
+      $nor: [
+        { ownerId: actorId },
+        { state: "archived" },
+      ],
+    });
+  }
+
+  findWithMongoose(documentId: string, actorId: string) {
+    return this.mongoDocuments
+      .findById(documentId)
+      .where("ownerId")
+      .equals(actorId)
+      .exec();
+  }
+
+  findWithMongooseOr(documentId: string, actorId: string) {
+    return this.mongoDocuments
+      .findById(documentId)
+      .or([{ ownerId: actorId }, { isPublic: true }])
+      .exec();
+  }
+
+  findWithSequelizePk(documentId: string) {
+    return this.sequelizeDocument.findByPk(documentId);
+  }
+}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    for (const route of [
+      "GET /orm-operators/sequelize-or/:documentId",
+      "GET /orm-operators/mongo-or/:documentId",
+      "GET /orm-operators/mongo-nor/:documentId",
+      "GET /orm-operators/mongoose-or/:documentId",
+      "GET /orm-operators/mongoose/users/:userId/documents/:documentId",
+      "GET /orm-operators/sequelize-pk/:documentId",
+    ]) {
+      assert.ok(report.profile.routes.includes(route));
+      assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.authorization.object-without-ownership-check"
+        && signal.metadata?.route === route), `${route} should remain unsafe`);
+    }
+    for (const route of [
+      "GET /orm-operators/sequelize-and/:documentId",
+      "GET /orm-operators/mongoose/:documentId",
+    ]) {
+      assert.ok(report.profile.routes.includes(route));
+      assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+        && signal.metadata?.route === route), `${route} should require the authenticated owner`);
+    }
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS analysis follows locally inherited repository methods without trusting wrapper names", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-inherited-repository-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+    } }));
+    await writeFile(join(temporary, "base.repository.ts"), `
+export abstract class OwnedRepository {
+  findDocument(documentId: string, ownerId: string) {
+    return this.model.findOne({ where: { id: documentId, ownerId } });
+  }
+}
+`);
+    await writeFile(join(temporary, "document.repository.ts"), `
+import { OwnedRepository } from "./base.repository";
+
+export class DocumentRepository extends OwnedRepository {}
+`);
+    await writeFile(join(temporary, "document.service.ts"), `
+import { Injectable } from "@nestjs/common";
+import { DocumentRepository } from "./document.repository";
+
+@Injectable()
+export class DocumentService {
+  constructor(private readonly repository: DocumentRepository) {}
+
+  readByRouteOwner(documentId: string, userId: string) {
+    return this.repository.findDocument(documentId, userId);
+  }
+
+  readForActor(documentId: string, authenticatedUserId: string) {
+    return this.repository.findDocument(documentId, authenticatedUserId);
+  }
+}
+`);
+    await writeFile(join(temporary, "document.controller.ts"), `
+import { Controller, Get, Param, Req, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+import { DocumentService } from "./document.service";
+
+@Controller("inherited-repository")
+@UseGuards(AuthGuard("jwt"))
+export class DocumentController {
+  constructor(private readonly service: DocumentService) {}
+
+  @Get("users/:userId/documents/:documentId")
+  readByRouteOwner(@Param("documentId") documentId: string, @Param("userId") userId: string) {
+    return this.service.readByRouteOwner(documentId, userId);
+  }
+
+  @Get("documents/:documentId")
+  readForActor(@Param("documentId") documentId: string, @Req() request: any) {
+    return this.service.readForActor(documentId, request.user.id);
+  }
+}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const vulnerableRoute = "GET /inherited-repository/users/:userId/documents/:documentId";
+    const safeRoute = "GET /inherited-repository/documents/:documentId";
+    assert.ok(report.profile.routes.includes(vulnerableRoute));
+    assert.ok(report.profile.routes.includes(safeRoute));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.authorization.object-without-ownership-check"
+      && signal.metadata?.route === vulnerableRoute));
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+      && signal.metadata?.route === safeRoute));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("Node API analysis does not treat relation-shaped response metadata as an ORM owner predicate", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-response-owner-decoy-"));
   try {
