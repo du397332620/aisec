@@ -1989,20 +1989,20 @@ function expressRoutes(
   };
   const bindingsForElement = (
     parsed: ParsedSource,
-    parameter: ts.ParameterDeclaration,
+    bindingName: ts.BindingName,
     element: ts.Expression,
   ): StaticBindings | undefined => {
     const resolved = staticExpression(parsed, element, new Map());
     if (!resolved) return undefined;
     const bindings: StaticBindings = new Map();
-    if (ts.isIdentifier(parameter.name)) {
-      bindings.set(parameter.name.text, resolved);
+    if (ts.isIdentifier(bindingName)) {
+      bindings.set(bindingName.text, resolved);
       return bindings;
     }
-    if (!ts.isObjectBindingPattern(parameter.name)) return undefined;
+    if (!ts.isObjectBindingPattern(bindingName)) return undefined;
     const object = unwrapExpression(resolved);
     if (!ts.isObjectLiteralExpression(object)) return undefined;
-    for (const binding of parameter.name.elements) {
+    for (const binding of bindingName.elements) {
       if (binding.dotDotDotToken || !ts.isIdentifier(binding.name)) return undefined;
       const sourceName = propertyName(binding.propertyName) ?? binding.name.text;
       const member = objectMemberExpression(object, sourceName) ?? binding.initializer;
@@ -2096,6 +2096,30 @@ function expressRoutes(
     return true;
   };
 
+  const registrationCanExpand = (parsed: ParsedSource, candidate: ts.CallExpression): boolean => {
+    if (candidate.arguments.length < 2 || !registrationTarget(parsed, candidate, new Map())) return false;
+    const called = unwrapExpression(candidate.expression);
+    return !ts.isPropertyAccessExpression(called) || HTTP_METHODS.has(called.name.text.toLowerCase());
+  };
+  const expandRegistrationCall = (
+    parsed: ParsedSource,
+    candidate: ts.CallExpression,
+    elements: ts.Expression[],
+    bindingName: ts.BindingName,
+  ): void => {
+    expandedRegistrationCalls.add(candidate);
+    let fullyExpanded = true;
+    for (const element of elements) {
+      const bindings = bindingsForElement(parsed, bindingName, element);
+      const target = bindings && registrationTarget(parsed, candidate, bindings);
+      const expressions = bindings && resolvedArguments(parsed, candidate.arguments, bindings);
+      if (!bindings || !target?.method || !expressions || expandedRouteCount >= MAX_STATIC_ROUTE_EXPANSIONS
+        || !addRouteCandidate(parsed, candidate, target.receiver, target.method, expressions, expressions[0])) fullyExpanded = false;
+      else expandedRouteCount += 1;
+    }
+    if (!fullyExpanded) unresolvedRegistrationCalls.add(candidate);
+  };
+
   for (const parsed of sources) visit(parsed.source, (node) => {
     if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)
       || node.expression.name.text !== "forEach" || !node.arguments[0]) return;
@@ -2103,23 +2127,39 @@ function expressRoutes(
     const callback = unwrapExpression(node.arguments[0]);
     if (!elements || (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) || !callback.parameters[0]) return;
     visit(callback, (candidate) => {
-      if (!ts.isCallExpression(candidate) || candidate.arguments.length < 2) return;
-      const unboundTarget = registrationTarget(parsed, candidate, new Map());
-      if (!unboundTarget) return;
-      const called = unwrapExpression(candidate.expression);
-      if (ts.isPropertyAccessExpression(called) && !HTTP_METHODS.has(called.name.text.toLowerCase())) return;
-      expandedRegistrationCalls.add(candidate);
-      let fullyExpanded = true;
-      for (const element of elements) {
-        const bindings = bindingsForElement(parsed, callback.parameters[0]!, element);
-        const target = bindings && registrationTarget(parsed, candidate, bindings);
-        const expressions = bindings && resolvedArguments(parsed, candidate.arguments, bindings);
-        if (!bindings || !target?.method || !expressions || expandedRouteCount >= MAX_STATIC_ROUTE_EXPANSIONS
-          || !addRouteCandidate(parsed, candidate, target.receiver, target.method, expressions, expressions[0])) fullyExpanded = false;
-        else expandedRouteCount += 1;
+      if (ts.isCallExpression(candidate) && registrationCanExpand(parsed, candidate)) {
+        expandRegistrationCall(parsed, candidate, elements, callback.parameters[0]!.name);
       }
-      if (!fullyExpanded) unresolvedRegistrationCalls.add(candidate);
     });
+  });
+
+  const directLoopCalls = (body: ts.Statement): ts.CallExpression[] | undefined => {
+    const statements = ts.isBlock(body) ? [...body.statements] : [body];
+    if (statements.length === 0) return undefined;
+    const calls: ts.CallExpression[] = [];
+    for (const statement of statements) {
+      if (!ts.isExpressionStatement(statement)) return undefined;
+      const expression = unwrapExpression(statement.expression);
+      if (!ts.isCallExpression(expression)) return undefined;
+      calls.push(expression);
+    }
+    return calls;
+  };
+  for (const parsed of sources) visit(parsed.source, (node) => {
+    if (!ts.isForOfStatement(node) || node.awaitModifier
+      || !ts.isVariableDeclarationList(node.initializer)
+      || (node.initializer.flags & ts.NodeFlags.Const) === 0
+      || node.initializer.declarations.length !== 1) return;
+    const declaration = node.initializer.declarations[0]!;
+    if (declaration.initializer
+      || (!ts.isIdentifier(declaration.name) && !ts.isObjectBindingPattern(declaration.name))) return;
+    const iterable = unwrapExpression(node.expression);
+    if (!ts.isIdentifier(iterable)
+      || !staticInitializers.has(`${parsed.file.relativePath}\u0000${iterable.text}`)) return;
+    const elements = staticArrayElements(parsed, iterable);
+    const calls = directLoopCalls(node.statement);
+    if (!elements || !calls || calls.some((candidate) => !registrationCanExpand(parsed, candidate))) return;
+    for (const candidate of calls) expandRegistrationCall(parsed, candidate, elements, declaration.name);
   });
 
   for (const parsed of sources) visit(parsed.source, (node) => {

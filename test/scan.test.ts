@@ -2672,6 +2672,193 @@ shorthandRoutes.forEach(({ method, path, guard, handler }) => {
   }
 });
 
+test("Express analysis expands direct synchronous for-of route registrations", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-for-of-routes-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+const app = express();
+
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+
+async function readDocument(req, res) {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  return res.json({ id: document.id, userId: document.userId });
+}
+
+async function readOwnedDocument(req, res) {
+  const document = await db.document.findFirst({
+    where: { id: req.params.documentId, userId: req.user.id },
+  });
+  return res.json({ id: document.id, userId: document.userId });
+}
+
+const vulnerableRoutes = [{
+  method: "get",
+  path: "/for-of/documents/:documentId",
+  guard: requireSession,
+  handler: readDocument,
+}, {
+  method: "get",
+  path: "/for-of/archived-documents/:documentId",
+  guard: requireSession,
+  handler: readDocument,
+}] as const;
+
+const protectedRoutes = [{
+  method: "get",
+  path: "/for-of/owned-documents/:documentId",
+  guard: requireSession,
+  handler: readOwnedDocument,
+}] as const;
+
+const aliasMethod = "get";
+const aliasPath = "/for-of/aliased-documents/:documentId";
+const aliasGuard = requireSession;
+const aliasHandler = readOwnedDocument;
+const shorthandRoutes = [{
+  method: aliasMethod,
+  path: aliasPath,
+  guard: aliasGuard,
+  handler: aliasHandler,
+}] as const;
+const aliasedRoutes = shorthandRoutes;
+
+for (const route of vulnerableRoutes) {
+  app[route.method](route.path, route.guard, route.handler);
+}
+for (const { method, path, guard, handler } of protectedRoutes) {
+  app[method](path, guard, handler);
+}
+for (const route of aliasedRoutes) app[route.method](route.path, route.guard, route.handler);
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const vulnerableRoutes = [
+      "GET /for-of/documents/:documentId",
+      "GET /for-of/archived-documents/:documentId",
+    ];
+    const protectedRoutes = [
+      "GET /for-of/owned-documents/:documentId",
+      "GET /for-of/aliased-documents/:documentId",
+    ];
+    for (const route of [...vulnerableRoutes, ...protectedRoutes]) assert.ok(report.profile.routes.includes(route));
+    const vulnerableSignals = report.signals.filter((signal) =>
+      signal.ruleId === "express.authorization.object-without-ownership-check"
+      && vulnerableRoutes.includes(String(signal.metadata?.route)));
+    assert.deepEqual(vulnerableSignals.map((signal) => signal.metadata?.route).sort(), vulnerableRoutes.sort());
+    assert.equal(new Set(vulnerableSignals.map((signal) => signal.fingerprint)).size, 2);
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("express.authorization.")
+      && protectedRoutes.includes(String(signal.metadata?.route))));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.doesNotMatch(coverage?.reason ?? "", /route registration site/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Express for-of route expansion fails closed outside its direct immutable boundary", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-unresolved-for-of-routes-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "routes.ts"), `
+export const importedRoutes = [{
+  method: "get",
+  path: "/unsupported/imported/:documentId",
+  guard: "requireSession",
+  handler: "readDocument",
+}] as const;
+`);
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+import { importedRoutes } from "./routes";
+const app = express();
+
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+async function readDocument(req, res) {
+  return res.json(await db.document.findUnique({ where: { id: req.params.documentId } }));
+}
+
+const staticRoutes = [{
+  method: "get",
+  path: "/unsupported/static/:documentId",
+  guard: requireSession,
+  handler: readDocument,
+}] as const;
+const runtimeRoutes = loadRoutesFromEnvironment();
+let mutableRoutes = [{
+  method: "get",
+  path: "/unsupported/mutable/:documentId",
+  guard: requireSession,
+  handler: readDocument,
+}];
+const spreadRoutes = [...staticRoutes] as const;
+const tupleRoutes = [["get", "/unsupported/tuple/:documentId", requireSession, readDocument]] as const;
+
+for (const route of runtimeRoutes) {
+  app[route.method](route.path, route.guard, route.handler);
+}
+for (const route of mutableRoutes) {
+  app[route.method](route.path, route.guard, route.handler);
+}
+for (const route of importedRoutes) {
+  app[route.method](route.path, route.guard, route.handler);
+}
+for (const route of spreadRoutes) {
+  app[route.method](route.path, route.guard, route.handler);
+}
+for (const route of staticRoutes.filter(Boolean)) {
+  app[route.method](route.path, route.guard, route.handler);
+}
+
+async function registerAsyncRoutes() {
+  for await (const route of staticRoutes) {
+    app[route.method](route.path, route.guard, route.handler);
+  }
+}
+
+for (let route of staticRoutes) {
+  app[route.method](route.path, route.guard, route.handler);
+}
+for (const route of staticRoutes) {
+  if (featureEnabled()) app[route.method](route.path, route.guard, route.handler);
+}
+for (const route of staticRoutes) {
+  queueMicrotask(() => {
+    app[route.method](route.path, route.guard, route.handler);
+  });
+}
+for (const route of staticRoutes) {
+  route.path = buildDocumentPath();
+  app[route.method](route.path, route.guard, route.handler);
+}
+for (const [loopMethod, loopPath, loopGuard, loopHandler] of tupleRoutes) {
+  app[loopMethod](loopPath, loopGuard, loopHandler);
+}
+for (const index in staticRoutes) {
+  const route = staticRoutes[index];
+  app[route.method](route.path, route.guard, route.handler);
+}
+void registerAsyncRoutes;
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.deepEqual(report.profile.routes, []);
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("express.")));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /12 Express route registration site\(s\) could not be statically expanded/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("Express analysis reports dynamic registration sites that cannot be statically expanded", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-unresolved-config-routes-"));
   try {
