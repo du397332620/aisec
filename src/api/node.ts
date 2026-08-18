@@ -1753,6 +1753,8 @@ function expressRoutes(
   const declarations = new Map(sources.map((parsed) => [parsed.file.relativePath, functionDeclarations(parsed.source)]));
   const variableInitializers = new Map<string, { parsed: ParsedSource; expression: ts.Expression }>();
   const staticInitializers = new Map<string, { parsed: ParsedSource; expression: ts.Expression }>();
+  const directEsmImports = new Set<string>();
+  const directEsmExports = new Map<string, string>();
   for (const parsed of sources) visit(parsed.source, (node) => {
     if (ts.isVariableDeclaration(node) && ts.isIdentifier(node.name) && node.initializer) {
       variableInitializers.set(`${parsed.file.relativePath}\u0000${node.name.text}`, { parsed, expression: node.initializer });
@@ -1767,6 +1769,47 @@ function expressRoutes(
             parsed,
             expression: declaration.initializer,
           });
+        }
+      }
+    }
+  }
+  for (const parsed of sources) {
+    for (const statement of parsed.source.statements) {
+      if (ts.isImportDeclaration(statement) && ts.isStringLiteral(statement.moduleSpecifier)) {
+        const clause = statement.importClause;
+        if (!clause || clause.isTypeOnly) continue;
+        if (clause.name) directEsmImports.add(`${parsed.file.relativePath}\u0000${clause.name.text}`);
+        if (clause.namedBindings && ts.isNamedImports(clause.namedBindings)) {
+          for (const element of clause.namedBindings.elements) {
+            if (!element.isTypeOnly) directEsmImports.add(`${parsed.file.relativePath}\u0000${element.name.text}`);
+          }
+        }
+        continue;
+      }
+      if (ts.isVariableStatement(statement) && hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (ts.isIdentifier(declaration.name)) {
+            directEsmExports.set(`${parsed.file.relativePath}\u0000${declaration.name.text}`, declaration.name.text);
+          }
+        }
+        continue;
+      }
+      if (ts.isExportDeclaration(statement) && !statement.isTypeOnly && !statement.moduleSpecifier
+        && statement.exportClause && ts.isNamedExports(statement.exportClause)) {
+        for (const element of statement.exportClause.elements) {
+          if (!element.isTypeOnly) {
+            directEsmExports.set(
+              `${parsed.file.relativePath}\u0000${element.name.text}`,
+              element.propertyName?.text ?? element.name.text,
+            );
+          }
+        }
+        continue;
+      }
+      if (ts.isExportAssignment(statement) && !statement.isExportEquals) {
+        const expression = unwrapExpression(statement.expression);
+        if (ts.isIdentifier(expression)) {
+          directEsmExports.set(`${parsed.file.relativePath}\u0000default`, expression.text);
         }
       }
     }
@@ -1918,7 +1961,15 @@ function expressRoutes(
     return Boolean(resolved && roleGuard(resolved.declaration.getText(resolved.parsed.source)));
   };
 
-  type StaticBindings = Map<string, ts.Expression>;
+  interface StaticValue {
+    parsed: ParsedSource;
+    expression: ts.Expression;
+  }
+  interface StaticRouteTable {
+    parsed: ParsedSource;
+    elements: ts.Expression[];
+  }
+  type StaticBindings = Map<string, StaticValue>;
   const objectMemberExpression = (object: ts.ObjectLiteralExpression, name: string): ts.Expression | undefined => {
     for (const member of object.properties) {
       if (propertyName(member.name) !== name) continue;
@@ -1933,39 +1984,42 @@ function expressRoutes(
     bindings: StaticBindings,
     seen = new Set<string>(),
     depth = 0,
-  ): ts.Expression | undefined => {
+  ): StaticValue | undefined => {
     if (depth > 12 || ts.isSpreadElement(expression)) return undefined;
     const current = unwrapExpression(expression);
     if (ts.isIdentifier(current)) {
       const bound = bindings.get(current.text);
-      if (bound && (!ts.isIdentifier(bound) || bound.text !== current.text)) {
-        return staticExpression(parsed, bound, bindings, seen, depth + 1);
+      if (bound && (bound.parsed !== parsed || !ts.isIdentifier(bound.expression)
+        || bound.expression.text !== current.text)) {
+        return staticExpression(bound.parsed, bound.expression, bindings, seen, depth + 1);
       }
       const key = `${parsed.file.relativePath}\u0000${current.text}`;
       if (seen.has(key)) return undefined;
       const initializer = staticInitializers.get(key);
       return initializer
         ? staticExpression(initializer.parsed, initializer.expression, bindings, new Set(seen).add(key), depth + 1)
-        : current;
+        : { parsed, expression: current };
     }
     if (ts.isPropertyAccessExpression(current)) {
       const owner = staticExpression(parsed, current.expression, bindings, seen, depth + 1);
-      if (owner && ts.isObjectLiteralExpression(unwrapExpression(owner))) {
-        const member = objectMemberExpression(unwrapExpression(owner) as ts.ObjectLiteralExpression, current.name.text);
-        return member ? staticExpression(parsed, member, bindings, seen, depth + 1) : undefined;
+      const ownerExpression = owner && unwrapExpression(owner.expression);
+      if (owner && ownerExpression && ts.isObjectLiteralExpression(ownerExpression)) {
+        const member = objectMemberExpression(ownerExpression, current.name.text);
+        return member ? staticExpression(owner.parsed, member, bindings, seen, depth + 1) : undefined;
       }
-      return current;
+      return { parsed, expression: current };
     }
     if (ts.isElementAccessExpression(current) && current.argumentExpression) {
       const owner = staticExpression(parsed, current.expression, bindings, seen, depth + 1);
       const memberName = literalText(current.argumentExpression);
-      if (owner && memberName !== undefined && ts.isObjectLiteralExpression(unwrapExpression(owner))) {
-        const member = objectMemberExpression(unwrapExpression(owner) as ts.ObjectLiteralExpression, memberName);
-        return member ? staticExpression(parsed, member, bindings, seen, depth + 1) : undefined;
+      const ownerExpression = owner && unwrapExpression(owner.expression);
+      if (owner && memberName !== undefined && ownerExpression && ts.isObjectLiteralExpression(ownerExpression)) {
+        const member = objectMemberExpression(ownerExpression, memberName);
+        return member ? staticExpression(owner.parsed, member, bindings, seen, depth + 1) : undefined;
       }
-      return current;
+      return { parsed, expression: current };
     }
-    return current;
+    return { parsed, expression: current };
   };
   const staticString = (
     parsed: ParsedSource,
@@ -1974,25 +2028,53 @@ function expressRoutes(
   ): string | undefined => {
     if (!expression) return undefined;
     const resolved = staticExpression(parsed, expression, bindings);
-    return resolved && literalText(resolved);
+    return resolved && literalText(resolved.expression);
   };
-  const staticArrayElements = (parsed: ParsedSource, expression: ts.Expression): ts.Expression[] | undefined => {
+  const staticArrayTable = (parsed: ParsedSource, expression: ts.Expression): StaticRouteTable | undefined => {
     const resolved = staticExpression(parsed, expression, new Map());
-    const current = resolved && unwrapExpression(resolved);
+    const current = resolved && unwrapExpression(resolved.expression);
     if (!current || !ts.isArrayLiteralExpression(current) || current.elements.length > MAX_STATIC_ROUTE_ENTRIES) return undefined;
     const elements: ts.Expression[] = [];
     for (const element of current.elements) {
       if (!ts.isExpression(element) || ts.isSpreadElement(element)) return undefined;
       elements.push(element);
     }
-    return elements;
+    return { parsed: resolved.parsed, elements };
+  };
+  const importedStaticRouteTable = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+    seen = new Set<string>(),
+    depth = 0,
+  ): StaticRouteTable | undefined => {
+    if (depth > 8) return undefined;
+    const current = unwrapExpression(expression);
+    if (!ts.isIdentifier(current)) return undefined;
+    const key = `${parsed.file.relativePath}\u0000${current.text}`;
+    if (seen.has(key)) return undefined;
+    const nextSeen = new Set(seen).add(key);
+    const localInitializer = staticInitializers.get(key);
+    if (localInitializer) {
+      return staticArrayTable(localInitializer.parsed, localInitializer.expression)
+        ?? importedStaticRouteTable(localInitializer.parsed, localInitializer.expression, nextSeen, depth + 1);
+    }
+    if (!directEsmImports.has(key)) return undefined;
+    const binding = parsed.imports.get(current.text);
+    if (!binding || binding.namespace || !binding.module.startsWith(".")) return undefined;
+    const target = resolveModule(parsed, binding.module, lookup);
+    if (!target) return undefined;
+    const exportedLocal = directEsmExports.get(`${target.file.relativePath}\u0000${binding.imported}`);
+    if (!exportedLocal) return undefined;
+    const targetInitializer = staticInitializers.get(`${target.file.relativePath}\u0000${exportedLocal}`);
+    return targetInitializer && staticArrayTable(targetInitializer.parsed, targetInitializer.expression);
   };
   const bindingsForElement = (
-    parsed: ParsedSource,
+    elementParsed: ParsedSource,
+    bindingParsed: ParsedSource,
     bindingName: ts.BindingName,
     element: ts.Expression,
   ): StaticBindings | undefined => {
-    const resolved = staticExpression(parsed, element, new Map());
+    const resolved = staticExpression(elementParsed, element, new Map());
     if (!resolved) return undefined;
     const bindings: StaticBindings = new Map();
     if (ts.isIdentifier(bindingName)) {
@@ -2000,14 +2082,15 @@ function expressRoutes(
       return bindings;
     }
     if (!ts.isObjectBindingPattern(bindingName)) return undefined;
-    const object = unwrapExpression(resolved);
+    const object = unwrapExpression(resolved.expression);
     if (!ts.isObjectLiteralExpression(object)) return undefined;
     for (const binding of bindingName.elements) {
       if (binding.dotDotDotToken || !ts.isIdentifier(binding.name)) return undefined;
       const sourceName = propertyName(binding.propertyName) ?? binding.name.text;
-      const member = objectMemberExpression(object, sourceName) ?? binding.initializer;
-      if (!member) return undefined;
-      bindings.set(binding.name.text, member);
+      const member = objectMemberExpression(object, sourceName);
+      if (member) bindings.set(binding.name.text, { parsed: resolved.parsed, expression: member });
+      else if (binding.initializer) bindings.set(binding.name.text, { parsed: bindingParsed, expression: binding.initializer });
+      else return undefined;
     }
     return bindings;
   };
@@ -2015,8 +2098,8 @@ function expressRoutes(
     parsed: ParsedSource,
     values: readonly ts.Expression[],
     bindings: StaticBindings,
-  ): ts.Expression[] | undefined => {
-    const result: ts.Expression[] = [];
+  ): StaticValue[] | undefined => {
+    const result: StaticValue[] = [];
     for (const value of values) {
       const resolved = staticExpression(parsed, value, bindings);
       if (!resolved) return undefined;
@@ -2056,23 +2139,24 @@ function expressRoutes(
     node: ts.CallExpression,
     receiver: string,
     callName: string,
-    expressions: ts.Expression[],
-    evidenceNode: ts.Node = node,
+    expressions: StaticValue[],
+    evidence: StaticValue = { parsed, expression: node },
   ): boolean => {
     if (!HTTP_METHODS.has(callName) || expressions.length < 2) return false;
-    const rawPath = literalText(expressions[0]);
+    const rawPath = literalText(expressions[0]!.expression);
     if (rawPath === undefined) return false;
     const path = normalizePath(rawPath);
-    const handlerExpression = expressions.at(-1)!;
-    const resolvedHandler = resolveExpressFunction(parsed, handlerExpression);
+    const handlerValue = expressions.at(-1)!;
+    const handlerExpression = handlerValue.expression;
+    const resolvedHandler = resolveExpressFunction(handlerValue.parsed, handlerExpression);
     if (!resolvedHandler) unresolvedHandlers += 1;
     const handler = resolvedHandler?.declaration;
-    const handlerParsed = resolvedHandler?.parsed ?? parsed;
-    const handlerSource = handler?.getText(handlerParsed.source) ?? handlerExpression.getText(parsed.source);
+    const handlerParsed = resolvedHandler?.parsed ?? handlerValue.parsed;
+    const handlerSource = handler?.getText(handlerParsed.source) ?? handlerExpression.getText(handlerValue.parsed.source);
     const middlewareExpressions = expressions.slice(1, -1);
-    const locallyAuthenticated = middlewareExpressions.some((expression) => authenticatedExpression(parsed, expression))
+    const locallyAuthenticated = middlewareExpressions.some((value) => authenticatedExpression(value.parsed, value.expression))
       || explicitAuthentication(handlerSource);
-    const locallyRoleProtected = middlewareExpressions.some((expression) => roleExpression(parsed, expression))
+    const locallyRoleProtected = middlewareExpressions.some((value) => roleExpression(value.parsed, value.expression))
       || roleGuard(handlerSource);
     const currentHandler = unwrapExpression(handlerExpression);
     const handlerName = ts.isIdentifier(currentHandler) ? currentHandler.text
@@ -2089,7 +2173,7 @@ function expressRoutes(
       handler,
       handlerOwnerClass: resolvedHandler?.ownerClass,
       handlerSource,
-      location: location(parsed, evidenceNode),
+      location: location(evidence.parsed, evidence.expression),
       locallyAuthenticated,
       locallyRoleProtected,
     });
@@ -2104,13 +2188,13 @@ function expressRoutes(
   const expandRegistrationCall = (
     parsed: ParsedSource,
     candidate: ts.CallExpression,
-    elements: ts.Expression[],
+    table: StaticRouteTable,
     bindingName: ts.BindingName,
   ): void => {
     expandedRegistrationCalls.add(candidate);
     let fullyExpanded = true;
-    for (const element of elements) {
-      const bindings = bindingsForElement(parsed, bindingName, element);
+    for (const element of table.elements) {
+      const bindings = bindingsForElement(table.parsed, parsed, bindingName, element);
       const target = bindings && registrationTarget(parsed, candidate, bindings);
       const expressions = bindings && resolvedArguments(parsed, candidate.arguments, bindings);
       if (!bindings || !target?.method || !expressions || expandedRouteCount >= MAX_STATIC_ROUTE_EXPANSIONS
@@ -2123,12 +2207,13 @@ function expressRoutes(
   for (const parsed of sources) visit(parsed.source, (node) => {
     if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)
       || node.expression.name.text !== "forEach" || !node.arguments[0]) return;
-    const elements = staticArrayElements(parsed, node.expression.expression);
+    const table = staticArrayTable(parsed, node.expression.expression)
+      ?? importedStaticRouteTable(parsed, node.expression.expression);
     const callback = unwrapExpression(node.arguments[0]);
-    if (!elements || (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) || !callback.parameters[0]) return;
+    if (!table || (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) || !callback.parameters[0]) return;
     visit(callback, (candidate) => {
       if (ts.isCallExpression(candidate) && registrationCanExpand(parsed, candidate)) {
-        expandRegistrationCall(parsed, candidate, elements, callback.parameters[0]!.name);
+        expandRegistrationCall(parsed, candidate, table, callback.parameters[0]!.name);
       }
     });
   });
@@ -2154,12 +2239,11 @@ function expressRoutes(
     if (declaration.initializer
       || (!ts.isIdentifier(declaration.name) && !ts.isObjectBindingPattern(declaration.name))) return;
     const iterable = unwrapExpression(node.expression);
-    if (!ts.isIdentifier(iterable)
-      || !staticInitializers.has(`${parsed.file.relativePath}\u0000${iterable.text}`)) return;
-    const elements = staticArrayElements(parsed, iterable);
+    if (!ts.isIdentifier(iterable)) return;
+    const table = staticArrayTable(parsed, iterable) ?? importedStaticRouteTable(parsed, iterable);
     const calls = directLoopCalls(node.statement);
-    if (!elements || !calls || calls.some((candidate) => !registrationCanExpand(parsed, candidate))) return;
-    for (const candidate of calls) expandRegistrationCall(parsed, candidate, elements, declaration.name);
+    if (!table || !calls || calls.some((candidate) => !registrationCanExpand(parsed, candidate))) return;
+    for (const candidate of calls) expandRegistrationCall(parsed, candidate, table, declaration.name);
   });
 
   for (const parsed of sources) visit(parsed.source, (node) => {

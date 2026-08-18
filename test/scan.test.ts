@@ -2765,7 +2765,7 @@ test("Express for-of route expansion fails closed outside its direct immutable b
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-unresolved-for-of-routes-"));
   try {
     await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
-    await writeFile(join(temporary, "routes.ts"), `
+    await writeFile(join(temporary, "base-routes.ts"), `
 export const importedRoutes = [{
   method: "get",
   path: "/unsupported/imported/:documentId",
@@ -2773,6 +2773,7 @@ export const importedRoutes = [{
   handler: "readDocument",
 }] as const;
 `);
+    await writeFile(join(temporary, "routes.ts"), `export { importedRoutes } from "./base-routes";\n`);
     await writeFile(join(temporary, "app.ts"), `
 import express from "express";
 import { importedRoutes } from "./routes";
@@ -2847,6 +2848,214 @@ for (const index in staticRoutes) {
   app[route.method](route.path, route.guard, route.handler);
 }
 void registerAsyncRoutes;
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.deepEqual(report.profile.routes, []);
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("express.")));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /12 Express route registration site\(s\) could not be statically expanded/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Express analysis expands directly imported immutable route tables with their source context", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-imported-route-tables-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "handlers.ts"), `
+export function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+
+export async function readDocument(req, res) {
+  const document = await db.document.findUnique({ where: { id: req.params.documentId } });
+  return res.json({ id: document.id, userId: document.userId });
+}
+
+export async function readOwnedDocument(req, res) {
+  const document = await db.document.findFirst({
+    where: { id: req.params.documentId, userId: req.user.id },
+  });
+  return res.json({ id: document.id, userId: document.userId });
+}
+`);
+    await writeFile(join(temporary, "routes.ts"), `
+import { readDocument, readOwnedDocument, requireSession } from "./handlers";
+
+export const vulnerableRoutes = [{
+  method: "get",
+  path: "/imported/documents/:documentId",
+  guard: requireSession,
+  handler: readDocument,
+}, {
+  method: "get",
+  path: "/imported/archived-documents/:documentId",
+  guard: requireSession,
+  handler: readDocument,
+}] as const;
+
+const protectedBase = [{
+  method: "get",
+  path: "/imported/owned-documents/:documentId",
+  guard: requireSession,
+  handler: readOwnedDocument,
+}] as const;
+const protectedRoutes = protectedBase;
+export { protectedRoutes as ownedRoutes };
+
+const defaultMethod = "get";
+const defaultPath = "/imported/default-documents/:documentId";
+const defaultRoutes = [{
+  method: defaultMethod,
+  path: defaultPath,
+  guard: requireSession,
+  handler: readOwnedDocument,
+}] as const;
+export default defaultRoutes;
+`);
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+import defaultRoutes, {
+  ownedRoutes,
+  vulnerableRoutes as remoteVulnerableRoutes,
+} from "./routes";
+
+const app = express();
+const consumerAlias = remoteVulnerableRoutes;
+
+consumerAlias.forEach((route) => {
+  app[route.method](route.path, route.guard, route.handler);
+});
+for (const { method, path, guard, handler } of ownedRoutes) {
+  app[method](path, guard, handler);
+}
+defaultRoutes.forEach(({ method, path, guard, handler }) => {
+  app[method](path, guard, handler);
+});
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const vulnerableRoutes = [
+      "GET /imported/documents/:documentId",
+      "GET /imported/archived-documents/:documentId",
+    ];
+    const protectedRoutes = [
+      "GET /imported/owned-documents/:documentId",
+      "GET /imported/default-documents/:documentId",
+    ];
+    for (const route of [...vulnerableRoutes, ...protectedRoutes]) assert.ok(report.profile.routes.includes(route));
+    const vulnerableSignals = report.signals.filter((signal) =>
+      signal.ruleId === "express.authorization.object-without-ownership-check"
+      && vulnerableRoutes.includes(String(signal.metadata?.route)));
+    assert.deepEqual(vulnerableSignals.map((signal) => signal.metadata?.route).sort(), vulnerableRoutes.sort());
+    assert.equal(new Set(vulnerableSignals.map((signal) => signal.fingerprint)).size, 2);
+    assert.ok(vulnerableSignals.every((signal) => signal.locations[0]?.path === "routes.ts"));
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("express.authorization.")
+      && protectedRoutes.includes(String(signal.metadata?.route))));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.doesNotMatch(coverage?.reason ?? "", /route registration site/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Express imported route-table expansion rejects indirect or mutable module boundaries", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-unresolved-imported-route-tables-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "base.ts"), `
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+async function readDocument(req, res) {
+  return res.json(await db.document.findUnique({ where: { id: req.params.documentId } }));
+}
+export const routes = [{
+  method: "get",
+  path: "/unsupported/imported/:documentId",
+  guard: requireSession,
+  handler: readDocument,
+}] as const;
+`);
+    await writeFile(join(temporary, "reexport.ts"), `export { routes as reexportedRoutes } from "./base";\n`);
+    await writeFile(join(temporary, "star.ts"), `export * from "./base";\n`);
+    await writeFile(join(temporary, "cycle-a.ts"), `export { cycleRoutes } from "./cycle-b";\n`);
+    await writeFile(join(temporary, "cycle-b.ts"), `export { cycleRoutes } from "./cycle-a";\n`);
+    await writeFile(join(temporary, "mutable.ts"), `
+export let mutableRoutes = [{ method: "get", path: "/unsupported/mutable/:documentId", guard: null, handler: null }];
+`);
+    await writeFile(join(temporary, "runtime.ts"), `
+export const runtimeRoutes = loadRoutesFromEnvironment();
+`);
+    await writeFile(join(temporary, "inline-default.ts"), `
+export default [{ method: "get", path: "/unsupported/inline/:documentId", guard: null, handler: null }] as const;
+`);
+    await writeFile(join(temporary, "spread.ts"), `
+import { routes } from "./base";
+export const spreadRoutes = [...routes] as const;
+`);
+    await writeFile(join(temporary, "alias-export.ts"), `
+import { routes } from "./base";
+export const aliasedRoutes = routes;
+`);
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+import { aliasedRoutes } from "./alias-export";
+import * as routeNamespace from "./base";
+import { cycleRoutes } from "./cycle-a";
+import inlineRoutes from "./inline-default";
+import { mutableRoutes } from "./mutable";
+import { reexportedRoutes } from "./reexport";
+import { runtimeRoutes } from "./runtime";
+import { spreadRoutes } from "./spread";
+import { routes as starRoutes } from "./star";
+import packageRoutes from "route-package";
+
+const app = express();
+const commonJsRoutes = require("./base").routes;
+const localAliasA = localAliasB;
+const localAliasB = localAliasA;
+
+reexportedRoutes.forEach((route) => {
+  app[route.method](route.path, route.guard, route.handler);
+});
+starRoutes.forEach((route) => {
+  app[route.method](route.path, route.guard, route.handler);
+});
+for (const route of cycleRoutes) {
+  app[route.method](route.path, route.guard, route.handler);
+}
+for (const route of mutableRoutes) {
+  app[route.method](route.path, route.guard, route.handler);
+}
+runtimeRoutes.forEach((route) => {
+  app[route.method](route.path, route.guard, route.handler);
+});
+for (const route of inlineRoutes) {
+  app[route.method](route.path, route.guard, route.handler);
+}
+packageRoutes.forEach((route) => {
+  app[route.method](route.path, route.guard, route.handler);
+});
+commonJsRoutes.forEach((route) => {
+  app[route.method](route.path, route.guard, route.handler);
+});
+routeNamespace.routes.forEach((route) => {
+  app[route.method](route.path, route.guard, route.handler);
+});
+for (const route of localAliasA) {
+  app[route.method](route.path, route.guard, route.handler);
+}
+spreadRoutes.forEach((route) => {
+  app[route.method](route.path, route.guard, route.handler);
+});
+for (const route of aliasedRoutes) {
+  app[route.method](route.path, route.guard, route.handler);
+}
 `);
 
     const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
