@@ -1895,6 +1895,259 @@ class SecondApplicationRoot {}
   }
 });
 
+test("NestJS static bootstrap root selects the reachable global provider and APP_GUARD graph", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-static-bootstrap-root-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "tokens.ts"), `
+export const DOCUMENT_REPOSITORY = Symbol("DOCUMENT_REPOSITORY");
+`);
+    await writeFile(join(temporary, "repository.ts"), `
+export class OwnedDocumentRepository {
+  read(documentId: string, userId: string) {
+    return this.prisma.document.findFirst({ where: { id: documentId, userId } });
+  }
+}
+`);
+    await writeFile(join(temporary, "root-security.module.ts"), `
+import { CanActivate, ForbiddenException, Global, Module } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+import { OwnedDocumentRepository } from "./repository";
+import { DOCUMENT_REPOSITORY } from "./tokens";
+
+class AdministratorBoundary implements CanActivate {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user?.isAdmin) throw new ForbiddenException();
+    return true;
+  }
+}
+
+@Global()
+@Module({
+  providers: [
+    { provide: DOCUMENT_REPOSITORY, useClass: OwnedDocumentRepository },
+    { provide: APP_GUARD, useClass: AdministratorBoundary },
+  ],
+  exports: [DOCUMENT_REPOSITORY],
+})
+export class RootSecurityModule {}
+`);
+    await writeFile(join(temporary, "feature.module.ts"), `
+import { Controller, Get, Inject, Module, Param, Req } from "@nestjs/common";
+import { OwnedDocumentRepository } from "./repository";
+import { DOCUMENT_REPOSITORY } from "./tokens";
+
+@Controller("selected-bootstrap/admin/documents")
+class AdminDocumentsController {
+  constructor(
+    @Inject(DOCUMENT_REPOSITORY)
+    private readonly repository: OwnedDocumentRepository,
+  ) {}
+
+  @Get(":documentId")
+  read(@Param("documentId") documentId: string, @Req() request) {
+    return this.repository.read(documentId, request.user.id);
+  }
+}
+
+@Module({ controllers: [AdminDocumentsController] })
+export class SharedFeatureModule {}
+`);
+    await writeFile(join(temporary, "first.module.ts"), `
+import { Module } from "@nestjs/common";
+import { SharedFeatureModule } from "./feature.module";
+import { RootSecurityModule } from "./root-security.module";
+
+@Module({ imports: [RootSecurityModule, SharedFeatureModule] })
+export default class FirstApplicationRoot {}
+`);
+    await writeFile(join(temporary, "second.module.ts"), `
+import { Module } from "@nestjs/common";
+import { SharedFeatureModule } from "./feature.module";
+
+@Module({ imports: [SharedFeatureModule] })
+export class SecondApplicationRoot {}
+`);
+    await writeFile(join(temporary, "main.ts"), `
+import { NestFactory as BootstrapFactory } from "@nestjs/core";
+import RuntimeRoot from "./first.module";
+
+async function bootstrap() {
+  await BootstrapFactory.create(RuntimeRoot, { abortOnError: true });
+}
+
+void bootstrap();
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const route = "GET /selected-bootstrap/admin/documents/:documentId";
+    assert.ok(report.profile.routes.includes(route));
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.auth")
+      && signal.metadata?.route === route));
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+      && signal.metadata?.route === route));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.doesNotMatch(coverage?.reason ?? "", /injected provider dependency|bootstrap root reference/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS static bootstrap selection falls back when any official create site is unresolved", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-unresolved-bootstrap-roots-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "modules.ts"), `
+import { CanActivate, Controller, ForbiddenException, Get, Module } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+
+class AdministratorBoundary implements CanActivate {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user?.isAdmin) throw new ForbiddenException();
+    return true;
+  }
+}
+
+@Module({ providers: [{ provide: APP_GUARD, useClass: AdministratorBoundary }] })
+class FirstRootSecurityModule {}
+
+@Controller("unresolved-bootstrap/admin")
+class AdminController {
+  @Get("reports") reports() { return []; }
+}
+
+@Module({ controllers: [AdminController] })
+class SharedFeatureModule {}
+
+@Module({ imports: [FirstRootSecurityModule, SharedFeatureModule] })
+export class FirstApplicationRoot {}
+
+@Module({ imports: [SharedFeatureModule] })
+export class SecondApplicationRoot {}
+`);
+    await writeFile(join(temporary, "reexport.ts"), `
+export { FirstApplicationRoot as ReexportedRoot } from "./modules";
+`);
+    await writeFile(join(temporary, "main.ts"), `
+import { NestFactory as Factory } from "@nestjs/core";
+import { FirstApplicationRoot } from "./modules";
+import * as modules from "./modules";
+import { ReexportedRoot } from "./reexport";
+
+const RootAlias = FirstApplicationRoot;
+const FakeFactory = { create: (_root) => undefined };
+const featureEnabled = true;
+function selectRoot() { return FirstApplicationRoot; }
+
+async function bootstrap() {
+  await Factory.create(FirstApplicationRoot);
+  await Factory.create(selectRoot());
+  await Factory.create(RootAlias);
+  await Factory.create(modules.FirstApplicationRoot);
+  await Factory.create(ReexportedRoot);
+  await Factory.create();
+  await Factory?.create(FirstApplicationRoot);
+  await Factory["create"](FirstApplicationRoot);
+  await Promise.resolve(Factory.create(FirstApplicationRoot));
+  if (featureEnabled) await Factory.create(FirstApplicationRoot);
+  FakeFactory.create(FirstApplicationRoot);
+}
+
+async function dormantBootstrap() {
+  await Factory.create(FirstApplicationRoot);
+}
+
+async function shadowedModule(FirstApplicationRoot) {
+  await Factory.create(FirstApplicationRoot);
+}
+
+async function shadowedFactory(Factory) {
+  await Factory.create(FirstApplicationRoot);
+}
+
+void bootstrap();
+void shadowedModule(FirstApplicationRoot);
+void shadowedFactory(FakeFactory);
+`);
+    await writeFile(join(temporary, "worker.ts"), `
+import { NestFactory } from "@nestjs/core";
+import { FirstApplicationRoot } from "./modules";
+void NestFactory.create(FirstApplicationRoot);
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const route = "GET /unresolved-bootstrap/admin/reports";
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === route));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /12 NestJS bootstrap root references could not be statically resolved/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS static bootstrap selection intersects multiple accepted application roots", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-explicit-multiple-roots-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { CanActivate, Controller, ForbiddenException, Get, Module } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+import * as nestCore from "@nestjs/core";
+
+class AdministratorBoundary implements CanActivate {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user?.isAdmin) throw new ForbiddenException();
+    return true;
+  }
+}
+
+@Module({ providers: [{ provide: APP_GUARD, useClass: AdministratorBoundary }] })
+class FirstRootSecurityModule {}
+
+@Controller("explicit-multiple-roots/admin")
+class AdminController {
+  @Get("reports") reports() { return []; }
+}
+
+@Module({ controllers: [AdminController] })
+class SharedFeatureModule {}
+
+@Module({ imports: [FirstRootSecurityModule, SharedFeatureModule] })
+class FirstApplicationRoot {}
+
+@Module({ imports: [SharedFeatureModule] })
+class SecondApplicationRoot {}
+
+const bootstrapFirst = async () => { await nestCore.NestFactory.create(FirstApplicationRoot); };
+const bootstrapSecond = async () => nestCore.NestFactory.create(SecondApplicationRoot);
+bootstrapFirst();
+bootstrapSecond();
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const route = "GET /explicit-multiple-roots/admin/reports";
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === route));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.doesNotMatch(coverage?.reason ?? "", /bootstrap root reference/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("NestJS module visibility accepts a dynamic global export and rejects duplicate controller ownership", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-dynamic-global-duplicate-controller-"));
   try {

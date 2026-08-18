@@ -33,6 +33,7 @@ export interface NodeApiAnalysis {
   unresolvedMounts: number;
   unresolvedRegistrations: number;
   unresolvedProviderDependencies: number;
+  unresolvedBootstrapRoots: number;
 }
 
 interface ParsedSource {
@@ -102,6 +103,7 @@ interface LocalCallAnalyzer {
   nestControllerClass(parsed: ParsedSource, declaration: ts.ClassDeclaration): ResolvedClass;
   globalGuardProviders(ownerClass: ResolvedClass | undefined): ResolvedClass[];
   unresolvedProviderDependencies(): number;
+  unresolvedBootstrapRoots(): number;
 }
 
 interface ExpressRouteCandidate {
@@ -173,6 +175,7 @@ const MAX_PROVIDER_RESOLUTION_DEPTH = 8;
 const MAX_NEST_MODULE_GRAPH_ENTRIES = 256;
 const MAX_NEST_MODULE_GRAPH_DEPTH = 8;
 const MAX_LOCAL_CLASS_HERITAGE_DEPTH = 4;
+const NEST_BOOTSTRAP_ENTRY_PATH = /(?:^|\/)(?:main|server|bootstrap|index)\.(?:[cm]?[jt]sx?)$/i;
 
 function scriptKind(path: string): ts.ScriptKind {
   const extension = extname(path).toLowerCase();
@@ -1151,6 +1154,171 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       moduleParents.set(imported, parents);
     }
   }
+  const bindingContainsName = (binding: ts.BindingName, name: string): boolean => {
+    if (ts.isIdentifier(binding)) return binding.text === name;
+    return binding.elements.some((element) => ts.isBindingElement(element)
+      && bindingContainsName(element.name, name));
+  };
+  const statementDeclaresName = (statement: ts.Statement, name: string): boolean => {
+    if (ts.isVariableStatement(statement)) {
+      return statement.declarationList.declarations.some((declaration) => bindingContainsName(declaration.name, name));
+    }
+    return (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement))
+      && statement.name?.text === name;
+  };
+  const nestedReferenceShadowed = (node: ts.Node, local: string): boolean => {
+    let current: ts.Node | undefined = node.parent;
+    while (current && !ts.isSourceFile(current)) {
+      if (ts.isFunctionLike(current)
+        && current.parameters.some((parameter) => bindingContainsName(parameter.name, local))) return true;
+      if (ts.isCatchClause(current) && current.variableDeclaration
+        && bindingContainsName(current.variableDeclaration.name, local)) return true;
+      if (ts.isBlock(current)
+        && current.statements.some((statement) => statementDeclaresName(statement, local))) return true;
+      current = current.parent;
+    }
+    return false;
+  };
+  const importReferenceShadowed = (node: ts.Node, local: string): boolean => nestedReferenceShadowed(node, local)
+    || node.getSourceFile().statements.some((statement) => !ts.isImportDeclaration(statement)
+      && statementDeclaresName(statement, local));
+  const officialNestFactoryReference = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+    site: ts.Node,
+  ): boolean => {
+    const current = unwrapExpression(expression);
+    let local: string | undefined;
+    let binding: ImportBinding | undefined;
+    if (ts.isIdentifier(current)) {
+      local = current.text;
+      binding = parsed.imports.get(local);
+      if (!binding || binding.namespace || binding.module !== "@nestjs/core" || binding.imported !== "NestFactory") {
+        return false;
+      }
+    } else if (ts.isPropertyAccessExpression(current) && ts.isIdentifier(current.expression)
+      && current.name.text === "NestFactory") {
+      local = current.expression.text;
+      binding = parsed.imports.get(local);
+      if (!binding?.namespace || binding.module !== "@nestjs/core") return false;
+    } else return false;
+    return directEsmImports.has(classKey(parsed, local)) && !importReferenceShadowed(site, local);
+  };
+  const topLevelInvocationName = (expression: ts.Expression): string | undefined => {
+    let current = unwrapExpression(expression);
+    while (ts.isAwaitExpression(current) || ts.isVoidExpression(current)) current = unwrapExpression(current.expression);
+    if (!ts.isCallExpression(current)) return undefined;
+    const called = unwrapExpression(current.expression);
+    if (ts.isIdentifier(called)) return called.text;
+    if (!ts.isPropertyAccessExpression(called) || !["catch", "finally", "then"].includes(called.name.text)) {
+      return undefined;
+    }
+    const result = unwrapExpression(called.expression);
+    if (!ts.isCallExpression(result)) return undefined;
+    const base = unwrapExpression(result.expression);
+    return ts.isIdentifier(base) ? base.text : undefined;
+  };
+  const directlyInvokedFunctions = new Map<string, Set<string>>();
+  for (const parsed of sources) {
+    const invoked = new Set<string>();
+    for (const statement of parsed.source.statements) {
+      if (!ts.isExpressionStatement(statement)) continue;
+      const name = topLevelInvocationName(statement.expression);
+      if (name) invoked.add(name);
+    }
+    directlyInvokedFunctions.set(parsed.file.relativePath, invoked);
+  }
+  const topLevelFunctionName = (
+    parsed: ParsedSource,
+    declaration: ts.FunctionLikeDeclaration,
+  ): string | undefined => {
+    if (ts.isFunctionDeclaration(declaration) && declaration.parent === parsed.source) {
+      return declaration.name?.text;
+    }
+    if (!ts.isArrowFunction(declaration) && !ts.isFunctionExpression(declaration)) return undefined;
+    const variable = declaration.parent;
+    if (!ts.isVariableDeclaration(variable) || !ts.isIdentifier(variable.name)) return undefined;
+    const declarationList = variable.parent;
+    const statement = declarationList.parent;
+    return ts.isVariableDeclarationList(declarationList)
+      && (declarationList.flags & ts.NodeFlags.Const) !== 0
+      && ts.isVariableStatement(statement)
+      && statement.parent === parsed.source
+      ? variable.name.text
+      : undefined;
+  };
+  const directBootstrapExpression = (node: ts.Node, expression: ts.Expression): boolean => {
+    let current = unwrapExpression(expression);
+    while (ts.isAwaitExpression(current) || ts.isVoidExpression(current)) current = unwrapExpression(current.expression);
+    return current === node;
+  };
+  const directBootstrapStatement = (node: ts.Node, container: ts.Block | ts.SourceFile): boolean => {
+    let current: ts.Node | undefined = node;
+    while (current && !ts.isStatement(current)) current = current.parent;
+    if (!current || current.parent !== container) return false;
+    if (ts.isExpressionStatement(current)) return directBootstrapExpression(node, current.expression);
+    if (ts.isReturnStatement(current)) return Boolean(current.expression
+      && directBootstrapExpression(node, current.expression));
+    return ts.isVariableStatement(current) && current.declarationList.declarations.some((declaration) =>
+      Boolean(declaration.initializer && directBootstrapExpression(node, declaration.initializer)));
+  };
+  const runtimeFunctionLike = (node: ts.Node): node is ts.FunctionLikeDeclaration =>
+    ts.isFunctionDeclaration(node) || ts.isFunctionExpression(node) || ts.isArrowFunction(node)
+      || ts.isMethodDeclaration(node) || ts.isConstructorDeclaration(node)
+      || ts.isGetAccessorDeclaration(node) || ts.isSetAccessorDeclaration(node);
+  const bootstrapCallReachable = (parsed: ParsedSource, node: ts.CallExpression): boolean => {
+    let owner: ts.Node | undefined = node.parent;
+    while (owner && !runtimeFunctionLike(owner) && !ts.isSourceFile(owner)) owner = owner.parent;
+    if (!owner || ts.isSourceFile(owner)) return directBootstrapStatement(node, parsed.source);
+    const name = topLevelFunctionName(parsed, owner);
+    if (!name || !directlyInvokedFunctions.get(parsed.file.relativePath)?.has(name) || !owner.body) return false;
+    return ts.isBlock(owner.body)
+      ? directBootstrapStatement(node, owner.body)
+      : directBootstrapExpression(node, owner.body);
+  };
+  const directBootstrapModule = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+    site: ts.CallExpression,
+  ): NestModuleRecord | undefined => {
+    const current = unwrapExpression(expression);
+    if (!ts.isIdentifier(current) || nestedReferenceShadowed(site, current.text)) return undefined;
+    const local = moduleRecordForClass(classes.get(classKey(parsed, current.text)));
+    if (local) return local;
+    const importKey = classKey(parsed, current.text);
+    const binding = parsed.imports.get(current.text);
+    if (!directEsmImports.has(importKey) || !binding || binding.namespace || !binding.module.startsWith(".")) {
+      return undefined;
+    }
+    const target = resolveModule(parsed, binding.module, lookup);
+    const exported = target?.exports.get(binding.imported);
+    if (!target || !exported?.local || exported.module) return undefined;
+    return moduleRecordForClass(classes.get(classKey(target, exported.local)));
+  };
+  const staticBootstrapRoots = new Set<string>();
+  const unresolvedNestBootstrapRoots = new Set<string>();
+  const unresolvedBootstrap = (parsed: ParsedSource, node: ts.CallExpression): void => {
+    unresolvedNestBootstrapRoots.add(`${parsed.file.relativePath}\u0000${node.pos}`);
+  };
+  for (const parsed of sources) visit(parsed.source, (node) => {
+    if (!ts.isCallExpression(node)) return;
+    const called = unwrapExpression(node.expression);
+    if (ts.isPropertyAccessExpression(called) && called.name.text === "create"
+      && officialNestFactoryReference(parsed, called.expression, node)) {
+      if (!NEST_BOOTSTRAP_ENTRY_PATH.test(parsed.file.relativePath)
+        || node.questionDotToken || called.questionDotToken || !bootstrapCallReachable(parsed, node)) {
+        unresolvedBootstrap(parsed, node);
+        return;
+      }
+      const root = node.arguments[0] && directBootstrapModule(parsed, node.arguments[0], node);
+      if (root) staticBootstrapRoots.add(root.key);
+      else unresolvedBootstrap(parsed, node);
+      return;
+    }
+    if (ts.isElementAccessExpression(called) && literalText(called.argumentExpression) === "create"
+      && officialNestFactoryReference(parsed, called.expression, node)) unresolvedBootstrap(parsed, node);
+  });
+  const useStaticBootstrapRoots = staticBootstrapRoots.size > 0 && unresolvedNestBootstrapRoots.size === 0;
   const boundedModuleWalk = (
     start: string,
     adjacent: (key: string) => Iterable<string>,
@@ -1175,6 +1343,19 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
   const applicationGraphs = (moduleKey: string): Set<string>[] | undefined => {
     const cached = applicationGraphCache.get(moduleKey);
     if (cached !== undefined) return cached ?? undefined;
+    if (useStaticBootstrapRoots) {
+      const graphs: Set<string>[] = [];
+      for (const root of staticBootstrapRoots) {
+        const graph = boundedModuleWalk(root, (key) => moduleRecords.get(key)?.imports ?? []);
+        if (!graph) {
+          applicationGraphCache.set(moduleKey, null);
+          return undefined;
+        }
+        if (graph.has(moduleKey)) graphs.push(graph);
+      }
+      applicationGraphCache.set(moduleKey, graphs);
+      return graphs;
+    }
     const ancestors = boundedModuleWalk(moduleKey, (key) => moduleParents.get(key) ?? []);
     if (!ancestors) {
       applicationGraphCache.set(moduleKey, null);
@@ -2188,6 +2369,7 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     nestControllerClass,
     globalGuardProviders,
     unresolvedProviderDependencies: () => unresolvedInjectedDependencies.size,
+    unresolvedBootstrapRoots: () => unresolvedNestBootstrapRoots.size,
   };
 }
 
@@ -3421,5 +3603,6 @@ export function analyzeNodeApi(files: ProjectFile[]): NodeApiAnalysis {
     unresolvedMounts,
     unresolvedRegistrations,
     unresolvedProviderDependencies: localCalls.unresolvedProviderDependencies(),
+    unresolvedBootstrapRoots: localCalls.unresolvedBootstrapRoots(),
   };
 }
