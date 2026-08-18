@@ -1004,6 +1004,385 @@ class DocumentsModule {}
   }
 });
 
+test("NestJS analysis resolves official forward references through an imported static dynamic module", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-forward-ref-dynamic-module-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+    } }));
+    await writeFile(join(temporary, "tokens.ts"), `
+export const DOCUMENT_SERVICE = Symbol("DOCUMENT_SERVICE");
+export const DOCUMENT_REPOSITORY = Symbol("DOCUMENT_REPOSITORY");
+`);
+    await writeFile(join(temporary, "document.repository.ts"), `
+export class DocumentRepository {
+  fetchDocument(documentId: string, userId: string) {
+    return this.prisma.document.findFirst({ where: { id: documentId, userId } });
+  }
+}
+`);
+    await writeFile(join(temporary, "document.service.ts"), `
+import { Inject, forwardRef as lazyRef } from "@nestjs/common";
+import { DOCUMENT_REPOSITORY } from "./tokens";
+
+interface DocumentRepositoryPort {
+  fetchDocument(documentId: string, userId: string): unknown;
+}
+
+export class DocumentService {
+  constructor(
+    @Inject(lazyRef(() => DOCUMENT_REPOSITORY))
+    private readonly repository: DocumentRepositoryPort,
+  ) {}
+
+  loadDocument(documentId: string, userId: string) {
+    return this.repository.fetchDocument(documentId, userId);
+  }
+}
+`);
+    await writeFile(join(temporary, "document.controller.ts"), `
+import * as Nest from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+import { DOCUMENT_SERVICE } from "./tokens";
+
+interface DocumentServicePort {
+  loadDocument(documentId: string, userId: string): unknown;
+}
+
+@Nest.Controller("lazy-dynamic")
+@Nest.UseGuards(AuthGuard("jwt"))
+export class DocumentController {
+  constructor(
+    @Nest.Inject(Nest.forwardRef(() => DOCUMENT_SERVICE))
+    private readonly service: DocumentServicePort,
+  ) {}
+
+  @Nest.Get("users/:userId/documents/:documentId")
+  readDocument(@Nest.Param("documentId") documentId: string, @Nest.Param("userId") userId: string) {
+    return this.service.loadDocument(documentId, userId);
+  }
+
+  @Nest.Get("documents/:documentId")
+  readOwnedDocument(@Nest.Param("documentId") documentId: string, @Nest.Req() request) {
+    return this.service.loadDocument(documentId, request.user.id);
+  }
+}
+`);
+    await writeFile(join(temporary, "document.module.ts"), `
+import { DynamicModule, Module } from "@nestjs/common";
+import { DocumentRepository } from "./document.repository";
+import { DocumentService } from "./document.service";
+import { DOCUMENT_REPOSITORY, DOCUMENT_SERVICE } from "./tokens";
+
+@Module({})
+export class DocumentFeatureModule {
+  static register(): DynamicModule {
+    return {
+      module: DocumentFeatureModule,
+      providers: [
+        { provide: DOCUMENT_SERVICE, useClass: DocumentService },
+        { provide: DOCUMENT_REPOSITORY, useClass: DocumentRepository },
+      ],
+      exports: [DOCUMENT_SERVICE],
+    };
+  }
+}
+`);
+    await writeFile(join(temporary, "app.module.ts"), `
+import { Module } from "@nestjs/common";
+import { DocumentController } from "./document.controller";
+import { DocumentFeatureModule } from "./document.module";
+
+@Module({
+  imports: [DocumentFeatureModule.register()],
+  controllers: [DocumentController],
+})
+export class AppModule {}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const vulnerableRoute = "GET /lazy-dynamic/users/:userId/documents/:documentId";
+    const safeRoute = "GET /lazy-dynamic/documents/:documentId";
+    assert.ok(report.profile.routes.includes(vulnerableRoute));
+    assert.ok(report.profile.routes.includes(safeRoute));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.authorization.object-without-ownership-check"
+      && signal.metadata?.route === vulnerableRoute));
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+      && signal.metadata?.route === safeRoute));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.doesNotMatch(coverage?.reason ?? "", /injected provider dependency/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS analysis resolves an active dynamic-module APP_GUARD alias without inventing role protection", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-dynamic-global-guard-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "security.module.ts"), `
+import { CanActivate, DynamicModule, Module, UnauthorizedException } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+
+const BOUNDARY_TOKEN = Symbol("BOUNDARY_TOKEN");
+
+class SessionBoundary implements CanActivate {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user) throw new UnauthorizedException();
+    return true;
+  }
+}
+
+@Module({})
+export class SecurityModule {
+  static forRoot(): DynamicModule {
+    return {
+      module: SecurityModule,
+      providers: [
+        { provide: BOUNDARY_TOKEN, useClass: SessionBoundary },
+        { provide: APP_GUARD, useExisting: BOUNDARY_TOKEN },
+      ],
+    };
+  }
+}
+`);
+    await writeFile(join(temporary, "app.module.ts"), `
+import { Controller, Get, Module, Param } from "@nestjs/common";
+import { SecurityModule } from "./security.module";
+
+@Controller("dynamic-global")
+class ReportsController {
+  @Get("documents/:documentId")
+  readDocument(@Param("documentId") documentId: string) {
+    return this.prisma.document.findUnique({ where: { id: documentId } });
+  }
+
+  @Get("admin/reports")
+  reports() { return []; }
+}
+
+@Module({
+  imports: [SecurityModule.forRoot()],
+  controllers: [ReportsController],
+})
+class AppModule {}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const objectRoute = "GET /dynamic-global/documents/:documentId";
+    const privilegedRoute = "GET /dynamic-global/admin/reports";
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.authorization.object-without-ownership-check"
+      && signal.metadata?.route === objectRoute));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.authorization.privileged-operation-without-role-check"
+      && signal.metadata?.route === privilegedRoute));
+    assert.ok(!report.signals.some((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard"
+      && [objectRoute, privilegedRoute].includes(String(signal.metadata?.route))));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS dynamic-module analysis rejects inactive, async, mismatched, runtime and spread metadata", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-unsupported-dynamic-modules-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+    } }));
+    await writeFile(join(temporary, "app.ts"), `
+import { CanActivate, Controller, DynamicModule, Get, Inject, Module, Param, UnauthorizedException, UseGuards } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+import { AuthGuard } from "@nestjs/passport";
+
+const DEAD_TOKEN = Symbol("DEAD_TOKEN");
+const RUNTIME_TOKEN = Symbol("RUNTIME_TOKEN");
+const MISMATCH_TOKEN = Symbol("MISMATCH_TOKEN");
+const ASYNC_TOKEN = Symbol("ASYNC_TOKEN");
+const SPREAD_TOKEN = Symbol("SPREAD_TOKEN");
+
+class BoundaryService {
+  load(documentId: string) {
+    return this.prisma.document.findUnique({ where: { id: documentId } });
+  }
+}
+
+class DeadGlobalBoundary implements CanActivate {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user) throw new UnauthorizedException();
+    return true;
+  }
+}
+
+@Module({ providers: [{ provide: APP_GUARD, useExisting: DeadGlobalBoundary }] })
+class DeadModule {
+  static register(): DynamicModule {
+    return {
+      module: DeadModule,
+      providers: [
+        { provide: DEAD_TOKEN, useClass: BoundaryService },
+        { provide: APP_GUARD, useClass: DeadGlobalBoundary },
+      ],
+    };
+  }
+}
+
+function loadProviders() { return [{ provide: RUNTIME_TOKEN, useClass: BoundaryService }]; }
+@Module({})
+class RuntimeModule {
+  static register(): DynamicModule {
+    return { module: RuntimeModule, providers: loadProviders() };
+  }
+}
+
+@Module({})
+class MismatchModule {
+  static register(): DynamicModule {
+    return {
+      module: RuntimeModule,
+      providers: [{ provide: MISMATCH_TOKEN, useClass: BoundaryService }],
+    };
+  }
+}
+
+@Module({})
+class AsyncModule {
+  static async register(): Promise<DynamicModule> {
+    return {
+      module: AsyncModule,
+      providers: [{ provide: ASYNC_TOKEN, useClass: BoundaryService }],
+    };
+  }
+}
+
+const spreadProviders = [{ provide: SPREAD_TOKEN, useClass: BoundaryService }];
+@Module({})
+class SpreadModule {
+  static register(): DynamicModule {
+    return { module: SpreadModule, providers: [...spreadProviders] };
+  }
+}
+
+interface BoundaryPort { load(documentId: string): unknown; }
+
+@Controller("unsupported-dynamic")
+@UseGuards(AuthGuard("jwt"))
+class DynamicController {
+  constructor(
+    @Inject(DEAD_TOKEN) private readonly dead: BoundaryPort,
+    @Inject(RUNTIME_TOKEN) private readonly runtime: BoundaryPort,
+    @Inject(MISMATCH_TOKEN) private readonly mismatch: BoundaryPort,
+    @Inject(ASYNC_TOKEN) private readonly asyncProvider: BoundaryPort,
+    @Inject(SPREAD_TOKEN) private readonly spread: BoundaryPort,
+  ) {}
+
+  @Get("dead/:documentId") deadRoute(@Param("documentId") id: string) { return this.dead.load(id); }
+  @Get("runtime/:documentId") runtimeRoute(@Param("documentId") id: string) { return this.runtime.load(id); }
+  @Get("mismatch/:documentId") mismatchRoute(@Param("documentId") id: string) { return this.mismatch.load(id); }
+  @Get("async/:documentId") asyncRoute(@Param("documentId") id: string) { return this.asyncProvider.load(id); }
+  @Get("spread/:documentId") spreadRoute(@Param("documentId") id: string) { return this.spread.load(id); }
+}
+
+@Controller("dead-global")
+class PublicController {
+  @Get("admin/reports") reports() { return []; }
+}
+
+@Module({
+  imports: [
+    RuntimeModule.register(),
+    MismatchModule.register(),
+    AsyncModule.register(),
+    SpreadModule.register(),
+  ],
+  controllers: [DynamicController, PublicController],
+})
+class AppModule {}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "GET /dead-global/admin/reports"));
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+      && String(signal.metadata?.route).startsWith("GET /unsupported-dynamic/")));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /5 NestJS injected provider dependencies could not be statically resolved/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS forward-reference analysis rejects non-Nest and non-direct callbacks", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-unsupported-forward-ref-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+    } }));
+    await writeFile(join(temporary, "app.ts"), `
+import { Controller, Get, Inject, Module, Param, UseGuards, forwardRef as nestForwardRef } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+import { EXTERNAL_TOKEN } from "external-provider-package";
+
+const STATIC_TOKEN = Symbol("STATIC_TOKEN");
+const { forwardRef: commonJsForwardRef } = require("@nestjs/common");
+function fakeForwardRef(callback) { return { forwardRef: callback }; }
+function loadToken() { return STATIC_TOKEN; }
+function observe() {}
+
+class BoundaryService {
+  load(documentId: string) {
+    return this.prisma.document.findUnique({ where: { id: documentId } });
+  }
+}
+
+interface BoundaryPort { load(documentId: string): unknown; }
+
+@Controller("unsupported-forward-ref")
+@UseGuards(AuthGuard("jwt"))
+class ForwardRefController {
+  constructor(
+    @Inject(fakeForwardRef(() => STATIC_TOKEN)) private readonly fake: BoundaryPort,
+    @Inject(nestForwardRef(() => loadToken())) private readonly runtime: BoundaryPort,
+    @Inject(nestForwardRef(() => { observe(); return STATIC_TOKEN; })) private readonly multi: BoundaryPort,
+    @Inject(nestForwardRef((value) => STATIC_TOKEN)) private readonly parameterized: BoundaryPort,
+    @Inject(nestForwardRef(async () => STATIC_TOKEN)) private readonly asyncProvider: BoundaryPort,
+    @Inject(nestForwardRef(() => EXTERNAL_TOKEN)) private readonly packageProvider: BoundaryPort,
+    @Inject(commonJsForwardRef(() => STATIC_TOKEN)) private readonly commonJsProvider: BoundaryPort,
+  ) {}
+
+  @Get("fake/:documentId") fakeRoute(@Param("documentId") id: string) { return this.fake.load(id); }
+  @Get("runtime/:documentId") runtimeRoute(@Param("documentId") id: string) { return this.runtime.load(id); }
+  @Get("multi/:documentId") multiRoute(@Param("documentId") id: string) { return this.multi.load(id); }
+  @Get("parameterized/:documentId") parameterizedRoute(@Param("documentId") id: string) { return this.parameterized.load(id); }
+  @Get("async/:documentId") asyncRoute(@Param("documentId") id: string) { return this.asyncProvider.load(id); }
+  @Get("package/:documentId") packageRoute(@Param("documentId") id: string) { return this.packageProvider.load(id); }
+  @Get("commonjs/:documentId") commonJsRoute(@Param("documentId") id: string) { return this.commonJsProvider.load(id); }
+}
+
+@Module({
+  controllers: [ForwardRefController],
+  providers: [{ provide: STATIC_TOKEN, useClass: BoundaryService }],
+})
+class AppModule {}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+      && String(signal.metadata?.route).startsWith("GET /unsupported-forward-ref/")));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /7 NestJS injected provider dependencies could not be statically resolved/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("NestJS analysis distinguishes authenticated ORM QueryBuilder ownership from route-controlled and dynamic predicates", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-typeorm-query-builder-"));
   try {
@@ -3203,6 +3582,123 @@ export class AdminController {
 `);
     const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
     assert.ok(!report.signals.some((signal) => signal.ruleId === "nestjs.authorization.privileged-operation-without-role-check"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS analysis accepts an actual static APP_GUARD provider record", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-static-app-guard-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "app.module.ts"), `
+import { CanActivate, Controller, ForbiddenException, Module, Post } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+
+class GlobalAdminBoundary implements CanActivate {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user?.isAdmin) throw new ForbiddenException();
+    return true;
+  }
+}
+
+@Controller("static-app-guard/admin")
+class AdminController {
+  @Post("export")
+  exportUsers() { return this.users.findMany(); }
+}
+
+@Module({
+  controllers: [AdminController],
+  providers: [{ provide: APP_GUARD, useClass: GlobalAdminBoundary }],
+})
+class AppModule {}
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const route = "POST /static-app-guard/admin/export";
+    assert.ok(report.profile.routes.includes(route));
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.auth")
+      && signal.metadata?.route === route));
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+      && signal.metadata?.route === route));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS APP_GUARD analysis accepts only valid class and directly constructed value forms", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-app-guard-provider-shapes-"));
+  try {
+    const valid = join(temporary, "valid");
+    const invalid = join(temporary, "invalid");
+    await mkdir(valid);
+    await mkdir(invalid);
+    const packageJson = JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } });
+    await writeFile(join(valid, "package.json"), packageJson);
+    await writeFile(join(valid, "app.module.ts"), `
+import { CanActivate, Controller, Get, Module, UnauthorizedException } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+
+class SessionBoundary implements CanActivate {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user) throw new UnauthorizedException();
+    return true;
+  }
+}
+
+@Controller("constructed-global/admin")
+class AdminController {
+  @Get("reports") reports() { return []; }
+}
+
+@Module({
+  controllers: [AdminController],
+  providers: [{ provide: APP_GUARD, useValue: new SessionBoundary() }],
+})
+class AppModule {}
+`);
+    const validScan = await scanProject(valid, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(!validScan.report.signals.some((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "GET /constructed-global/admin/reports"));
+
+    await writeFile(join(invalid, "package.json"), packageJson);
+    await writeFile(join(invalid, "app.module.ts"), `
+import { CanActivate, Controller, Get, Module, UnauthorizedException } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+
+class InvalidBoundary implements CanActivate {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user) throw new UnauthorizedException();
+    return true;
+  }
+}
+
+@Controller("invalid-global/admin")
+class AdminController {
+  @Get("reports") reports() { return []; }
+}
+
+@Module({
+  controllers: [AdminController],
+  providers: [
+    { provide: APP_GUARD, useClass: new InvalidBoundary() },
+    { provide: APP_GUARD, useValue: InvalidBoundary },
+  ],
+})
+class AppModule {}
+`);
+    const invalidScan = await scanProject(invalid, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(invalidScan.report.signals.some((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "GET /invalid-global/admin/reports"));
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
