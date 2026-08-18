@@ -519,11 +519,22 @@ export class UserController {
 test("NestJS analysis accepts authentication-entry handlers but keeps credential management sensitive", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-auth-entry-"));
   try {
-    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { "@nestjs/common": "11.1.6" } }));
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
     await writeFile(join(temporary, "main.ts"), `
 import { VersioningType } from "@nestjs/common";
-app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" });
-app.setGlobalPrefix("api");
+import { NestFactory } from "@nestjs/core";
+import { AppModule } from "./app.module";
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" });
+  app.setGlobalPrefix("api");
+}
+
+void bootstrap();
 `);
     await writeFile(join(temporary, "auth.controller.ts"), `
 import { Controller, Post } from "@nestjs/common";
@@ -541,6 +552,13 @@ export class AuthController {
   @Post("webauthn/generate-registration-options")
   generateRegistrationOptions() { return this.webAuthService.generateRegistrationOptions(); }
 }
+`);
+    await writeFile(join(temporary, "app.module.ts"), `
+import { Module } from "@nestjs/common";
+import { AuthController } from "./auth.controller";
+
+@Module({ controllers: [AuthController] })
+export class AppModule {}
 `);
     const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
     const unguarded = report.signals.filter((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard");
@@ -5302,11 +5320,16 @@ test("NestJS analysis composes global prefixes and URI versions into reported ro
     await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { "@nestjs/common": "11.1.6", "@nestjs/core": "11.1.6" } }));
     await writeFile(join(temporary, "main.ts"), `
 import { VersioningType } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+import { AppModule } from "./app.module";
+
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
   app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" });
   app.setGlobalPrefix("api", { exclude: ["health"] });
 }
+
+void bootstrap();
 `);
     await writeFile(join(temporary, "reports.controller.ts"), `
 import { Controller, Get, VERSION_NEUTRAL, Version } from "@nestjs/common";
@@ -5331,12 +5354,325 @@ export class HealthController {
   health() { return { ok: true }; }
 }
 `);
+    await writeFile(join(temporary, "app.module.ts"), `
+import { Module } from "@nestjs/common";
+import { HealthController, ReportsController } from "./reports.controller";
+
+@Module({ controllers: [ReportsController, HealthController] })
+export class AppModule {}
+`);
     const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
     assert.ok(report.profile.routes.includes("GET /api/v1/reports"));
     assert.ok(report.profile.routes.includes("GET /api/v2/reports/export"));
     assert.ok(report.profile.routes.includes("GET /api/reports/callback"));
     assert.ok(report.profile.routes.includes("GET /health"));
     assert.ok(!report.profile.routes.includes("GET /reports"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS routing configuration ignores closed setup apps and keeps proven prefix parts", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-routing-closed-setup-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, Get, Module, VERSION_NEUTRAL, Version, VersioningType } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+
+@Controller("reports")
+class ReportsController {
+  @Get() list() { return []; }
+}
+
+@Controller()
+class HealthController {
+  @Version(VERSION_NEUTRAL)
+  @Get("health") health() { return {}; }
+}
+
+@Module({ controllers: [ReportsController, HealthController] })
+class AppModule {}
+
+const runtimeExclusions = process.env.EXTRA_EXCLUDES?.split(",") ?? [];
+
+async function bootstrap() {
+  const setupApp = await NestFactory.create(AppModule);
+  await setupApp.close();
+
+  const app = await NestFactory.create(AppModule);
+  app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" });
+  app.setGlobalPrefix("api", { exclude: ["health", ...runtimeExclusions] });
+}
+
+void bootstrap();
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /api/v1/reports"));
+    assert.ok(report.profile.routes.includes("GET /health"));
+    assert.ok(!report.profile.routes.includes("GET /reports"));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /1 NestJS application routing configuration site could not be statically scoped/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS routing configuration is scoped to each application graph", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-routing-app-scope-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, Get, Module, VersioningType as NestVersioningType } from "@nestjs/common";
+import * as nestCommon from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+
+@Controller("admin/reports")
+class ReportsController {
+  @Get() list() { return []; }
+}
+
+@Module({ controllers: [ReportsController] })
+class SharedModule {}
+
+@Module({ imports: [SharedModule] })
+class FirstRoot {}
+
+@Module({ imports: [SharedModule] })
+class SecondRoot {}
+
+async function bootstrapFirst() {
+  const app = await NestFactory.create(FirstRoot);
+  app.setGlobalPrefix("api");
+  app.enableVersioning({ type: NestVersioningType.URI, defaultVersion: "1" });
+}
+
+async function bootstrapSecond() {
+  const app = await NestFactory.create(SecondRoot);
+  app.setGlobalPrefix("internal");
+  app.enableVersioning({
+    type: nestCommon.VersioningType.URI,
+    defaultVersion: [nestCommon.VERSION_NEUTRAL, "2026"],
+    prefix: false,
+  });
+}
+
+void bootstrapFirst();
+void bootstrapSecond();
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /api/v1/admin/reports"));
+    assert.ok(report.profile.routes.includes("GET /internal/admin/reports"));
+    assert.ok(report.profile.routes.includes("GET /internal/2026/admin/reports"));
+    assert.ok(!report.profile.routes.includes("GET /api/2026/admin/reports"));
+    assert.ok(!report.profile.routes.includes("GET /internal/v1/admin/reports"));
+    assert.ok(!report.profile.routes.includes("GET /admin/reports"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS routing configuration respects application graphs and method exclusions", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-routing-method-exclude-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { All, Controller, Get, Module, Post } from "@nestjs/common";
+import * as nestCommon from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+
+@Controller("first")
+class FirstController {
+  @Get("health") readHealth() { return {}; }
+  @Post("health") writeHealth() { return {}; }
+  @All("probe") probe() { return {}; }
+}
+
+@Controller("shared")
+class SharedController {
+  @Get() readShared() { return {}; }
+}
+
+@Module({ controllers: [FirstController] })
+class FirstOnlyModule {}
+
+@Module({ controllers: [SharedController] })
+class SharedModule {}
+
+@Module({ imports: [FirstOnlyModule, SharedModule] })
+class FirstRoot {}
+
+@Module({ imports: [SharedModule] })
+class SecondRoot {}
+
+async function bootstrapFirst() {
+  const app = await NestFactory.create(FirstRoot);
+  app.setGlobalPrefix("api", { exclude: [
+    { path: "first/health", method: nestCommon.RequestMethod.GET },
+    { path: "first/probe", method: nestCommon.RequestMethod.GET },
+  ] });
+}
+
+async function bootstrapSecond() {
+  const app = await NestFactory.create(SecondRoot);
+  app.setGlobalPrefix("internal");
+}
+
+void bootstrapFirst();
+void bootstrapSecond();
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /first/health"));
+    assert.ok(report.profile.routes.includes("POST /api/first/health"));
+    assert.ok(report.profile.routes.includes("ALL /first/probe"));
+    assert.ok(report.profile.routes.includes("ALL /api/first/probe"));
+    assert.ok(report.profile.routes.includes("GET /api/shared"));
+    assert.ok(report.profile.routes.includes("GET /internal/shared"));
+    assert.ok(!report.profile.routes.includes("POST /first/health"));
+    assert.ok(!report.profile.routes.includes("GET /internal/first/health"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS routing configuration retains duplicate create sites as distinct applications", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-routing-duplicate-app-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, Get, Module } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+
+@Controller("admin/reports")
+class ReportsController {
+  @Get() list() { return []; }
+}
+
+@Module({ controllers: [ReportsController] })
+class AppModule {}
+
+async function bootstrapFirst() {
+  const app = await NestFactory.create(AppModule);
+  app.setGlobalPrefix("discarded");
+  app.setGlobalPrefix("one");
+  void app.close();
+}
+
+async function bootstrapSecond() {
+  const app = await NestFactory.create(AppModule);
+  app.setGlobalPrefix("two");
+}
+
+void bootstrapFirst();
+void bootstrapSecond();
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /one/admin/reports"));
+    assert.ok(report.profile.routes.includes("GET /two/admin/reports"));
+    assert.ok(!report.profile.routes.includes("GET /discarded/admin/reports"));
+    assert.ok(!report.profile.routes.includes("GET /admin/reports"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS routing configuration rejects unsupported calls exactly", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-routing-boundaries-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, Get, Module, VersioningType } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+
+@Controller("routing-boundaries/admin")
+class ReportsController {
+  @Get("reports") list() { return []; }
+}
+
+@Module({ controllers: [ReportsController] })
+class AppModule {}
+
+const runtimePrefix = process.env.API_PREFIX;
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  const alias = app;
+  const fakeApp = { setGlobalPrefix: (_prefix) => undefined };
+  app.setGlobalPrefix("api");
+  alias.setGlobalPrefix("alias");
+  fakeApp.setGlobalPrefix("fake");
+  app?.setGlobalPrefix("optional");
+  app["setGlobalPrefix"]("computed");
+  if (process.env.ALTERNATE_PREFIX) app.setGlobalPrefix("conditional");
+  Promise.resolve().then(() => app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" }));
+  app.setGlobalPrefix(runtimePrefix);
+  function shadowed(app) { app.setGlobalPrefix("shadowed"); }
+  shadowed(fakeApp);
+}
+
+void bootstrap();
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /routing-boundaries/admin/reports"));
+    assert.ok(!report.profile.routes.includes("GET /api/routing-boundaries/admin/reports"));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /5 NestJS application routing configuration sites could not be statically scoped/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS routing configuration is disabled with unresolved bootstrap selection", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-routing-bootstrap-fallback-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, Get, Module, VersioningType } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+
+@Controller("routing-fallback/admin")
+class ReportsController {
+  @Get("reports") list() { return []; }
+}
+
+@Module({ controllers: [ReportsController] })
+class AppModule {}
+
+function selectRoot() { return AppModule; }
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.setGlobalPrefix("api");
+  app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" });
+  await NestFactory.create(selectRoot());
+}
+
+void bootstrap();
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /routing-fallback/admin/reports"));
+    assert.ok(!report.profile.routes.includes("GET /api/v1/routing-fallback/admin/reports"));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /1 NestJS bootstrap root reference could not be statically resolved/);
+    assert.match(coverage?.reason ?? "", /2 NestJS application routing configuration sites could not be statically scoped/);
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

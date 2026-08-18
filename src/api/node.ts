@@ -35,6 +35,7 @@ export interface NodeApiAnalysis {
   unresolvedProviderDependencies: number;
   unresolvedBootstrapRoots: number;
   unresolvedImperativeGlobalGuards: number;
+  unresolvedNestRoutingConfigurations: number;
 }
 
 interface ParsedSource {
@@ -109,9 +110,11 @@ interface LocalCallAnalyzer {
   nestControllerClass(parsed: ParsedSource, declaration: ts.ClassDeclaration): ResolvedClass;
   globalGuardProviders(ownerClass: ResolvedClass | undefined): ResolvedClass[];
   imperativeGlobalGuardGroups(ownerClass: ResolvedClass | undefined): ResolvedExpression[][];
+  nestRoutingConfigurations(ownerClass: ResolvedClass | undefined): NestRoutingConfig[];
   unresolvedProviderDependencies(): number;
   unresolvedBootstrapRoots(): number;
   unresolvedImperativeGlobalGuards(): number;
+  unresolvedNestRoutingConfigurations(): number;
 }
 
 interface ExpressRouteCandidate {
@@ -151,12 +154,27 @@ interface ExpressMount {
 
 type NestVersion = string | null;
 
+interface NestPrefixExclusion {
+  path: string;
+  method?: string;
+}
+
 interface NestRoutingConfig {
   globalPrefix: string;
-  prefixExcludes: Set<string>;
+  prefixExcludes: NestPrefixExclusion[];
   uriVersioning: boolean;
   defaultVersions: NestVersion[];
   versionPrefix: string;
+}
+
+function defaultNestRoutingConfig(): NestRoutingConfig {
+  return {
+    globalPrefix: "",
+    prefixExcludes: [],
+    uriVersioning: false,
+    defaultVersions: [],
+    versionPrefix: "v",
+  };
 }
 
 const NODE_EXTENSIONS = new Set([".js", ".jsx", ".mjs", ".cjs", ".ts", ".tsx", ".mts", ".cts"]);
@@ -1190,6 +1208,149 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
   const importReferenceShadowed = (node: ts.Node, local: string): boolean => nestedReferenceShadowed(node, local)
     || node.getSourceFile().statements.some((statement) => !ts.isImportDeclaration(statement)
       && statementDeclaresName(statement, local));
+  const officialNestCommonReference = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+    imported: string,
+    site: ts.Node,
+  ): boolean => {
+    const current = unwrapExpression(expression);
+    let local: string | undefined;
+    if (ts.isIdentifier(current)) local = current.text;
+    else if (ts.isPropertyAccessExpression(current) && ts.isIdentifier(current.expression)
+      && current.name.text === imported && !current.questionDotToken) local = current.expression.text;
+    if (!local || importReferenceShadowed(site, local)) return false;
+    return importedReference(parsed, current, "@nestjs/common", imported);
+  };
+  const officialNestCommonEnumMember = (
+    parsed: ParsedSource,
+    expression: ts.Expression | undefined,
+    imported: string,
+    allowed: ReadonlySet<string>,
+  ): string | undefined => {
+    const current = expression && unwrapExpression(expression);
+    if (!current || !ts.isPropertyAccessExpression(current) || current.questionDotToken
+      || !allowed.has(current.name.text)) return undefined;
+    return officialNestCommonReference(parsed, current.expression, imported, current)
+      ? current.name.text
+      : undefined;
+  };
+  const directOptionProperties = (
+    expression: ts.Expression | undefined,
+    allowed: ReadonlySet<string>,
+  ): Map<string, ts.Expression> | undefined => {
+    const current = expression && unwrapExpression(expression);
+    if (!current || !ts.isObjectLiteralExpression(current)) return undefined;
+    const result = new Map<string, ts.Expression>();
+    for (const property of current.properties) {
+      if (!ts.isPropertyAssignment(property)) return undefined;
+      const name = propertyName(property.name);
+      if (!name || !allowed.has(name) || result.has(name)) return undefined;
+      result.set(name, property.initializer);
+    }
+    return result;
+  };
+  const strictRoutingVersions = (
+    parsed: ParsedSource,
+    expression: ts.Expression | undefined,
+  ): NestVersion[] | undefined => {
+    if (!expression) return [];
+    const current = unwrapExpression(expression);
+    const version = literalText(current);
+    if (version !== undefined) return [version];
+    if (officialNestCommonReference(parsed, current, "VERSION_NEUTRAL", current)) return [null];
+    if (!ts.isArrayLiteralExpression(current)) return undefined;
+    const result: NestVersion[] = [];
+    for (const element of current.elements) {
+      if (!ts.isExpression(element) || ts.isSpreadElement(element)) return undefined;
+      const item = unwrapExpression(element);
+      const literal = literalText(item);
+      if (literal !== undefined) result.push(literal);
+      else if (officialNestCommonReference(parsed, item, "VERSION_NEUTRAL", item)) result.push(null);
+      else return undefined;
+    }
+    return result;
+  };
+  const applyNestGlobalPrefix = (
+    application: BootstrapApplication,
+    node: ts.CallExpression,
+  ): "resolved" | "partial" | "unresolved" => {
+    if (node.arguments.length < 1 || node.arguments.length > 2) return "unresolved";
+    const prefix = literalText(node.arguments[0]);
+    if (prefix === undefined) return "unresolved";
+    const exclusions: NestPrefixExclusion[] = [];
+    let complete = true;
+    if (node.arguments[1]) {
+      const options = directOptionProperties(node.arguments[1], new Set(["exclude"]));
+      if (!options) complete = false;
+      const exclude = options?.get("exclude");
+      if (exclude) {
+        const current = unwrapExpression(exclude);
+        if (!ts.isArrayLiteralExpression(current)) complete = false;
+        else for (const element of current.elements) {
+          if (ts.isSpreadElement(element) || !ts.isExpression(element)) {
+            complete = false;
+            continue;
+          }
+          const excludedPath = literalText(element);
+          if (excludedPath !== undefined) {
+            exclusions.push({ path: normalizePath(excludedPath) });
+            continue;
+          }
+          const record = directOptionProperties(element, new Set(["path", "method"]));
+          const path = record && literalText(record.get("path"));
+          if (!record || path === undefined) {
+            complete = false;
+            continue;
+          }
+          const methodExpression = record.get("method");
+          const method = methodExpression && officialNestCommonEnumMember(
+            application.parsed,
+            methodExpression,
+            "RequestMethod",
+            new Set(["GET", "POST", "PUT", "DELETE", "PATCH", "ALL", "OPTIONS", "HEAD", "SEARCH"]),
+          );
+          if (methodExpression && !method) {
+            complete = false;
+            continue;
+          }
+          exclusions.push({ path: normalizePath(path), method });
+        }
+      }
+    }
+    application.routing = { ...application.routing, globalPrefix: prefix, prefixExcludes: exclusions };
+    return complete ? "resolved" : "partial";
+  };
+  const applyNestUriVersioning = (
+    application: BootstrapApplication,
+    node: ts.CallExpression,
+  ): boolean => {
+    if (node.arguments.length !== 1) return false;
+    const options = directOptionProperties(node.arguments[0], new Set(["type", "defaultVersion", "prefix"]));
+    if (!options || officialNestCommonEnumMember(
+      application.parsed,
+      options.get("type"),
+      "VersioningType",
+      new Set(["URI"]),
+    ) !== "URI") return false;
+    const defaultVersions = strictRoutingVersions(application.parsed, options.get("defaultVersion"));
+    if (!defaultVersions) return false;
+    const prefixExpression = options.get("prefix");
+    let versionPrefix = "v";
+    if (prefixExpression?.kind === ts.SyntaxKind.FalseKeyword) versionPrefix = "";
+    else if (prefixExpression) {
+      const prefix = literalText(prefixExpression);
+      if (prefix === undefined) return false;
+      versionPrefix = prefix;
+    }
+    application.routing = {
+      ...application.routing,
+      uriVersioning: true,
+      defaultVersions,
+      versionPrefix,
+    };
+    return true;
+  };
   const officialNestFactoryReference = (
     parsed: ParsedSource,
     expression: ts.Expression,
@@ -1314,6 +1475,9 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     site: ts.CallExpression;
     binding?: BootstrapApplicationBinding;
     guards: ResolvedExpression[];
+    routing: NestRoutingConfig;
+    routingResolved: boolean;
+    closed: boolean;
   }
   const transparentBindingParent = (parent: ts.Node, child: ts.Node): boolean =>
     (ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent)
@@ -1365,6 +1529,9 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
           site: node,
           binding: bootstrapApplicationBinding(node),
           guards: [],
+          routing: defaultNestRoutingConfig(),
+          routingResolved: true,
+          closed: false,
         });
       } else unresolvedBootstrap(parsed, node);
       return;
@@ -1374,6 +1541,7 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
   });
   const useStaticBootstrapRoots = staticBootstrapRoots.size > 0 && unresolvedNestBootstrapRoots.size === 0;
   const unresolvedNestImperativeGlobalGuards = new Set<string>();
+  const unresolvedNestRoutingConfigurations = new Set<string>();
   const localBindingVisible = (
     binding: BootstrapApplicationBinding,
     node: ts.Node,
@@ -1390,7 +1558,7 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     }
     return current === binding.container;
   };
-  const directImperativeGuardStatement = (
+  const directApplicationCallStatement = (
     node: ts.CallExpression,
     container: ts.Block | ts.SourceFile,
   ): boolean => {
@@ -1398,6 +1566,15 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     while (current && !ts.isStatement(current)) current = current.parent;
     return Boolean(current && ts.isExpressionStatement(current) && current.parent === container
       && directBootstrapExpression(node, current.expression));
+  };
+  const directlyAwaitedApplicationCall = (node: ts.CallExpression): boolean => {
+    let current: ts.Node = node;
+    let awaited = false;
+    while (current.parent && transparentBindingParent(current.parent, current)) {
+      awaited ||= ts.isAwaitExpression(current.parent);
+      current = current.parent;
+    }
+    return awaited;
   };
   for (const application of bootstrapApplications) {
     const binding = application.binding;
@@ -1407,23 +1584,45 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       const called = unwrapExpression(node.expression);
       let receiver: ts.Expression | undefined;
       let directProperty = false;
-      if (ts.isPropertyAccessExpression(called) && called.name.text === "useGlobalGuards") {
+      let operation: "useGlobalGuards" | "setGlobalPrefix" | "enableVersioning" | "close" | undefined;
+      if (ts.isPropertyAccessExpression(called)
+        && ["useGlobalGuards", "setGlobalPrefix", "enableVersioning", "close"].includes(called.name.text)) {
+        operation = called.name.text as typeof operation;
         receiver = called.expression;
         directProperty = !called.questionDotToken;
       } else if (ts.isElementAccessExpression(called)
-        && literalText(called.argumentExpression) === "useGlobalGuards") receiver = called.expression;
+        && ["useGlobalGuards", "setGlobalPrefix", "enableVersioning", "close"].includes(literalText(called.argumentExpression) ?? "")) {
+        operation = literalText(called.argumentExpression) as typeof operation;
+        receiver = called.expression;
+      }
       else return;
       const currentReceiver = receiver && unwrapExpression(receiver);
       if (!currentReceiver || !ts.isIdentifier(currentReceiver) || currentReceiver.text !== binding.name
         || !localBindingVisible(binding, node)) return;
-      const resolved = useStaticBootstrapRoots && directProperty && !node.questionDotToken
+      const scoped = useStaticBootstrapRoots && directProperty && !node.questionDotToken
         && node.getStart(application.parsed.source) > binding.statement.end
-        && directImperativeGuardStatement(node, binding.container);
-      if (!resolved) {
-        unresolvedNestImperativeGlobalGuards.add(`${application.parsed.file.relativePath}\u0000${node.pos}`);
+        && directApplicationCallStatement(node, binding.container);
+      if (operation === "close") {
+        if (scoped && node.arguments.length === 0 && directlyAwaitedApplicationCall(node)) application.closed = true;
         return;
       }
-      for (const expression of node.arguments) application.guards.push({ parsed: application.parsed, expression });
+      if (operation === "useGlobalGuards") {
+        if (!scoped) {
+          unresolvedNestImperativeGlobalGuards.add(`${application.parsed.file.relativePath}\u0000${node.pos}`);
+          return;
+        }
+        for (const expression of node.arguments) application.guards.push({ parsed: application.parsed, expression });
+        return;
+      }
+      const update = !scoped
+        ? "unresolved"
+        : operation === "setGlobalPrefix"
+          ? applyNestGlobalPrefix(application, node)
+          : applyNestUriVersioning(application, node) ? "resolved" : "unresolved";
+      if (update !== "resolved") {
+        if (update === "unresolved") application.routingResolved = false;
+        unresolvedNestRoutingConfigurations.add(`${application.parsed.file.relativePath}\u0000${node.pos}`);
+      }
     });
   }
   const boundedModuleWalk = (
@@ -1495,11 +1694,30 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     if (!useStaticBootstrapRoots || !ownerClass?.nestModule) return [];
     const groups: ResolvedExpression[][] = [];
     for (const application of bootstrapApplications) {
+      if (application.closed) continue;
       const graph = bootstrapApplicationGraph(application);
       if (!graph) return [];
       if (graph.has(ownerClass.nestModule)) groups.push(application.guards);
     }
     return groups;
+  };
+  const nestRoutingConfigurations = (ownerClass: ResolvedClass | undefined): NestRoutingConfig[] => {
+    if (!useStaticBootstrapRoots || !ownerClass?.nestModule) return [defaultNestRoutingConfig()];
+    const configurations: NestRoutingConfig[] = [];
+    for (const application of bootstrapApplications) {
+      if (application.closed) continue;
+      const graph = bootstrapApplicationGraph(application);
+      if (!graph) {
+        configurations.push(defaultNestRoutingConfig());
+        continue;
+      }
+      if (graph.has(ownerClass.nestModule)) {
+        configurations.push(application.routingResolved
+          ? application.routing
+          : defaultNestRoutingConfig());
+      }
+    }
+    return configurations.length > 0 ? configurations : [defaultNestRoutingConfig()];
   };
   const globalModuleCache = new Map<string, Set<string>>();
   const globallyVisibleModules = (moduleKey: string): Set<string> => {
@@ -2495,9 +2713,11 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     nestControllerClass,
     globalGuardProviders,
     imperativeGlobalGuardGroups,
+    nestRoutingConfigurations,
     unresolvedProviderDependencies: () => unresolvedInjectedDependencies.size,
     unresolvedBootstrapRoots: () => unresolvedNestBootstrapRoots.size,
     unresolvedImperativeGlobalGuards: () => unresolvedNestImperativeGlobalGuards.size,
+    unresolvedNestRoutingConfigurations: () => unresolvedNestRoutingConfigurations.size,
   };
 }
 
@@ -3560,48 +3780,9 @@ function nestVersionValues(expression: ts.Expression | undefined): NestVersion[]
   return [];
 }
 
-function nestRoutingConfig(sources: ParsedSource[]): NestRoutingConfig {
-  const config: NestRoutingConfig = {
-    globalPrefix: "",
-    prefixExcludes: new Set(),
-    uriVersioning: false,
-    defaultVersions: [],
-    versionPrefix: "v",
-  };
-  for (const parsed of sources) visit(parsed.source, (node) => {
-    if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)) return;
-    const name = node.expression.name.text;
-    if (name === "setGlobalPrefix") {
-      const prefix = literalText(node.arguments[0]);
-      if (prefix !== undefined) config.globalPrefix = prefix;
-      const exclude = objectProperty(node.arguments[1], "exclude");
-      const current = exclude && unwrapExpression(exclude);
-      if (current && ts.isArrayLiteralExpression(current)) {
-        for (const item of current.elements) {
-          if (!ts.isExpression(item)) continue;
-          const excludedPath = literalText(item) ?? literalText(objectProperty(item, "path"));
-          if (excludedPath !== undefined) config.prefixExcludes.add(normalizePath(excludedPath));
-        }
-      }
-    }
-    if (name !== "enableVersioning") return;
-    const options = node.arguments[0];
-    const type = objectProperty(options, "type");
-    if (!type || !/(?:^|\.)URI$/.test(expressionName(unwrapExpression(type)))) return;
-    config.uriVersioning = true;
-    config.defaultVersions = nestVersionValues(objectProperty(options, "defaultVersion"));
-    const prefix = objectProperty(options, "prefix");
-    if (prefix?.kind === ts.SyntaxKind.FalseKeyword) config.versionPrefix = "";
-    else {
-      const literalPrefix = literalText(prefix);
-      if (literalPrefix !== undefined) config.versionPrefix = literalPrefix;
-    }
-  });
-  return config;
-}
-
 function nestRoutePaths(
   localPath: string,
+  method: string,
   methodDecorators: Array<{ name: string; arguments: readonly ts.Expression[] }>,
   classDecorators: Array<{ name: string; arguments: readonly ts.Expression[] }>,
   config: NestRoutingConfig,
@@ -3613,19 +3794,26 @@ function nestRoutePaths(
     ? (explicitVersions.length > 0 ? explicitVersions : config.defaultVersions)
     : [];
   const variants = versions.length > 0 ? versions : [null];
-  const excluded = config.prefixExcludes.has(normalizePath(localPath));
-  return variants.map((version) => joinPath(
-    excluded ? "" : config.globalPrefix,
+  const matchingExclusions = config.prefixExcludes.filter((item) => item.path === normalizePath(localPath));
+  const excludesEveryMethod = matchingExclusions.some((item) => !item.method || item.method === "ALL");
+  const prefixes = excludesEveryMethod
+    ? [""]
+    : method === "ALL" && matchingExclusions.some((item) => item.method)
+      ? ["", config.globalPrefix]
+      : matchingExclusions.some((item) => item.method === method)
+        ? [""]
+        : [config.globalPrefix];
+  return [...new Set(variants.flatMap((version) => prefixes.map((prefix) => joinPath(
+    prefix,
     version === null ? "" : `${config.versionPrefix}${version}`,
     localPath,
-  ));
+  ))))];
 }
 
 function nestRoutes(
   parsed: ParsedSource,
   semantics: NestSecuritySemantics,
   lookup: Map<string, ParsedSource>,
-  routing: NestRoutingConfig,
   localCalls: LocalCallAnalyzer,
 ): NodeApiRoute[] {
   const routes: NodeApiRoute[] = [];
@@ -3635,6 +3823,7 @@ function nestRoutes(
     const controller = classDecorators.find((item) => item.name === "Controller");
     if (!controller) continue;
     const ownerClass = localCalls.nestControllerClass(parsed, statement);
+    const routingConfigurations = localCalls.nestRoutingConfigurations(ownerClass);
     const globalSecurity = globalNestSecurity(semantics, lookup, localCalls, ownerClass);
     const prefix = normalizePath(literalText(controller.arguments[0]) ?? "");
     const classAuthenticated = nestDecoratorAuthentication(classDecorators, parsed, semantics, lookup);
@@ -3652,12 +3841,15 @@ function nestRoutes(
       const inputs = nestInputDetails(member);
       for (const routeDecorator of routeDecorators) {
         const localPath = joinPath(prefix, literalText(routeDecorator.arguments[0]) ?? "");
-        for (const path of nestRoutePaths(localPath, methodDecorators, classDecorators, routing)) {
+        const routeMethod = routeDecorator.name === "All" ? "ALL" : routeDecorator.name.toUpperCase();
+        const paths = routingConfigurations.flatMap((routing) =>
+          nestRoutePaths(localPath, routeMethod, methodDecorators, classDecorators, routing));
+        for (const path of paths) {
           const fields = objectIdFields(member, path, inputs.roots, inputs.fields);
           const callSemantics = localCalls.analyze(parsed, member, ownerClass, fields);
           routes.push({
             framework: "NestJS",
-            method: routeDecorator.name === "All" ? "ALL" : routeDecorator.name.toUpperCase(),
+            method: routeMethod,
             path,
             declaredPath: localPath,
             sourcePath: parsed.file.relativePath,
@@ -3715,8 +3907,7 @@ export function analyzeNodeApi(files: ProjectFile[]): NodeApiAnalysis {
   }
   if (detectedNest) {
     const semantics = discoverNestSecurity(parsed, lookup);
-    const routing = nestRoutingConfig(parsed);
-    for (const item of parsed) routes.push(...nestRoutes(item, semantics, lookup, routing, localCalls));
+    for (const item of parsed) routes.push(...nestRoutes(item, semantics, lookup, localCalls));
   }
   const deduplicated = [...new Map(routes.map((route) => [routeKey(route), route])).values()]
     .sort((left, right) => left.path.localeCompare(right.path) || left.method.localeCompare(right.method));
@@ -3731,5 +3922,6 @@ export function analyzeNodeApi(files: ProjectFile[]): NodeApiAnalysis {
     unresolvedProviderDependencies: localCalls.unresolvedProviderDependencies(),
     unresolvedBootstrapRoots: localCalls.unresolvedBootstrapRoots(),
     unresolvedImperativeGlobalGuards: localCalls.unresolvedImperativeGlobalGuards(),
+    unresolvedNestRoutingConfigurations: localCalls.unresolvedNestRoutingConfigurations(),
   };
 }

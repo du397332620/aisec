@@ -87,13 +87,29 @@ later direct expression statement in the same source or bootstrap-function
 block. Guard semantics are intersected across every accepted application
 instance whose bounded graph contains the controller, including repeated calls
 for the same root; unsupported calls on a proven app binding are counted in
-coverage. If no root is visible—or
-if even one official create site is dynamic, nested, conditional, shadowed or
-otherwise unresolved—the analyzer falls back to all bounded inferred roots and
-records unresolved sites in coverage; imperative guards are not trusted during
-that fallback. Module traversal is capped at eight edges and 256 unique entries
-per resolution. Reachable injected dependencies outside these forms are counted
-in the coverage reason.
+coverage. The same application binding and direct-statement boundary scopes
+`app.setGlobalPrefix(...)` and URI `app.enableVersioning(...)` calls. Each
+application keeps independent prefix, exclusion and version settings; a
+controller reachable from multiple applications receives the union of those
+routes without cross-combining their settings. Prefix exclusions support
+literal paths and official named/renamed or namespace `RequestMethod` members,
+including method-specific handling for `@All`. Version options accept only the
+official `VersioningType.URI`, literal versions or official `VERSION_NEUTRAL`,
+and a literal or `false` version prefix. A literal global prefix remains usable
+when its exclusion array mixes static and dynamic entries: proven exclusions
+are retained, unknown entries are not guessed, and the site is reported as
+partial coverage. Other unsupported options or call shapes invalidate only
+that application's routing configuration, emit its declared route as a
+conservative fallback and are counted in coverage. A distinct setup application
+is omitted only after a later direct, zero-argument `await app.close()` in the
+same container; indirect close forms remain conservatively active. If no root
+is visible—or if even one official create site is dynamic, nested, conditional,
+shadowed or otherwise unresolved—the analyzer falls back to all bounded inferred
+roots and records unresolved sites in coverage; imperative guards and
+application routing configuration are not trusted during that fallback. Module
+traversal is capped at eight edges and 256 unique entries per resolution.
+Reachable injected dependencies outside these forms are counted in the coverage
+reason.
 
 Both analyzers follow bounded local
 controller/handler-to-service-to-repository calls for up to four edges and can
@@ -378,7 +394,7 @@ binaries and prepare the Trivy database before scanning.
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; some findings are explicitly `inferred` and require review |
 | FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
-| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local or one-hop directly imported immutable ESM route tables used by `forEach` and direct synchronous `for...of`, including at most two direct inline statically evaluable `filter`/`map` transforms, and NestJS controllers/guards/providers through local module imports, exports, re-exports and application-global visibility; accepts direct official `forwardRef` tokens/modules, visible synchronous static dynamic-module metadata, fully resolved direct official `NestFactory.create` roots from conventional runtime entry files and same-container direct `useGlobalGuards` calls on their awaited `const` application instances, otherwise retaining inferred-root intersection without trusting imperative guards, with module traversal capped at eight edges and 256 entries; follows up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced, consumed through one single-condition `const`, or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, arbitrary collection transforms, unsupported operators/scopes or bootstrap graphs, unresolved providers/registration/bootstrap/global-guard sites, package or mixin bases, complex wrappers and external policy engines still require review |
+| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local or one-hop directly imported immutable ESM route tables used by `forEach` and direct synchronous `for...of`, including at most two direct inline statically evaluable `filter`/`map` transforms, and NestJS controllers/guards/providers through local module imports, exports, re-exports and application-global visibility; accepts direct official `forwardRef` tokens/modules, visible synchronous static dynamic-module metadata, fully resolved direct official `NestFactory.create` roots from conventional runtime entry files, and same-container direct `useGlobalGuards`, `setGlobalPrefix` and URI `enableVersioning` calls on their awaited `const` application instances; unions independently configured routes for shared controllers and otherwise retains inferred-root routes without trusting imperative configuration, with module traversal capped at eight edges and 256 entries; follows up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced, consumed through one single-condition `const`, or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, arbitrary collection transforms, unsupported operators/scopes or bootstrap graphs, unresolved providers/registration/bootstrap/global-guard/routing-configuration sites, package or mixin bases, complex wrappers and external policy engines still require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |

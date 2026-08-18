@@ -46,11 +46,12 @@ test("verified real engines reject target-controlled suppressions and normalize 
   }
 });
 
-test("verified real engines complete cleanly for a safe dependency-free near miss", async () => {
+test("verified real engines stay clean while bounded native coverage keeps the decision incomplete", async () => {
   const { report } = await scanProject(join(fixtures, "external-safe"), { persist: false });
   for (const name of ["gitleaks", "opengrep", "trivy"] as const) {
     assert.equal(report.coverage.find((item) => item.engine === name)?.status, "complete");
     assert.equal(report.signals.filter((signal) => signal.engine === name).length, 0);
   }
-  assert.equal(report.decision, "no_blockers_found");
+  assert.equal(report.coverage.find((item) => item.domain === "python-dataflow")?.status, "partial");
+  assert.equal(report.decision, "incomplete");
 });
