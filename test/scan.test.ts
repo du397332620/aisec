@@ -5678,6 +5678,457 @@ void bootstrap();
   }
 });
 
+test("NestJS RouterModule composes hierarchical module paths before global exclusions", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-router-hierarchy-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, Get, Module, Post, RequestMethod, UseGuards, VersioningType } from "@nestjs/common";
+import { NestFactory, RouterModule } from "@nestjs/core";
+
+class AuthGuard {}
+
+@UseGuards(AuthGuard)
+@Controller("reports")
+class ReportsController {
+  @Get() list() { return []; }
+  @Get("public") publicReport() { return {}; }
+  @Post("users") createUser() { return {}; }
+}
+
+@Controller("metrics")
+class MetricsController {
+  @Get() list() { return []; }
+}
+
+@Controller("child")
+class ChildController {
+  @Get() list() { return []; }
+}
+
+@Module({ controllers: [ChildController] })
+class ChildModule {}
+
+@Module({ imports: [ChildModule], controllers: [ReportsController] })
+class ReportsModule {}
+
+@Module({ controllers: [MetricsController] })
+class MetricsModule {}
+
+@Module({ imports: [
+  ReportsModule,
+  MetricsModule,
+  RouterModule.register([
+    {
+      path: "admin",
+      children: [
+        { path: "dashboard", module: ReportsModule },
+        MetricsModule,
+      ],
+    },
+  ]),
+] })
+class AppModule {}
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" });
+  app.setGlobalPrefix("api", { exclude: [
+    { path: "admin/dashboard/reports/public", method: RequestMethod.GET },
+  ] });
+}
+
+void bootstrap();
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /api/v1/admin/dashboard/reports"));
+    assert.ok(report.profile.routes.includes("GET /v1/admin/dashboard/reports/public"));
+    assert.ok(report.profile.routes.includes("POST /api/v1/admin/dashboard/reports/users"));
+    assert.ok(report.profile.routes.includes("GET /api/v1/admin/metrics"));
+    assert.ok(report.profile.routes.includes("GET /api/v1/child"));
+    assert.ok(!report.profile.routes.includes("GET /api/v1/reports"));
+    assert.ok(!report.profile.routes.includes("GET /api/v1/metrics"));
+    assert.ok(!report.profile.routes.includes("GET /api/v1/admin/dashboard/child"));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.authorization.privileged-operation-without-role-check"
+      && signal.metadata?.route === "POST /api/v1/admin/dashboard/reports/users"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS RouterModule paths are scoped to each bootstrap application", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-router-app-scope-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, Get, Module, VersioningType } from "@nestjs/common";
+import { NestFactory, RouterModule as NestRouter } from "@nestjs/core";
+import * as nestCore from "@nestjs/core";
+
+@Controller("shared")
+class SharedController {
+  @Get() list() { return []; }
+}
+
+@Module({ controllers: [SharedController] })
+class SharedModule {}
+
+@Module({ imports: [
+  SharedModule,
+  NestRouter.register([{ path: "one", module: SharedModule }]),
+] })
+class FirstRoot {}
+
+@Module({ imports: [
+  SharedModule,
+  nestCore.RouterModule.register([{ path: "two", module: SharedModule }]),
+] })
+class SecondRoot {}
+
+async function bootstrapFirst() {
+  const app = await NestFactory.create(FirstRoot);
+  app.setGlobalPrefix("api");
+  app.enableVersioning({ type: VersioningType.URI, defaultVersion: "1" });
+}
+
+async function bootstrapSecond() {
+  const app = await NestFactory.create(SecondRoot);
+  app.setGlobalPrefix("internal");
+}
+
+void bootstrapFirst();
+void bootstrapSecond();
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /api/v1/one/shared"));
+    assert.ok(report.profile.routes.includes("GET /internal/two/shared"));
+    assert.ok(!report.profile.routes.includes("GET /api/v1/two/shared"));
+    assert.ok(!report.profile.routes.includes("GET /internal/one/shared"));
+    assert.ok(!report.profile.routes.includes("GET /shared"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS RouterModule accepts one-hop immutable route tables and module classes", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-router-imported-table-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "feature.ts"), `
+import { Controller, Get, Module } from "@nestjs/common";
+
+@Controller("feature")
+class FeatureController { @Get() list() { return []; } }
+
+@Controller("metrics")
+class MetricsController { @Get() list() { return []; } }
+
+@Module({ controllers: [FeatureController] })
+export default class FeatureModule {}
+
+@Module({ controllers: [MetricsController] })
+export class MetricsModule {}
+`);
+    await writeFile(join(temporary, "routes.ts"), `
+import FeatureModule, * as feature from "./feature.js";
+
+export const routes = [
+  { path: "mounted", module: FeatureModule },
+  { path: "observability", module: feature.MetricsModule },
+];
+`);
+    await writeFile(join(temporary, "app.module.ts"), `
+import { Module } from "@nestjs/common";
+import { RouterModule } from "@nestjs/core";
+import FeatureModule, { MetricsModule } from "./feature.js";
+import { routes } from "./routes.js";
+
+@Module({ imports: [FeatureModule, MetricsModule, RouterModule.register(routes)] })
+export class AppModule {}
+`);
+    await writeFile(join(temporary, "main.ts"), `
+import { NestFactory } from "@nestjs/core";
+import { AppModule } from "./app.module.js";
+
+async function bootstrap() { await NestFactory.create(AppModule); }
+void bootstrap();
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /mounted/feature"));
+    assert.ok(report.profile.routes.includes("GET /observability/metrics"));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.doesNotMatch(coverage?.reason ?? "", /NestJS RouterModule registration/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS RouterModule rejects attributable unsupported registrations exactly", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-router-boundaries-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+      "@company/nest": "1.0.0",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, Get, Module } from "@nestjs/common";
+import { NestFactory, RouterModule } from "@nestjs/core";
+import { RouterModule as PackageRouter } from "@company/nest";
+
+@Controller("reports")
+class ReportsController { @Get() list() { return []; } }
+
+@Module({ controllers: [ReportsController] })
+class ReportsModule {}
+
+const runtimePath = process.env.MODULE_PATH;
+let mutableRoutes = [{ path: "mutable", module: ReportsModule }];
+const fakeRouter = { register: (routes) => routes };
+const wrap = (value) => value;
+
+@Module({ imports: [
+  ReportsModule,
+  RouterModule.register([{ path: runtimePath, module: ReportsModule }]),
+  RouterModule.register(mutableRoutes),
+  wrap(RouterModule.register([{ path: "wrapped", module: ReportsModule }])),
+  RouterModule["register"]([{ path: "computed", module: ReportsModule }]),
+  RouterModule.register([{ path: "extra", module: ReportsModule, unexpected: true }]),
+  fakeRouter.register([{ path: "fake", module: ReportsModule }]),
+  PackageRouter.register([{ path: "package", module: ReportsModule }]),
+] })
+class AppModule {}
+
+RouterModule.register([{ path: "outside", module: ReportsModule }]);
+
+async function bootstrap() { await NestFactory.create(AppModule); }
+void bootstrap();
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /reports"));
+    assert.ok(!report.profile.routes.some((route) => /\/(?:mutable|wrapped|computed|extra|fake|package|outside)\/reports$/.test(route)));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /5 NestJS RouterModule registrations could not be statically resolved/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS RouterModule falls back for conflicting paths within one application graph", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-router-conflict-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, Get, Module } from "@nestjs/common";
+import { NestFactory, RouterModule } from "@nestjs/core";
+
+@Controller("shared")
+class SharedController { @Get() list() { return []; } }
+
+@Module({ controllers: [SharedController] })
+class SharedModule {}
+
+@Module({ imports: [
+  SharedModule,
+  RouterModule.register([{ path: "one", module: SharedModule }]),
+  RouterModule.register([{ path: "two", module: SharedModule }]),
+] })
+class AppModule {}
+
+async function bootstrap() { await NestFactory.create(AppModule); }
+void bootstrap();
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /shared"));
+    assert.ok(!report.profile.routes.includes("GET /one/shared"));
+    assert.ok(!report.profile.routes.includes("GET /two/shared"));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /2 NestJS RouterModule registrations could not be statically resolved/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS RouterModule uses bounded inferred roots with local immutable arrays", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-router-inferred-root-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "app.module.ts"), `
+import { Controller, Get, Module } from "@nestjs/common";
+import { RouterModule } from "@nestjs/core";
+
+@Controller("reports")
+class ReportsController { @Get() list() { return []; } }
+
+@Module({ controllers: [ReportsController] })
+class ReportsModule {}
+
+const routeTree = [{ path: "inferred", module: ReportsModule }];
+const rootImports = [ReportsModule, RouterModule.register(routeTree)];
+
+@Module({ imports: rootImports })
+export class AppModule {}
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /inferred/reports"));
+    assert.ok(!report.profile.routes.includes("GET /reports"));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.doesNotMatch(coverage?.reason ?? "", /NestJS RouterModule registration/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS RouterModule rejects re-export, second-hop, spread, and dynamic metadata exactly", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-router-static-boundaries-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "target.ts"), `
+import { Controller, Get, Module } from "@nestjs/common";
+@Controller("reports") class ReportsController { @Get() list() { return []; } }
+@Module({ controllers: [ReportsController] })
+export class ReportsModule {}
+`);
+    await writeFile(join(temporary, "routes.base.ts"), `
+import { ReportsModule } from "./target.js";
+export const baseRoutes = [{ path: "base", module: ReportsModule }];
+`);
+    await writeFile(join(temporary, "routes.reexport.ts"), `
+export { baseRoutes as reexportedRoutes } from "./routes.base.js";
+`);
+    await writeFile(join(temporary, "routes.second.ts"), `
+import { baseRoutes } from "./routes.base.js";
+export const secondHopRoutes = baseRoutes;
+`);
+    await writeFile(join(temporary, "app.module.ts"), `
+import { Module } from "@nestjs/common";
+import { RouterModule } from "@nestjs/core";
+import { ReportsModule } from "./target.js";
+import { baseRoutes } from "./routes.base.js";
+import { reexportedRoutes } from "./routes.reexport.js";
+import { secondHopRoutes } from "./routes.second.js";
+
+@Module({})
+class DynamicHost {
+  static register() {
+    return {
+      module: DynamicHost,
+      imports: [RouterModule.register([{ path: "dynamic", module: ReportsModule }])],
+    };
+  }
+}
+
+@Module({ imports: [
+  ReportsModule,
+  RouterModule.register(reexportedRoutes),
+  RouterModule.register(secondHopRoutes),
+  RouterModule.register([...baseRoutes]),
+  DynamicHost.register(),
+] })
+export class AppModule {}
+`);
+    await writeFile(join(temporary, "main.ts"), `
+import { NestFactory } from "@nestjs/core";
+import { AppModule } from "./app.module.js";
+async function bootstrap() { await NestFactory.create(AppModule); }
+void bootstrap();
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /reports"));
+    assert.ok(!report.profile.routes.some((route) => /\/(?:base|dynamic)\/reports$/.test(route)));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /4 NestJS RouterModule registrations could not be statically resolved/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS RouterModule enforces eight-edge and 256-entry route-tree limits", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-router-limits-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    const repeatedRoutes = (count: number, path: string, moduleName: string) =>
+      Array.from({ length: count }, () => `{ path: "${path}", module: ${moduleName} }`).join(",\n");
+    const nestedRoute = (lastDepth: number, moduleName: string): string => {
+      let value = `{ path: "d${lastDepth}", module: ${moduleName} }`;
+      for (let depth = lastDepth - 1; depth >= 0; depth -= 1) {
+        value = `{ path: "d${depth}", children: [${value}] }`;
+      }
+      return value;
+    };
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, Get, Module } from "@nestjs/common";
+import { NestFactory, RouterModule } from "@nestjs/core";
+
+@Controller("entry-within") class EntryWithinController { @Get() list() { return []; } }
+@Controller("entry-over") class EntryOverController { @Get() list() { return []; } }
+@Controller("depth-within") class DepthWithinController { @Get() list() { return []; } }
+@Controller("depth-over") class DepthOverController { @Get() list() { return []; } }
+
+@Module({ controllers: [EntryWithinController] }) class EntryWithinModule {}
+@Module({ controllers: [EntryOverController] }) class EntryOverModule {}
+@Module({ controllers: [DepthWithinController] }) class DepthWithinModule {}
+@Module({ controllers: [DepthOverController] }) class DepthOverModule {}
+
+@Module({ imports: [EntryWithinModule, RouterModule.register([
+  ${repeatedRoutes(256, "within", "EntryWithinModule")}
+])] }) class EntryWithinRoot {}
+
+@Module({ imports: [EntryOverModule, RouterModule.register([
+  ${repeatedRoutes(257, "over", "EntryOverModule")}
+])] }) class EntryOverRoot {}
+
+@Module({ imports: [DepthWithinModule, RouterModule.register([
+  ${nestedRoute(8, "DepthWithinModule")}
+])] }) class DepthWithinRoot {}
+
+@Module({ imports: [DepthOverModule, RouterModule.register([
+  ${nestedRoute(9, "DepthOverModule")}
+])] }) class DepthOverRoot {}
+
+async function bootstrapEntryWithin() { await NestFactory.create(EntryWithinRoot); }
+async function bootstrapEntryOver() { await NestFactory.create(EntryOverRoot); }
+async function bootstrapDepthWithin() { await NestFactory.create(DepthWithinRoot); }
+async function bootstrapDepthOver() { await NestFactory.create(DepthOverRoot); }
+void bootstrapEntryWithin();
+void bootstrapEntryOver();
+void bootstrapDepthWithin();
+void bootstrapDepthOver();
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.profile.routes.includes("GET /within/entry-within"));
+    assert.ok(report.profile.routes.includes("GET /entry-over"));
+    assert.ok(report.profile.routes.includes("GET /d0/d1/d2/d3/d4/d5/d6/d7/d8/depth-within"));
+    assert.ok(report.profile.routes.includes("GET /depth-over"));
+    assert.ok(!report.profile.routes.includes("GET /over/entry-over"));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /2 NestJS RouterModule registrations could not be statically resolved/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("Node API analysis ignores disabled route text and unresolved Nest APP_GUARD tokens", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-disabled-route-"));
   try {

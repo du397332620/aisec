@@ -102,7 +102,20 @@ partial coverage. Other unsupported options or call shapes invalidate only
 that application's routing configuration, emit its declared route as a
 conservative fallback and are counted in coverage. A distinct setup application
 is omitted only after a later direct, zero-argument `await app.close()` in the
-same container; indirect close forms remain conservatively active. If no root
+same container; indirect close forms remain conservatively active. Separately,
+declarative module paths can be composed from a direct official
+named, renamed or namespace `RouterModule.register(...)` entry in real local
+`@Module.imports`. Its route array must be inline, a file-level immutable local
+binding or one directly imported relative-ESM binding; route records contain
+only a literal `path`, an optional local/one-hop relative module class and
+optional static `children`. Nested records concatenate parent paths, while a
+direct module class in `children` inherits its parent's path. Registrations are
+scoped to each bounded application graph, so a shared module can have different
+paths in different roots without cross-combining global prefix/version settings.
+Global-prefix exclusions are matched after module-path composition. Route trees
+are capped at eight child edges and 256 entries; conflicting or otherwise
+unsupported attributable registrations use the declared controller route for
+the affected graph and are counted exactly in coverage. If no bootstrap root
 is visible—or if even one official create site is dynamic, nested, conditional,
 shadowed or otherwise unresolved—the analyzer falls back to all bounded inferred
 roots and records unresolved sites in coverage; imperative guards and
@@ -160,7 +173,9 @@ providers/factories without a visible local class result, ambiguous controller
 module ownership, unsupported or over-limit module graphs, bootstrap wrappers,
 non-entry create calls and runtime root selection, application aliases,
 unawaited/mutable create results and optional, computed, chained, conditional or
-nested imperative global-guard registrations, Sequelize scopes,
+nested imperative global-guard registrations, `RouterModule` wrappers,
+`registerAsync`, dynamic/re-exported/second-hop route trees and runtime module
+paths, Sequelize scopes,
 MongoDB aggregation pipelines, deeper ORM/control-flow wrappers and external
 authorization engines remain partial static coverage and require review.
 
@@ -394,7 +409,7 @@ binaries and prepare the Trivy database before scanning.
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; some findings are explicitly `inferred` and require review |
 | FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
-| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local or one-hop directly imported immutable ESM route tables used by `forEach` and direct synchronous `for...of`, including at most two direct inline statically evaluable `filter`/`map` transforms, and NestJS controllers/guards/providers through local module imports, exports, re-exports and application-global visibility; accepts direct official `forwardRef` tokens/modules, visible synchronous static dynamic-module metadata, fully resolved direct official `NestFactory.create` roots from conventional runtime entry files, and same-container direct `useGlobalGuards`, `setGlobalPrefix` and URI `enableVersioning` calls on their awaited `const` application instances; unions independently configured routes for shared controllers and otherwise retains inferred-root routes without trusting imperative configuration, with module traversal capped at eight edges and 256 entries; follows up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced, consumed through one single-condition `const`, or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, arbitrary collection transforms, unsupported operators/scopes or bootstrap graphs, unresolved providers/registration/bootstrap/global-guard/routing-configuration sites, package or mixin bases, complex wrappers and external policy engines still require review |
+| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local or one-hop directly imported immutable ESM route tables used by `forEach` and direct synchronous `for...of`, including at most two direct inline statically evaluable `filter`/`map` transforms, and NestJS controllers/guards/providers through local module imports, exports, re-exports and application-global visibility; accepts direct official `forwardRef` tokens/modules, visible synchronous static dynamic-module metadata, fully resolved direct official `NestFactory.create` roots from conventional runtime entry files, same-container direct `useGlobalGuards`, `setGlobalPrefix` and URI `enableVersioning` calls on their awaited `const` application instances, plus direct official static `RouterModule.register` trees from real module imports; composes independently scoped global/version/module/controller paths for shared controllers and otherwise retains bounded inferred-root routes without trusting imperative configuration, with both module and RouterModule traversal capped at eight edges and 256 entries; follows up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced, consumed through one single-condition `const`, or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, arbitrary collection transforms, unsupported operators/scopes or bootstrap graphs, unresolved providers/registration/bootstrap/global-guard/application-routing/RouterModule sites, package or mixin bases, complex wrappers and external policy engines still require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |

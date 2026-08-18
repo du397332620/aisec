@@ -36,6 +36,7 @@ export interface NodeApiAnalysis {
   unresolvedBootstrapRoots: number;
   unresolvedImperativeGlobalGuards: number;
   unresolvedNestRoutingConfigurations: number;
+  unresolvedNestRouterRegistrations: number;
 }
 
 interface ParsedSource {
@@ -115,6 +116,7 @@ interface LocalCallAnalyzer {
   unresolvedBootstrapRoots(): number;
   unresolvedImperativeGlobalGuards(): number;
   unresolvedNestRoutingConfigurations(): number;
+  unresolvedNestRouterRegistrations(): number;
 }
 
 interface ExpressRouteCandidate {
@@ -165,6 +167,7 @@ interface NestRoutingConfig {
   uriVersioning: boolean;
   defaultVersions: NestVersion[];
   versionPrefix: string;
+  modulePrefix: string;
 }
 
 function defaultNestRoutingConfig(): NestRoutingConfig {
@@ -174,6 +177,7 @@ function defaultNestRoutingConfig(): NestRoutingConfig {
     uriVersioning: false,
     defaultVersions: [],
     versionPrefix: "v",
+    modulePrefix: "",
   };
 }
 
@@ -200,6 +204,8 @@ const MAX_STATIC_PROVIDER_ENTRIES = 256;
 const MAX_PROVIDER_RESOLUTION_DEPTH = 8;
 const MAX_NEST_MODULE_GRAPH_ENTRIES = 256;
 const MAX_NEST_MODULE_GRAPH_DEPTH = 8;
+const MAX_NEST_ROUTER_TREE_ENTRIES = 256;
+const MAX_NEST_ROUTER_TREE_DEPTH = 8;
 const MAX_LOCAL_CLASS_HERITAGE_DEPTH = 4;
 const NEST_BOOTSTRAP_ENTRY_PATH = /(?:^|\/)(?:main|server|bootstrap|index)\.(?:[cm]?[jt]sx?)$/i;
 
@@ -970,7 +976,22 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     modules: Set<string>;
     exceeded: boolean;
   }
+  interface NestRouterRegistration {
+    hostModuleKey: string;
+    siteKey: string;
+    modulePaths: Map<string, string>;
+  }
+  interface NestRouterImportJob {
+    hostModule: NestModuleRecord;
+    parsed: ParsedSource;
+    expression: ts.Expression;
+    dynamicMetadata: boolean;
+  }
   const moduleRecords = new Map<string, NestModuleRecord>();
+  const nestRouterRegistrations: NestRouterRegistration[] = [];
+  const nestRouterImportJobs: NestRouterImportJob[] = [];
+  const unresolvedNestRouterRegistrationSites = new Set<string>();
+  const unresolvedNestRouterHosts = new Set<string>();
   const moduleRecordForClass = (resolved: ResolvedClass | undefined): NestModuleRecord | undefined =>
     resolved ? moduleRecords.get(classDeclarationIdentity(resolved)) : undefined;
   const hasOfficialNestDecorator = (
@@ -1145,7 +1166,23 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       hosts.add(job.module.key);
       controllerModules.set(identity, hosts);
     }
-    const imports = providerArray(job.parsed, objectProperty(metadata, "imports"));
+    const importsExpression = objectProperty(metadata, "imports");
+    const imports = providerArray(job.parsed, importsExpression);
+    if (imports) {
+      for (const imported of imports) nestRouterImportJobs.push({
+        hostModule: job.module,
+        parsed: imported.parsed,
+        expression: imported.expression,
+        dynamicMetadata: job.dynamic,
+      });
+    } else if (importsExpression) {
+      nestRouterImportJobs.push({
+        hostModule: job.module,
+        parsed: job.parsed,
+        expression: importsExpression,
+        dynamicMetadata: true,
+      });
+    }
     for (const imported of imports ?? []) {
       const dynamic = dynamicModuleObject(imported.parsed, imported.expression);
       if (dynamic) {
@@ -1250,6 +1287,223 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     }
     return result;
   };
+  interface StaticNestRouterArray {
+    parsed: ParsedSource;
+    elements: readonly ts.Expression[];
+    importDepth: number;
+  }
+  const staticNestRouterArray = (
+    parsed: ParsedSource,
+    expression: ts.Expression | undefined,
+    seen = new Set<string>(),
+    importDepth = 0,
+    aliasDepth = 0,
+  ): StaticNestRouterArray | undefined => {
+    if (!expression || aliasDepth > MAX_NEST_ROUTER_TREE_DEPTH) return undefined;
+    const current = unwrapExpression(expression);
+    if (ts.isArrayLiteralExpression(current)) {
+      if (current.elements.some(ts.isSpreadElement)) return undefined;
+      return { parsed, elements: current.elements, importDepth };
+    }
+    if (!ts.isIdentifier(current)) return undefined;
+    const key = classKey(parsed, current.text);
+    if (seen.has(key)) return undefined;
+    const binding = parsed.imports.get(current.text);
+    if (binding) {
+      if (importDepth >= 1 || binding.namespace || !binding.module.startsWith(".")
+        || !directEsmImports.has(key) || importReferenceShadowed(current, current.text)) return undefined;
+      const target = resolveModule(parsed, binding.module, lookup);
+      const exported = target?.exports.get(binding.imported);
+      if (!target || !exported?.local || exported.module) return undefined;
+      const initializer = variables.get(classKey(target, exported.local));
+      return initializer?.constant && initializer.topLevel && initializer.parsed === target
+        ? staticNestRouterArray(
+          target,
+          initializer.expression,
+          new Set(seen).add(key),
+          importDepth + 1,
+          aliasDepth + 1,
+        )
+        : undefined;
+    }
+    const initializer = variables.get(key);
+    return initializer?.constant && initializer.topLevel && initializer.parsed === parsed
+      ? staticNestRouterArray(
+        parsed,
+        initializer.expression,
+        new Set(seen).add(key),
+        importDepth,
+        aliasDepth + 1,
+      )
+      : undefined;
+  };
+  const directNestRouterModule = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+    site: ts.Node,
+  ): NestModuleRecord | undefined => {
+    const current = unwrapExpression(expression);
+    if (ts.isIdentifier(current)) {
+      const local = moduleRecordForClass(classes.get(classKey(parsed, current.text)));
+      if (local) return local;
+      const key = classKey(parsed, current.text);
+      const binding = parsed.imports.get(current.text);
+      if (!binding || binding.namespace || !binding.module.startsWith(".")
+        || !directEsmImports.has(key) || importReferenceShadowed(site, current.text)) return undefined;
+      const target = resolveModule(parsed, binding.module, lookup);
+      const exported = target?.exports.get(binding.imported);
+      return target && exported?.local && !exported.module
+        ? moduleRecordForClass(classes.get(classKey(target, exported.local)))
+        : undefined;
+    }
+    if (!ts.isPropertyAccessExpression(current) || current.questionDotToken
+      || !ts.isIdentifier(current.expression)) return undefined;
+    const key = classKey(parsed, current.expression.text);
+    const binding = parsed.imports.get(current.expression.text);
+    if (!binding?.namespace || !binding.module.startsWith(".") || !directEsmImports.has(key)
+      || importReferenceShadowed(site, current.expression.text)) return undefined;
+    const target = resolveModule(parsed, binding.module, lookup);
+    const exported = target?.exports.get(current.name.text);
+    return target && exported?.local && !exported.module
+      ? moduleRecordForClass(classes.get(classKey(target, exported.local)))
+      : undefined;
+  };
+  const officialNestRouterRegistration = (
+    parsed: ParsedSource,
+    node: ts.CallExpression,
+  ): { direct: boolean } | undefined => {
+    const called = unwrapExpression(node.expression);
+    let receiver: ts.Expression | undefined;
+    let direct = false;
+    if (ts.isPropertyAccessExpression(called) && called.name.text === "register") {
+      receiver = called.expression;
+      direct = !called.questionDotToken && !node.questionDotToken;
+    } else if (ts.isElementAccessExpression(called)
+      && literalText(called.argumentExpression) === "register") receiver = called.expression;
+    if (!receiver) return undefined;
+    const current = unwrapExpression(receiver);
+    let local: string | undefined;
+    if (ts.isIdentifier(current)) local = current.text;
+    else if (ts.isPropertyAccessExpression(current) && ts.isIdentifier(current.expression)
+      && current.name.text === "RouterModule") {
+      local = current.expression.text;
+      direct &&= !current.questionDotToken;
+    }
+    if (!local || importReferenceShadowed(node, local)
+      || !importedReference(parsed, current, "@nestjs/core", "RouterModule")) return undefined;
+    return { direct };
+  };
+  interface NestRouterTreeBudget {
+    entries: number;
+  }
+  const registerNestRouterModulePath = (
+    modulePaths: Map<string, string>,
+    module: NestModuleRecord,
+    path: string,
+  ): boolean => {
+    const normalized = normalizePath(path);
+    const existing = modulePaths.get(module.key);
+    if (existing !== undefined && existing !== normalized) return false;
+    modulePaths.set(module.key, normalized);
+    return true;
+  };
+  const parseNestRouterTreeEntry = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+    parentPath: string,
+    depth: number,
+    importDepth: number,
+    allowDirectModule: boolean,
+    budget: NestRouterTreeBudget,
+    modulePaths: Map<string, string>,
+  ): boolean => {
+    if (depth > MAX_NEST_ROUTER_TREE_DEPTH || budget.entries >= MAX_NEST_ROUTER_TREE_ENTRIES) return false;
+    budget.entries += 1;
+    const directModule = allowDirectModule ? directNestRouterModule(parsed, expression, expression) : undefined;
+    if (directModule) return registerNestRouterModulePath(modulePaths, directModule, parentPath);
+    const properties = directOptionProperties(expression, new Set(["path", "module", "children"]));
+    const path = properties && literalText(properties.get("path"));
+    if (!properties || path === undefined) return false;
+    const fullPath = joinPath(parentPath, path);
+    const moduleExpression = properties.get("module");
+    if (moduleExpression) {
+      const module = directNestRouterModule(parsed, moduleExpression, moduleExpression);
+      if (!module || !registerNestRouterModulePath(modulePaths, module, fullPath)) return false;
+    }
+    const childrenExpression = properties.get("children");
+    if (childrenExpression) {
+      const children = staticNestRouterArray(parsed, childrenExpression, new Set(), importDepth);
+      if (!children) return false;
+      for (const child of children.elements) {
+        if (!parseNestRouterTreeEntry(
+          children.parsed,
+          child,
+          fullPath,
+          depth + 1,
+          children.importDepth,
+          true,
+          budget,
+          modulePaths,
+        )) return false;
+      }
+    }
+    return Boolean(moduleExpression || childrenExpression);
+  };
+  const parseNestRouterRegistration = (
+    parsed: ParsedSource,
+    node: ts.CallExpression,
+  ): Map<string, string> | undefined => {
+    if (node.arguments.length !== 1) return undefined;
+    const routes = staticNestRouterArray(parsed, node.arguments[0]);
+    if (!routes) return undefined;
+    const modulePaths = new Map<string, string>();
+    const budget: NestRouterTreeBudget = { entries: 0 };
+    for (const route of routes.elements) {
+      if (!parseNestRouterTreeEntry(
+        routes.parsed,
+        route,
+        "",
+        0,
+        routes.importDepth,
+        false,
+        budget,
+        modulePaths,
+      )) return undefined;
+    }
+    return modulePaths;
+  };
+  const markUnresolvedNestRouterRegistration = (
+    host: NestModuleRecord,
+    parsed: ParsedSource,
+    node: ts.CallExpression,
+  ): void => {
+    unresolvedNestRouterRegistrationSites.add(`${parsed.file.relativePath}\u0000${node.pos}`);
+    unresolvedNestRouterHosts.add(host.key);
+  };
+  for (const job of nestRouterImportJobs) {
+    const calls: ts.CallExpression[] = [];
+    visit(job.expression, (node) => {
+      if (ts.isCallExpression(node) && officialNestRouterRegistration(job.parsed, node)) calls.push(node);
+    });
+    if (calls.length === 0) continue;
+    const current = unwrapExpression(job.expression);
+    const directNode = ts.isCallExpression(current) && calls.length === 1 && calls[0] === current
+      ? current
+      : undefined;
+    const directCall = directNode && officialNestRouterRegistration(job.parsed, directNode);
+    if (directNode && directCall?.direct && !job.dynamicMetadata) {
+      const modulePaths = parseNestRouterRegistration(job.parsed, directNode);
+      if (modulePaths) {
+        nestRouterRegistrations.push({
+          hostModuleKey: job.hostModule.key,
+          siteKey: `${job.parsed.file.relativePath}\u0000${directNode.pos}`,
+          modulePaths,
+        });
+        continue;
+      }
+    }
+    for (const call of calls) markUnresolvedNestRouterRegistration(job.hostModule, job.parsed, call);
+  }
   const strictRoutingVersions = (
     parsed: ParsedSource,
     expression: ts.Expression | undefined,
@@ -1690,6 +1944,30 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     bootstrapApplicationGraphCache.set(key, graph ?? null);
     return graph;
   };
+  const nestModulePrefixForGraph = (
+    graph: Set<string>,
+    moduleKey: string,
+  ): { resolved: boolean; prefix: string } => {
+    if ([...unresolvedNestRouterHosts].some((host) => graph.has(host))) {
+      return { resolved: false, prefix: "" };
+    }
+    const candidates = nestRouterRegistrations.filter((registration) =>
+      graph.has(registration.hostModuleKey) && registration.modulePaths.has(moduleKey));
+    const prefixes = new Set(candidates.map((registration) => registration.modulePaths.get(moduleKey)!));
+    if (prefixes.size > 1) {
+      for (const candidate of candidates) unresolvedNestRouterRegistrationSites.add(candidate.siteKey);
+      return { resolved: false, prefix: "" };
+    }
+    return { resolved: true, prefix: [...prefixes][0] ?? "" };
+  };
+  const withNestModulePrefix = (
+    routing: NestRoutingConfig,
+    graph: Set<string>,
+    moduleKey: string,
+  ): NestRoutingConfig => {
+    const modulePath = nestModulePrefixForGraph(graph, moduleKey);
+    return { ...routing, modulePrefix: modulePath.resolved ? modulePath.prefix : "" };
+  };
   const imperativeGlobalGuardGroups = (ownerClass: ResolvedClass | undefined): ResolvedExpression[][] => {
     if (!useStaticBootstrapRoots || !ownerClass?.nestModule) return [];
     const groups: ResolvedExpression[][] = [];
@@ -1702,7 +1980,16 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     return groups;
   };
   const nestRoutingConfigurations = (ownerClass: ResolvedClass | undefined): NestRoutingConfig[] => {
-    if (!useStaticBootstrapRoots || !ownerClass?.nestModule) return [defaultNestRoutingConfig()];
+    if (!ownerClass?.nestModule) return [defaultNestRoutingConfig()];
+    if (!useStaticBootstrapRoots) {
+      const graphs = applicationGraphs(ownerClass.nestModule);
+      if (!graphs || graphs.length === 0) return [defaultNestRoutingConfig()];
+      return graphs.map((graph) => withNestModulePrefix(
+        defaultNestRoutingConfig(),
+        graph,
+        ownerClass.nestModule!,
+      ));
+    }
     const configurations: NestRoutingConfig[] = [];
     for (const application of bootstrapApplications) {
       if (application.closed) continue;
@@ -1712,9 +1999,11 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
         continue;
       }
       if (graph.has(ownerClass.nestModule)) {
-        configurations.push(application.routingResolved
-          ? application.routing
-          : defaultNestRoutingConfig());
+        configurations.push(withNestModulePrefix(
+          application.routingResolved ? application.routing : defaultNestRoutingConfig(),
+          graph,
+          ownerClass.nestModule,
+        ));
       }
     }
     return configurations.length > 0 ? configurations : [defaultNestRoutingConfig()];
@@ -2718,6 +3007,7 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     unresolvedBootstrapRoots: () => unresolvedNestBootstrapRoots.size,
     unresolvedImperativeGlobalGuards: () => unresolvedNestImperativeGlobalGuards.size,
     unresolvedNestRoutingConfigurations: () => unresolvedNestRoutingConfigurations.size,
+    unresolvedNestRouterRegistrations: () => unresolvedNestRouterRegistrationSites.size,
   };
 }
 
@@ -3794,7 +4084,8 @@ function nestRoutePaths(
     ? (explicitVersions.length > 0 ? explicitVersions : config.defaultVersions)
     : [];
   const variants = versions.length > 0 ? versions : [null];
-  const matchingExclusions = config.prefixExcludes.filter((item) => item.path === normalizePath(localPath));
+  const routedLocalPath = joinPath(config.modulePrefix, localPath);
+  const matchingExclusions = config.prefixExcludes.filter((item) => item.path === normalizePath(routedLocalPath));
   const excludesEveryMethod = matchingExclusions.some((item) => !item.method || item.method === "ALL");
   const prefixes = excludesEveryMethod
     ? [""]
@@ -3806,7 +4097,7 @@ function nestRoutePaths(
   return [...new Set(variants.flatMap((version) => prefixes.map((prefix) => joinPath(
     prefix,
     version === null ? "" : `${config.versionPrefix}${version}`,
-    localPath,
+    routedLocalPath,
   ))))];
 }
 
@@ -3923,5 +4214,6 @@ export function analyzeNodeApi(files: ProjectFile[]): NodeApiAnalysis {
     unresolvedBootstrapRoots: localCalls.unresolvedBootstrapRoots(),
     unresolvedImperativeGlobalGuards: localCalls.unresolvedImperativeGlobalGuards(),
     unresolvedNestRoutingConfigurations: localCalls.unresolvedNestRoutingConfigurations(),
+    unresolvedNestRouterRegistrations: localCalls.unresolvedNestRouterRegistrations(),
   };
 }
