@@ -34,6 +34,7 @@ export interface NodeApiAnalysis {
   unresolvedRegistrations: number;
   unresolvedProviderDependencies: number;
   unresolvedBootstrapRoots: number;
+  unresolvedImperativeGlobalGuards: number;
 }
 
 interface ParsedSource {
@@ -92,6 +93,11 @@ interface LocalCallSemantics {
   responseOwnerFields: string[];
 }
 
+interface ResolvedExpression {
+  parsed: ParsedSource;
+  expression: ts.Expression;
+}
+
 interface LocalCallAnalyzer {
   analyze(
     parsed: ParsedSource,
@@ -102,8 +108,10 @@ interface LocalCallAnalyzer {
   resolveMethod(parsed: ParsedSource, expression: ts.Expression): ResolvedFunction | undefined;
   nestControllerClass(parsed: ParsedSource, declaration: ts.ClassDeclaration): ResolvedClass;
   globalGuardProviders(ownerClass: ResolvedClass | undefined): ResolvedClass[];
+  imperativeGlobalGuardGroups(ownerClass: ResolvedClass | undefined): ResolvedExpression[][];
   unresolvedProviderDependencies(): number;
   unresolvedBootstrapRoots(): number;
+  unresolvedImperativeGlobalGuards(): number;
 }
 
 interface ExpressRouteCandidate {
@@ -1295,7 +1303,45 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     if (!target || !exported?.local || exported.module) return undefined;
     return moduleRecordForClass(classes.get(classKey(target, exported.local)));
   };
+  interface BootstrapApplicationBinding {
+    name: string;
+    container: ts.Block | ts.SourceFile;
+    statement: ts.VariableStatement;
+  }
+  interface BootstrapApplication {
+    root: NestModuleRecord;
+    parsed: ParsedSource;
+    site: ts.CallExpression;
+    binding?: BootstrapApplicationBinding;
+    guards: ResolvedExpression[];
+  }
+  const transparentBindingParent = (parent: ts.Node, child: ts.Node): boolean =>
+    (ts.isParenthesizedExpression(parent) || ts.isAsExpression(parent)
+      || ts.isTypeAssertionExpression(parent) || ts.isNonNullExpression(parent)
+      || ts.isSatisfiesExpression(parent) || ts.isAwaitExpression(parent))
+    && parent.expression === child;
+  const bootstrapApplicationBinding = (site: ts.CallExpression): BootstrapApplicationBinding | undefined => {
+    let current: ts.Node = site;
+    let awaited = false;
+    while (current.parent && transparentBindingParent(current.parent, current)) {
+      awaited ||= ts.isAwaitExpression(current.parent);
+      current = current.parent;
+    }
+    const declaration = current.parent;
+    if (!awaited || !declaration || !ts.isVariableDeclaration(declaration) || declaration.initializer !== current
+      || !ts.isIdentifier(declaration.name)) return undefined;
+    const declarationList = declaration.parent;
+    const statement = declarationList.parent;
+    if (!ts.isVariableDeclarationList(declarationList)
+      || (declarationList.flags & ts.NodeFlags.Const) === 0
+      || !ts.isVariableStatement(statement)) return undefined;
+    const container = statement.parent;
+    if ((!ts.isBlock(container) && !ts.isSourceFile(container))
+      || !directBootstrapStatement(site, container)) return undefined;
+    return { name: declaration.name.text, container, statement };
+  };
   const staticBootstrapRoots = new Set<string>();
+  const bootstrapApplications: BootstrapApplication[] = [];
   const unresolvedNestBootstrapRoots = new Set<string>();
   const unresolvedBootstrap = (parsed: ParsedSource, node: ts.CallExpression): void => {
     unresolvedNestBootstrapRoots.add(`${parsed.file.relativePath}\u0000${node.pos}`);
@@ -1311,14 +1357,75 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
         return;
       }
       const root = node.arguments[0] && directBootstrapModule(parsed, node.arguments[0], node);
-      if (root) staticBootstrapRoots.add(root.key);
-      else unresolvedBootstrap(parsed, node);
+      if (root) {
+        staticBootstrapRoots.add(root.key);
+        bootstrapApplications.push({
+          root,
+          parsed,
+          site: node,
+          binding: bootstrapApplicationBinding(node),
+          guards: [],
+        });
+      } else unresolvedBootstrap(parsed, node);
       return;
     }
     if (ts.isElementAccessExpression(called) && literalText(called.argumentExpression) === "create"
       && officialNestFactoryReference(parsed, called.expression, node)) unresolvedBootstrap(parsed, node);
   });
   const useStaticBootstrapRoots = staticBootstrapRoots.size > 0 && unresolvedNestBootstrapRoots.size === 0;
+  const unresolvedNestImperativeGlobalGuards = new Set<string>();
+  const localBindingVisible = (
+    binding: BootstrapApplicationBinding,
+    node: ts.Node,
+  ): boolean => {
+    let current: ts.Node | undefined = node.parent;
+    while (current && current !== binding.container) {
+      if (runtimeFunctionLike(current)
+        && current.parameters.some((parameter) => bindingContainsName(parameter.name, binding.name))) return false;
+      if (ts.isCatchClause(current) && current.variableDeclaration
+        && bindingContainsName(current.variableDeclaration.name, binding.name)) return false;
+      if (ts.isBlock(current)
+        && current.statements.some((statement) => statementDeclaresName(statement, binding.name))) return false;
+      current = current.parent;
+    }
+    return current === binding.container;
+  };
+  const directImperativeGuardStatement = (
+    node: ts.CallExpression,
+    container: ts.Block | ts.SourceFile,
+  ): boolean => {
+    let current: ts.Node | undefined = node;
+    while (current && !ts.isStatement(current)) current = current.parent;
+    return Boolean(current && ts.isExpressionStatement(current) && current.parent === container
+      && directBootstrapExpression(node, current.expression));
+  };
+  for (const application of bootstrapApplications) {
+    const binding = application.binding;
+    if (!binding) continue;
+    visit(binding.container, (node) => {
+      if (!ts.isCallExpression(node)) return;
+      const called = unwrapExpression(node.expression);
+      let receiver: ts.Expression | undefined;
+      let directProperty = false;
+      if (ts.isPropertyAccessExpression(called) && called.name.text === "useGlobalGuards") {
+        receiver = called.expression;
+        directProperty = !called.questionDotToken;
+      } else if (ts.isElementAccessExpression(called)
+        && literalText(called.argumentExpression) === "useGlobalGuards") receiver = called.expression;
+      else return;
+      const currentReceiver = receiver && unwrapExpression(receiver);
+      if (!currentReceiver || !ts.isIdentifier(currentReceiver) || currentReceiver.text !== binding.name
+        || !localBindingVisible(binding, node)) return;
+      const resolved = useStaticBootstrapRoots && directProperty && !node.questionDotToken
+        && node.getStart(application.parsed.source) > binding.statement.end
+        && directImperativeGuardStatement(node, binding.container);
+      if (!resolved) {
+        unresolvedNestImperativeGlobalGuards.add(`${application.parsed.file.relativePath}\u0000${node.pos}`);
+        return;
+      }
+      for (const expression of node.arguments) application.guards.push({ parsed: application.parsed, expression });
+    });
+  }
   const boundedModuleWalk = (
     start: string,
     adjacent: (key: string) => Iterable<string>,
@@ -1374,6 +1481,25 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     }
     applicationGraphCache.set(moduleKey, graphs);
     return graphs;
+  };
+  const bootstrapApplicationGraphCache = new Map<string, Set<string> | null>();
+  const bootstrapApplicationGraph = (application: BootstrapApplication): Set<string> | undefined => {
+    const key = `${application.parsed.file.relativePath}\u0000${application.site.pos}`;
+    const cached = bootstrapApplicationGraphCache.get(key);
+    if (cached !== undefined) return cached ?? undefined;
+    const graph = boundedModuleWalk(application.root.key, (moduleKey) => moduleRecords.get(moduleKey)?.imports ?? []);
+    bootstrapApplicationGraphCache.set(key, graph ?? null);
+    return graph;
+  };
+  const imperativeGlobalGuardGroups = (ownerClass: ResolvedClass | undefined): ResolvedExpression[][] => {
+    if (!useStaticBootstrapRoots || !ownerClass?.nestModule) return [];
+    const groups: ResolvedExpression[][] = [];
+    for (const application of bootstrapApplications) {
+      const graph = bootstrapApplicationGraph(application);
+      if (!graph) return [];
+      if (graph.has(ownerClass.nestModule)) groups.push(application.guards);
+    }
+    return groups;
   };
   const globalModuleCache = new Map<string, Set<string>>();
   const globallyVisibleModules = (moduleKey: string): Set<string> => {
@@ -2368,8 +2494,10 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     resolveMethod,
     nestControllerClass,
     globalGuardProviders,
+    imperativeGlobalGuardGroups,
     unresolvedProviderDependencies: () => unresolvedInjectedDependencies.size,
     unresolvedBootstrapRoots: () => unresolvedNestBootstrapRoots.size,
+    unresolvedImperativeGlobalGuards: () => unresolvedNestImperativeGlobalGuards.size,
   };
 }
 
@@ -3307,15 +3435,14 @@ function discoverNestSecurity(sources: ParsedSource[], lookup: Map<string, Parse
 }
 
 function globalNestSecurity(
-  sources: ParsedSource[],
   semantics: NestSecuritySemantics,
   lookup: Map<string, ParsedSource>,
   localCalls: LocalCallAnalyzer,
   ownerClass: ResolvedClass | undefined,
-  base?: NestGlobalSecurity,
 ): NestGlobalSecurity {
-  const result: NestGlobalSecurity = base ? { ...base } : { authentication: false, ownership: false, role: false };
-  const classify = (parsed: ParsedSource, expression: ts.Expression): void => {
+  const empty = (): NestGlobalSecurity => ({ authentication: false, ownership: false, role: false });
+  const result = empty();
+  const classify = (target: NestGlobalSecurity, parsed: ParsedSource, expression: ts.Expression): void => {
     let current = unwrapExpression(expression);
     if (ts.isNewExpression(current) || ts.isCallExpression(current)) current = current.expression;
     const symbol = resolveExpressionSymbol(parsed, current, lookup);
@@ -3328,21 +3455,23 @@ function globalNestSecurity(
       || (!known && NEST_OWNERSHIP_GUARD_HINT.test(source));
     const authentication = ownership || semanticExpression(parsed, expression, semantics.authenticationGuards, lookup)
       || (!known && NEST_AUTH_GUARD_HINT.test(source));
-    result.authentication ||= authentication;
-    result.ownership ||= ownership;
-    result.role ||= role;
+    target.authentication ||= authentication;
+    target.ownership ||= ownership;
+    target.role ||= role;
   };
-  if (!base) {
-    for (const parsed of sources) {
-      visit(parsed.source, (node) => {
-        if (ts.isCallExpression(node) && /(?:^|\.)useGlobalGuards$/.test(expressionName(node.expression))) {
-          for (const argument of node.arguments) classify(parsed, argument);
-        }
-      });
-    }
+  const imperativeGroups = localCalls.imperativeGlobalGuardGroups(ownerClass);
+  if (imperativeGroups.length > 0) {
+    const byApplication = imperativeGroups.map((expressions) => {
+      const security = empty();
+      for (const item of expressions) classify(security, item.parsed, item.expression);
+      return security;
+    });
+    result.authentication = byApplication.every((security) => security.authentication);
+    result.ownership = byApplication.every((security) => security.ownership);
+    result.role = byApplication.every((security) => security.role);
   }
   for (const provider of localCalls.globalGuardProviders(ownerClass)) {
-    if (provider.declaration.name) classify(provider.parsed, provider.declaration.name);
+    if (provider.declaration.name) classify(result, provider.parsed, provider.declaration.name);
   }
   return result;
 }
@@ -3494,8 +3623,6 @@ function nestRoutePaths(
 
 function nestRoutes(
   parsed: ParsedSource,
-  sources: ParsedSource[],
-  baseGlobalSecurity: NestGlobalSecurity,
   semantics: NestSecuritySemantics,
   lookup: Map<string, ParsedSource>,
   routing: NestRoutingConfig,
@@ -3508,7 +3635,7 @@ function nestRoutes(
     const controller = classDecorators.find((item) => item.name === "Controller");
     if (!controller) continue;
     const ownerClass = localCalls.nestControllerClass(parsed, statement);
-    const globalSecurity = globalNestSecurity(sources, semantics, lookup, localCalls, ownerClass, baseGlobalSecurity);
+    const globalSecurity = globalNestSecurity(semantics, lookup, localCalls, ownerClass);
     const prefix = normalizePath(literalText(controller.arguments[0]) ?? "");
     const classAuthenticated = nestDecoratorAuthentication(classDecorators, parsed, semantics, lookup);
     const classOwnership = nestDecoratorOwnership(classDecorators, parsed, semantics, lookup);
@@ -3588,9 +3715,8 @@ export function analyzeNodeApi(files: ProjectFile[]): NodeApiAnalysis {
   }
   if (detectedNest) {
     const semantics = discoverNestSecurity(parsed, lookup);
-    const baseGlobalSecurity = globalNestSecurity(parsed, semantics, lookup, localCalls, undefined);
     const routing = nestRoutingConfig(parsed);
-    for (const item of parsed) routes.push(...nestRoutes(item, parsed, baseGlobalSecurity, semantics, lookup, routing, localCalls));
+    for (const item of parsed) routes.push(...nestRoutes(item, semantics, lookup, routing, localCalls));
   }
   const deduplicated = [...new Map(routes.map((route) => [routeKey(route), route])).values()]
     .sort((left, right) => left.path.localeCompare(right.path) || left.method.localeCompare(right.method));
@@ -3604,5 +3730,6 @@ export function analyzeNodeApi(files: ProjectFile[]): NodeApiAnalysis {
     unresolvedRegistrations,
     unresolvedProviderDependencies: localCalls.unresolvedProviderDependencies(),
     unresolvedBootstrapRoots: localCalls.unresolvedBootstrapRoots(),
+    unresolvedImperativeGlobalGuards: localCalls.unresolvedImperativeGlobalGuards(),
   };
 }

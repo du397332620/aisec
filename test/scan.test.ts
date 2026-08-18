@@ -2148,6 +2148,292 @@ bootstrapSecond();
   }
 });
 
+test("NestJS imperative global guards apply only to the bound application graph", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-scoped-global-guard-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, ForbiddenException, Get, Injectable, Module } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+
+@Injectable()
+class FirstApplicationAdminGuard {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user?.isAdmin) throw new ForbiddenException();
+    return true;
+  }
+}
+
+@Controller("imperative-first/admin")
+class FirstOnlyAdminController {
+  @Get("reports") reports() { return []; }
+}
+
+@Controller("imperative-shared/admin")
+class SharedAdminController {
+  @Get("reports") reports() { return []; }
+}
+
+@Module({ controllers: [FirstOnlyAdminController] })
+class FirstOnlyModule {}
+
+@Module({ controllers: [SharedAdminController] })
+class SharedModule {}
+
+@Module({ imports: [FirstOnlyModule, SharedModule] })
+class FirstApplicationRoot {}
+
+@Module({ imports: [SharedModule] })
+class SecondApplicationRoot {}
+
+async function bootstrapFirst() {
+  const firstApp = await NestFactory.create(FirstApplicationRoot);
+  firstApp.useGlobalGuards(new FirstApplicationAdminGuard());
+}
+
+async function bootstrapSecond() {
+  const secondApp = await NestFactory.create(SecondApplicationRoot);
+  void secondApp;
+}
+
+void bootstrapFirst();
+void bootstrapSecond();
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(!report.signals.some((signal) => signal.ruleId === "nestjs.authorization.privileged-operation-without-role-check"
+      && signal.metadata?.route === "GET /imperative-first/admin/reports"));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "GET /imperative-shared/admin/reports"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS imperative global guards retain duplicate create sites as distinct applications", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-duplicate-app-global-guard-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, ForbiddenException, Get, Injectable, Module } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+
+@Injectable()
+class FirstInstanceAdminGuard {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user?.isAdmin) throw new ForbiddenException();
+    return true;
+  }
+}
+
+@Controller("duplicate-app/admin")
+class AdminController {
+  @Get("reports") reports() { return []; }
+}
+
+@Module({ controllers: [AdminController] })
+class ApplicationRoot {}
+
+async function bootstrapFirst() {
+  const firstApp = await NestFactory.create(ApplicationRoot);
+  firstApp.useGlobalGuards(new FirstInstanceAdminGuard());
+}
+
+async function bootstrapSecond() {
+  const secondApp = NestFactory.create(ApplicationRoot);
+  secondApp.useGlobalGuards(new FirstInstanceAdminGuard());
+}
+
+bootstrapFirst();
+bootstrapSecond();
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "GET /duplicate-app/admin/reports"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS imperative global guards intersect semantics across different guard classes", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-global-guard-semantics-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, ForbiddenException, Get, Injectable, Module } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+
+@Injectable()
+class AdministratorBoundary {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user?.isAdmin) throw new ForbiddenException();
+    return true;
+  }
+}
+
+@Injectable()
+class ExportPermissionBoundary {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user?.permissions?.includes("reports:export")) throw new ForbiddenException();
+    return true;
+  }
+}
+
+@Controller("semantic-intersection/admin")
+class AdminController {
+  @Get("reports") reports() { return []; }
+}
+
+@Module({ controllers: [AdminController] })
+class SharedModule {}
+
+@Module({ imports: [SharedModule] })
+class FirstApplicationRoot {}
+
+@Module({ imports: [SharedModule] })
+class SecondApplicationRoot {}
+
+async function bootstrapFirst() {
+  const firstApp = await NestFactory.create(FirstApplicationRoot);
+  firstApp.useGlobalGuards(new AdministratorBoundary());
+}
+
+async function bootstrapSecond() {
+  const secondApp = await NestFactory.create(SecondApplicationRoot);
+  secondApp.useGlobalGuards(new ExportPermissionBoundary());
+}
+
+bootstrapFirst().catch(() => undefined);
+bootstrapSecond().catch(() => undefined);
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(!report.signals.some((signal) => signal.ruleId === "nestjs.authorization.privileged-operation-without-role-check"
+      && signal.metadata?.route === "GET /semantic-intersection/admin/reports"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS imperative global guard scoping rejects unsupported registrations exactly", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-global-guard-boundaries-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, ForbiddenException, Get, Injectable, Module } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+
+@Injectable()
+class GlobalAdminGuard {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user?.isAdmin) throw new ForbiddenException();
+    return true;
+  }
+}
+
+@Controller("imperative-boundaries/admin")
+class AdminController {
+  @Get("reports") reports() { return []; }
+}
+
+@Module({ controllers: [AdminController] })
+class ApplicationRoot {}
+
+async function bootstrap() {
+  const app = await NestFactory.create(ApplicationRoot);
+  const alias = app;
+  const fakeApp = { useGlobalGuards: (_guard) => undefined };
+  alias.useGlobalGuards(new GlobalAdminGuard());
+  fakeApp.useGlobalGuards(new GlobalAdminGuard());
+  app?.useGlobalGuards(new GlobalAdminGuard());
+  app["useGlobalGuards"](new GlobalAdminGuard());
+  if (process.env.ENABLE_ADMIN_GUARD) app.useGlobalGuards(new GlobalAdminGuard());
+  Promise.resolve().then(() => app.useGlobalGuards(new GlobalAdminGuard()));
+  function shadowed(app) { app.useGlobalGuards(new GlobalAdminGuard()); }
+  shadowed(fakeApp);
+}
+
+void bootstrap();
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "GET /imperative-boundaries/admin/reports"));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /4 NestJS imperative global guard registrations could not be statically scoped/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS imperative global guards are disabled with unresolved bootstrap selection", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-global-guard-bootstrap-fallback-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "main.ts"), `
+import { Controller, ForbiddenException, Get, Injectable, Module } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+
+@Injectable()
+class GlobalAdminGuard {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user?.isAdmin) throw new ForbiddenException();
+    return true;
+  }
+}
+
+@Controller("imperative-fallback/admin")
+class AdminController {
+  @Get("reports") reports() { return []; }
+}
+
+@Module({ controllers: [AdminController] })
+class ApplicationRoot {}
+
+function selectRoot() { return ApplicationRoot; }
+
+async function bootstrap() {
+  const app = await NestFactory.create(ApplicationRoot);
+  app.useGlobalGuards(new GlobalAdminGuard());
+  await NestFactory.create(selectRoot());
+}
+
+bootstrap();
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "GET /imperative-fallback/admin/reports"));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /1 NestJS bootstrap root reference could not be statically resolved/);
+    assert.match(coverage?.reason ?? "", /1 NestJS imperative global guard registration could not be statically scoped/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("NestJS module visibility accepts a dynamic global export and rejects duplicate controller ownership", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-dynamic-global-duplicate-controller-"));
   try {
@@ -4852,6 +5138,9 @@ test("NestJS analysis accepts a visible global administrator guard", async () =>
     await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { "@nestjs/common": "11.1.6", "@nestjs/core": "11.1.6" } }));
     await writeFile(join(temporary, "main.ts"), `
 import { ForbiddenException, Injectable } from "@nestjs/common";
+import { NestFactory } from "@nestjs/core";
+import { AppModule } from "./app.module";
+
 @Injectable()
 class GlobalAdminGuard {
   canActivate(context) {
@@ -4860,7 +5149,13 @@ class GlobalAdminGuard {
     return true;
   }
 }
-app.useGlobalGuards(new GlobalAdminGuard());
+
+async function bootstrap() {
+  const app = await NestFactory.create(AppModule);
+  app.useGlobalGuards(new GlobalAdminGuard());
+}
+
+void bootstrap();
 `);
     await writeFile(join(temporary, "admin.controller.ts"), `
 import { Controller, Post } from "@nestjs/common";
@@ -4869,6 +5164,13 @@ export class AdminController {
   @Post("export")
   exportUsers() { return this.users.findMany(); }
 }
+`);
+    await writeFile(join(temporary, "app.module.ts"), `
+import { Module } from "@nestjs/common";
+import { AdminController } from "./admin.controller";
+
+@Module({ controllers: [AdminController] })
+export class AppModule {}
 `);
     const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
     assert.ok(!report.signals.some((signal) => signal.ruleId === "nestjs.authorization.privileged-operation-without-role-check"));
