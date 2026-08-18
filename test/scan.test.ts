@@ -1383,6 +1383,772 @@ class AppModule {}
   }
 });
 
+test("NestJS module visibility isolates unrelated token providers and follows exported dependencies", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-module-provider-scope-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+    } }));
+    await writeFile(join(temporary, "tokens.ts"), `
+export const DOCUMENT_SERVICE = Symbol("DOCUMENT_SERVICE");
+export const DOCUMENT_REPOSITORY = Symbol("DOCUMENT_REPOSITORY");
+`);
+    await writeFile(join(temporary, "document.repository.ts"), `
+export class DocumentRepository {
+  fetchDocument(documentId: string, userId: string) {
+    return this.prisma.document.findFirst({ where: { id: documentId, userId } });
+  }
+}
+`);
+    await writeFile(join(temporary, "decoy.repository.ts"), `
+export class DecoyRepository {
+  fetchDocument(documentId: string) {
+    return this.prisma.document.findUnique({ where: { id: documentId } });
+  }
+}
+`);
+    await writeFile(join(temporary, "document.service.ts"), `
+import { Inject } from "@nestjs/common";
+import { DOCUMENT_REPOSITORY } from "./tokens";
+
+interface RepositoryPort {
+  fetchDocument(documentId: string, userId: string): unknown;
+}
+
+export class DocumentService {
+  constructor(@Inject(DOCUMENT_REPOSITORY) private readonly repository: RepositoryPort) {}
+
+  load(documentId: string, userId: string) {
+    return this.repository.fetchDocument(documentId, userId);
+  }
+}
+`);
+    await writeFile(join(temporary, "document.controller.ts"), `
+import { Controller, Get, Inject, Param, Req, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+import { DOCUMENT_SERVICE } from "./tokens";
+
+interface DocumentPort {
+  load(documentId: string, userId: string): unknown;
+}
+
+@Controller("module-scope")
+@UseGuards(AuthGuard("jwt"))
+export class DocumentController {
+  constructor(@Inject(DOCUMENT_SERVICE) private readonly service: DocumentPort) {}
+
+  @Get("users/:userId/documents/:documentId")
+  readDocument(@Param("documentId") documentId: string, @Param("userId") userId: string) {
+    return this.service.load(documentId, userId);
+  }
+
+  @Get("documents/:documentId")
+  readOwnedDocument(@Param("documentId") documentId: string, @Req() request) {
+    return this.service.load(documentId, request.user.id);
+  }
+}
+`);
+    await writeFile(join(temporary, "data.module.ts"), `
+import { Module } from "@nestjs/common";
+import { DocumentRepository } from "./document.repository";
+import { DOCUMENT_REPOSITORY } from "./tokens";
+
+@Module({
+  providers: [{ provide: DOCUMENT_REPOSITORY, useClass: DocumentRepository }],
+  exports: [DOCUMENT_REPOSITORY],
+})
+export class DataModule {}
+`);
+    await writeFile(join(temporary, "decoy.module.ts"), `
+import { Module } from "@nestjs/common";
+import { DecoyRepository } from "./decoy.repository";
+import { DOCUMENT_REPOSITORY } from "./tokens";
+
+@Module({
+  providers: [{ provide: DOCUMENT_REPOSITORY, useClass: DecoyRepository }],
+  exports: [DOCUMENT_REPOSITORY],
+})
+export class UnrelatedDecoyModule {}
+`);
+    await writeFile(join(temporary, "feature.module.ts"), `
+import { Module } from "@nestjs/common";
+import { DataModule } from "./data.module";
+import { DocumentController } from "./document.controller";
+import { DocumentService } from "./document.service";
+import { DOCUMENT_SERVICE } from "./tokens";
+
+@Module({
+  imports: [DataModule],
+  controllers: [DocumentController],
+  providers: [{ provide: DOCUMENT_SERVICE, useClass: DocumentService }],
+})
+export class DocumentFeatureModule {}
+`);
+    await writeFile(join(temporary, "app.module.ts"), `
+import { Module } from "@nestjs/common";
+import { DocumentFeatureModule } from "./feature.module";
+
+@Module({ imports: [DocumentFeatureModule] })
+export class AppModule {}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const vulnerableRoute = "GET /module-scope/users/:userId/documents/:documentId";
+    const safeRoute = "GET /module-scope/documents/:documentId";
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.authorization.object-without-ownership-check"
+      && signal.metadata?.route === vulnerableRoute));
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+      && signal.metadata?.route === safeRoute));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.doesNotMatch(coverage?.reason ?? "", /injected provider dependency/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS module visibility follows module re-exports but rejects private imported providers", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-module-exports-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+    } }));
+    await writeFile(join(temporary, "app.ts"), `
+import { Controller, Get, Inject, Module, Param, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+
+const EXPORTED_REPOSITORY = Symbol("EXPORTED_REPOSITORY");
+const PRIVATE_REPOSITORY = Symbol("PRIVATE_REPOSITORY");
+
+class ExportedRepository {
+  load(documentId: string) {
+    return this.prisma.document.findUnique({ where: { id: documentId } });
+  }
+}
+
+class PrivateRepository {
+  load(documentId: string) {
+    return this.prisma.document.findUnique({ where: { id: documentId } });
+  }
+}
+
+@Module({
+  providers: [{ provide: EXPORTED_REPOSITORY, useClass: ExportedRepository }],
+  exports: [EXPORTED_REPOSITORY],
+})
+class DataModule {}
+
+@Module({ imports: [DataModule], exports: [DataModule] })
+class ReExportingModule {}
+
+@Module({ providers: [{ provide: PRIVATE_REPOSITORY, useClass: PrivateRepository }] })
+class PrivateModule {}
+
+interface RepositoryPort { load(documentId: string): unknown; }
+
+@Controller("module-exports")
+@UseGuards(AuthGuard("jwt"))
+class DocumentsController {
+  constructor(
+    @Inject(EXPORTED_REPOSITORY) private readonly exportedRepository: RepositoryPort,
+    @Inject(PRIVATE_REPOSITORY) private readonly privateRepository: RepositoryPort,
+  ) {}
+
+  @Get("exported/:documentId")
+  exported(@Param("documentId") documentId: string) {
+    return this.exportedRepository.load(documentId);
+  }
+
+  @Get("private/:documentId")
+  privateProvider(@Param("documentId") documentId: string) {
+    return this.privateRepository.load(documentId);
+  }
+}
+
+@Module({
+  imports: [ReExportingModule, PrivateModule],
+  controllers: [DocumentsController],
+})
+class FeatureModule {}
+
+@Module({ imports: [FeatureModule] })
+class AppModule {}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const exportedRoute = "GET /module-exports/exported/:documentId";
+    const privateRoute = "GET /module-exports/private/:documentId";
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.authorization.object-without-ownership-check"
+      && signal.metadata?.route === exportedRoute));
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+      && signal.metadata?.route === privateRoute));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /1 NestJS injected provider dependency could not be statically resolved/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS module visibility resolves official circular imports and a reachable global export", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-module-cycle-global-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+    } }));
+    await writeFile(join(temporary, "tokens.ts"), `
+export const DOCUMENT_SERVICE = Symbol("DOCUMENT_SERVICE");
+export const DOCUMENT_REPOSITORY = Symbol("DOCUMENT_REPOSITORY");
+export const AUDIT_TRAIL = Symbol("AUDIT_TRAIL");
+`);
+    await writeFile(join(temporary, "providers.ts"), `
+export class DocumentRepository {
+  load(documentId: string, userId: string) {
+    return this.prisma.document.findFirst({ where: { id: documentId, userId } });
+  }
+}
+
+export class AuditTrail {
+  record(_documentId: string) { return undefined; }
+}
+
+export class DecoyAuditTrail {
+  record(_documentId: string) { return undefined; }
+}
+`);
+    await writeFile(join(temporary, "document.service.ts"), `
+import { Inject } from "@nestjs/common";
+import { AUDIT_TRAIL, DOCUMENT_REPOSITORY } from "./tokens";
+
+interface RepositoryPort { load(documentId: string, userId: string): unknown; }
+interface AuditPort { record(documentId: string): unknown; }
+
+export class DocumentService {
+  constructor(
+    @Inject(DOCUMENT_REPOSITORY) private readonly repository: RepositoryPort,
+    @Inject(AUDIT_TRAIL) private readonly audit: AuditPort,
+  ) {}
+
+  load(documentId: string, userId: string) {
+    this.audit.record(documentId);
+    return this.repository.load(documentId, userId);
+  }
+}
+`);
+    await writeFile(join(temporary, "document.controller.ts"), `
+import { Controller, Get, Inject, Param, Req, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+import { DOCUMENT_SERVICE } from "./tokens";
+
+interface DocumentPort { load(documentId: string, userId: string): unknown; }
+
+@Controller("module-cycle")
+@UseGuards(AuthGuard("jwt"))
+export class DocumentController {
+  constructor(@Inject(DOCUMENT_SERVICE) private readonly service: DocumentPort) {}
+
+  @Get("users/:userId/documents/:documentId")
+  read(@Param("documentId") documentId: string, @Param("userId") userId: string) {
+    return this.service.load(documentId, userId);
+  }
+
+  @Get("documents/:documentId")
+  readOwned(@Param("documentId") documentId: string, @Req() request) {
+    return this.service.load(documentId, request.user.id);
+  }
+}
+`);
+    await writeFile(join(temporary, "module-a.ts"), `
+import { Module, forwardRef } from "@nestjs/common";
+import { DocumentController } from "./document.controller";
+import { DocumentService } from "./document.service";
+import { ModuleB } from "./module-b";
+import { DOCUMENT_SERVICE } from "./tokens";
+
+@Module({
+  imports: [forwardRef(() => ModuleB)],
+  controllers: [DocumentController],
+  providers: [{ provide: DOCUMENT_SERVICE, useClass: DocumentService }],
+})
+export class ModuleA {}
+`);
+    await writeFile(join(temporary, "module-b.ts"), `
+import { Module, forwardRef } from "@nestjs/common";
+import { ModuleA } from "./module-a";
+import { DocumentRepository } from "./providers";
+import { DOCUMENT_REPOSITORY } from "./tokens";
+
+@Module({
+  imports: [forwardRef(() => ModuleA)],
+  providers: [{ provide: DOCUMENT_REPOSITORY, useClass: DocumentRepository }],
+  exports: [DOCUMENT_REPOSITORY],
+})
+export class ModuleB {}
+`);
+    await writeFile(join(temporary, "audit.module.ts"), `
+import { Global, Module } from "@nestjs/common";
+import { AuditTrail } from "./providers";
+import { AUDIT_TRAIL } from "./tokens";
+
+@Global()
+@Module({
+  providers: [{ provide: AUDIT_TRAIL, useClass: AuditTrail }],
+  exports: [AUDIT_TRAIL],
+})
+export class AuditModule {}
+`);
+    await writeFile(join(temporary, "unrelated.module.ts"), `
+import { Module } from "@nestjs/common";
+import { DecoyAuditTrail } from "./providers";
+import { AUDIT_TRAIL } from "./tokens";
+
+@Module({
+  providers: [{ provide: AUDIT_TRAIL, useClass: DecoyAuditTrail }],
+  exports: [AUDIT_TRAIL],
+})
+export class UnrelatedModule {}
+`);
+    await writeFile(join(temporary, "app.module.ts"), `
+import { Module } from "@nestjs/common";
+import { AuditModule } from "./audit.module";
+import { ModuleA } from "./module-a";
+
+@Module({ imports: [AuditModule, ModuleA] })
+export class AppModule {}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const vulnerableRoute = "GET /module-cycle/users/:userId/documents/:documentId";
+    const safeRoute = "GET /module-cycle/documents/:documentId";
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.authorization.object-without-ownership-check"
+      && signal.metadata?.route === vulnerableRoute));
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+      && signal.metadata?.route === safeRoute));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.doesNotMatch(coverage?.reason ?? "", /injected provider dependency/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS APP_GUARD visibility ignores an unreachable administrator guard", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-module-app-guard-scope-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+    } }));
+    await writeFile(join(temporary, "security.module.ts"), `
+import { CanActivate, Module, UnauthorizedException } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+
+class SessionBoundary implements CanActivate {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user) throw new UnauthorizedException();
+    return true;
+  }
+}
+
+@Module({ providers: [{ provide: APP_GUARD, useClass: SessionBoundary }] })
+export class SecurityModule {}
+`);
+    await writeFile(join(temporary, "unreachable.module.ts"), `
+import { CanActivate, ForbiddenException, Module } from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+
+class AdministratorBoundary implements CanActivate {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user?.isAdmin) throw new ForbiddenException();
+    return true;
+  }
+}
+
+@Module({ providers: [{ provide: APP_GUARD, useClass: AdministratorBoundary }] })
+export class UnreachableAdministratorModule {}
+`);
+    await writeFile(join(temporary, "feature.module.ts"), `
+import { Controller, Get, Module } from "@nestjs/common";
+
+@Controller("reachable-guard/admin")
+class AdminController {
+  @Get("reports") reports() { return []; }
+}
+
+@Module({ controllers: [AdminController] })
+export class FeatureModule {}
+`);
+    await writeFile(join(temporary, "app.module.ts"), `
+import { Module } from "@nestjs/common";
+import { FeatureModule } from "./feature.module";
+import { SecurityModule } from "./security.module";
+
+@Module({ imports: [SecurityModule, FeatureModule] })
+export class AppModule {}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const route = "GET /reachable-guard/admin/reports";
+    assert.ok(!report.signals.some((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === route));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.authorization.privileged-operation-without-role-check"
+      && signal.metadata?.route === route));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS global providers and APP_GUARD records must exist in every inferred application graph", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-multiple-app-roots-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/core": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+    } }));
+    await writeFile(join(temporary, "app.ts"), `
+import {
+  CanActivate,
+  Controller,
+  ForbiddenException,
+  Get,
+  Global,
+  Inject,
+  Module,
+  Param,
+  UseGuards,
+} from "@nestjs/common";
+import { APP_GUARD } from "@nestjs/core";
+import { AuthGuard } from "@nestjs/passport";
+
+const AUDIT_REPOSITORY = Symbol("AUDIT_REPOSITORY");
+const DOCUMENT_SERVICE = Symbol("DOCUMENT_SERVICE");
+
+class AuditRepository {
+  fetch(documentId: string) {
+    return this.prisma.document.findUnique({ where: { id: documentId } });
+  }
+}
+
+class DocumentService {
+  constructor(@Inject(AUDIT_REPOSITORY) private readonly audit: AuditRepository) {}
+  fetch(documentId: string) { return this.audit.fetch(documentId); }
+}
+
+class AdministratorBoundary implements CanActivate {
+  canActivate(context) {
+    const request = context.switchToHttp().getRequest();
+    if (!request.user?.isAdmin) throw new ForbiddenException();
+    return true;
+  }
+}
+
+@Global()
+@Module({
+  providers: [{ provide: AUDIT_REPOSITORY, useClass: AuditRepository }],
+  exports: [AUDIT_REPOSITORY],
+})
+class FirstRootGlobalModule {}
+
+@Module({ providers: [{ provide: APP_GUARD, useClass: AdministratorBoundary }] })
+class FirstRootSecurityModule {}
+
+@Controller("multiple-roots/documents")
+@UseGuards(AuthGuard("jwt"))
+class DocumentsController {
+  constructor(@Inject(DOCUMENT_SERVICE) private readonly service: DocumentService) {}
+  @Get(":documentId")
+  read(@Param("documentId") documentId: string) {
+    return this.service.fetch(documentId);
+  }
+}
+
+@Controller("multiple-roots/admin")
+class AdminController {
+  @Get("reports") reports() { return []; }
+}
+
+@Module({
+  controllers: [DocumentsController, AdminController],
+  providers: [{ provide: DOCUMENT_SERVICE, useClass: DocumentService }],
+})
+class SharedFeatureModule {}
+
+@Module({ imports: [FirstRootGlobalModule, FirstRootSecurityModule, SharedFeatureModule] })
+class FirstApplicationRoot {}
+
+@Module({ imports: [SharedFeatureModule] })
+class SecondApplicationRoot {}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+      && signal.metadata?.route === "GET /multiple-roots/documents/:documentId"));
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard"
+      && signal.metadata?.route === "GET /multiple-roots/admin/reports"));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /1 NestJS injected provider dependency could not be statically resolved/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS module visibility accepts a dynamic global export and rejects duplicate controller ownership", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-dynamic-global-duplicate-controller-"));
+  try {
+    const valid = join(temporary, "valid");
+    const ambiguous = join(temporary, "ambiguous");
+    await mkdir(valid);
+    await mkdir(ambiguous);
+    const packageJson = JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+    } });
+
+    await writeFile(join(valid, "package.json"), packageJson);
+    await writeFile(join(valid, "app.ts"), `
+import { Controller, DynamicModule, Get, Inject, Module, Param, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+
+const AUDIT_TRAIL = Symbol("AUDIT_TRAIL");
+const DOCUMENT_SERVICE = Symbol("DOCUMENT_SERVICE");
+
+class AuditTrail {
+  record(_documentId: string) { return undefined; }
+}
+
+class DocumentService {
+  constructor(@Inject(AUDIT_TRAIL) private readonly audit: AuditTrail) {}
+
+  load(documentId: string) {
+    this.audit.record(documentId);
+    return this.prisma.document.findUnique({ where: { id: documentId } });
+  }
+}
+
+@Module({})
+class DynamicAuditModule {
+  static register(): DynamicModule {
+    return {
+      module: DynamicAuditModule,
+      global: true,
+      providers: [{ provide: AUDIT_TRAIL, useClass: AuditTrail }],
+      exports: [AUDIT_TRAIL],
+    };
+  }
+}
+
+@Controller("dynamic-global-export")
+@UseGuards(AuthGuard("jwt"))
+class DocumentsController {
+  constructor(@Inject(DOCUMENT_SERVICE) private readonly service: DocumentService) {}
+
+  @Get(":documentId")
+  read(@Param("documentId") documentId: string) {
+    return this.service.load(documentId);
+  }
+}
+
+@Module({
+  controllers: [DocumentsController],
+  providers: [{ provide: DOCUMENT_SERVICE, useClass: DocumentService }],
+})
+class FeatureModule {}
+
+@Module({ imports: [DynamicAuditModule.register(), FeatureModule] })
+class AppModule {}
+`);
+    const validScan = await scanProject(valid, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(validScan.report.signals.some((signal) =>
+      signal.ruleId === "nestjs.authorization.object-without-ownership-check"
+      && signal.metadata?.route === "GET /dynamic-global-export/:documentId"));
+    const validCoverage = validScan.report.coverage.find((item) => item.domain === "node-api-security");
+    assert.doesNotMatch(validCoverage?.reason ?? "", /injected provider dependency/);
+
+    await writeFile(join(ambiguous, "package.json"), packageJson);
+    await writeFile(join(ambiguous, "app.ts"), `
+import { Controller, Get, Inject, Module, Param, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+
+const DOCUMENT_SERVICE = Symbol("DOCUMENT_SERVICE");
+
+class DocumentService {
+  load(documentId: string) {
+    return this.prisma.document.findUnique({ where: { id: documentId } });
+  }
+}
+
+@Controller("duplicate-controller")
+@UseGuards(AuthGuard("jwt"))
+class DocumentsController {
+  constructor(@Inject(DOCUMENT_SERVICE) private readonly service: DocumentService) {}
+
+  @Get(":documentId")
+  read(@Param("documentId") documentId: string) {
+    return this.service.load(documentId);
+  }
+}
+
+const providers = [{ provide: DOCUMENT_SERVICE, useClass: DocumentService }];
+@Module({ controllers: [DocumentsController], providers })
+class FeatureModuleA {}
+@Module({ controllers: [DocumentsController], providers })
+class FeatureModuleB {}
+@Module({ imports: [FeatureModuleA, FeatureModuleB] })
+class AppModule {}
+`);
+    const ambiguousScan = await scanProject(ambiguous, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(!ambiguousScan.report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+      && signal.metadata?.route === "GET /duplicate-controller/:documentId"));
+    const ambiguousCoverage = ambiguousScan.report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(ambiguousCoverage?.reason ?? "", /1 NestJS injected provider dependency could not be statically resolved/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS module visibility permits eight module edges and fails closed at the ninth", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-module-depth-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+    } }));
+    const reExportChain = (prefix: string, wrappers: number, token: string) => {
+      let source = `
+class ${prefix}Repository {
+  load(documentId: string) {
+    return this.prisma.document.findUnique({ where: { id: documentId } });
+  }
+}
+@Module({
+  providers: [{ provide: ${token}, useClass: ${prefix}Repository }],
+  exports: [${token}],
+})
+class ${prefix}Leaf {}
+`;
+      let exported = `${prefix}Leaf`;
+      for (let index = 1; index <= wrappers; index += 1) {
+        const current = `${prefix}Level${index}`;
+        source += `
+@Module({ imports: [${exported}], exports: [${exported}] })
+class ${current} {}
+`;
+        exported = current;
+      }
+      return { source, root: exported };
+    };
+    const allowed = reExportChain("Allowed", 7, "ALLOWED_REPOSITORY");
+    const denied = reExportChain("Denied", 8, "DENIED_REPOSITORY");
+    await writeFile(join(temporary, "app.ts"), `
+import { Controller, Get, Inject, Module, Param, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+
+const ALLOWED_REPOSITORY = Symbol("ALLOWED_REPOSITORY");
+const DENIED_REPOSITORY = Symbol("DENIED_REPOSITORY");
+${allowed.source}
+${denied.source}
+interface RepositoryPort { load(documentId: string): unknown; }
+
+@Controller("module-depth")
+@UseGuards(AuthGuard("jwt"))
+class DocumentsController {
+  constructor(
+    @Inject(ALLOWED_REPOSITORY) private readonly allowed: RepositoryPort,
+    @Inject(DENIED_REPOSITORY) private readonly denied: RepositoryPort,
+  ) {}
+
+  @Get("allowed/:documentId")
+  allowedRoute(@Param("documentId") documentId: string) {
+    return this.allowed.load(documentId);
+  }
+
+  @Get("denied/:documentId")
+  deniedRoute(@Param("documentId") documentId: string) {
+    return this.denied.load(documentId);
+  }
+}
+
+@Module({
+  imports: [${allowed.root}, ${denied.root}],
+  controllers: [DocumentsController],
+})
+class FeatureModule {}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.authorization.object-without-ownership-check"
+      && signal.metadata?.route === "GET /module-depth/allowed/:documentId"));
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+      && signal.metadata?.route === "GET /module-depth/denied/:documentId"));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /1 NestJS injected provider dependency could not be statically resolved/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("NestJS module visibility permits 256 aggregate module entries and fails closed at the 257th", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-nest-module-entry-budget-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: {
+      "@nestjs/common": "11.1.6",
+      "@nestjs/passport": "11.0.5",
+    } }));
+    const moduleCase = (prefix: string, decoyCount: number, route: string) => {
+      const token = `${prefix.toUpperCase()}_REPOSITORY`;
+      const decoys = Array.from({ length: decoyCount }, (_, index) => `${prefix}Decoy${index}`);
+      const declarations = decoys.map((name) => `@Module({}) class ${name} {}`).join("\n");
+      return `
+const ${token} = Symbol("${token}");
+${declarations}
+class ${prefix}Repository {
+  load(documentId: string) {
+    return this.prisma.document.findUnique({ where: { id: documentId } });
+  }
+}
+@Module({
+  providers: [{ provide: ${token}, useClass: ${prefix}Repository }],
+  exports: [${token}],
+})
+class ${prefix}ProviderModule {}
+@Controller("module-entry-budget")
+@UseGuards(AuthGuard("jwt"))
+class ${prefix}Controller {
+  constructor(@Inject(${token}) private readonly repository: ${prefix}Repository) {}
+  @Get("${route}/:documentId")
+  read(@Param("documentId") documentId: string) {
+    return this.repository.load(documentId);
+  }
+}
+@Module({
+  imports: [${[...decoys, `${prefix}ProviderModule`].join(", ")}],
+  controllers: [${prefix}Controller],
+})
+class ${prefix}FeatureModule {}
+`;
+    };
+    await writeFile(join(temporary, "app.ts"), `
+import { Controller, Get, Inject, Module, Param, UseGuards } from "@nestjs/common";
+import { AuthGuard } from "@nestjs/passport";
+${moduleCase("Allowed", 254, "allowed")}
+${moduleCase("Denied", 255, "denied")}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.ok(report.signals.some((signal) => signal.ruleId === "nestjs.authorization.object-without-ownership-check"
+      && signal.metadata?.route === "GET /module-entry-budget/allowed/:documentId"));
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("nestjs.authorization.")
+      && signal.metadata?.route === "GET /module-entry-budget/denied/:documentId"));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /1 NestJS injected provider dependency could not be statically resolved/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("NestJS analysis distinguishes authenticated ORM QueryBuilder ownership from route-controlled and dynamic predicates", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-typeorm-query-builder-"));
   try {

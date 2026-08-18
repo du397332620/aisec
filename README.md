@@ -53,17 +53,23 @@ rather than assigned invented paths.
 NestJS coverage recognizes common `CanActivate` guard implementations, composed
 decorator factories such as `applyDecorators(UseGuards(...))`, same-controller
 authorization helpers, static global prefixes and URI versions. Local
-`@Inject(TOKEN)` dependencies can be mapped through `@Module` providers that
-use `useClass`, `useExisting`, or a bounded `useFactory` with one statically
-visible local `new Class(...)` result. Official named/renamed or namespace
-`forwardRef(() => Token)` injections are unwrapped only for a synchronous,
-zero-argument callback with one direct local/relative token result. Providers
-from a local dynamic-module static method are included only when the method is
-actually called in a visible `@Module.imports`, directly returns one static
-object with the same module class, and exposes a static provider array. Actual
-static or accepted dynamic `APP_GUARD` records can resolve a local guard through
-the same bounded provider forms. Reachable injected dependencies outside these
-forms are counted in the coverage reason.
+`@Inject(TOKEN)` dependencies are resolved only when the controller belongs to
+exactly one visible local `@Module`. Resolution prefers that module's providers,
+then exported tokens from direct imports and explicit local module re-exports;
+private, conflicting and unreachable providers are not combined into a global
+token map. Provider records may use `useClass`, `useExisting`, or a bounded
+`useFactory` with one statically visible local `new Class(...)` result. Official
+named/renamed or namespace `forwardRef(() => Token)` injections and module
+imports are unwrapped only for a synchronous, zero-argument callback with one
+direct local/relative result. A local dynamic-module static method is included
+only when actually called from visible module metadata and when it directly
+returns one static object for the same module class; its visible `imports`,
+`providers`, `exports` and literal `global: true` metadata extend the base
+module metadata. Actual `@Global()` exports and static or accepted dynamic
+`APP_GUARD` records apply only when their host module is present in every
+bounded inferred application graph containing the controller. Module traversal
+is capped at eight edges and 256 unique entries per resolution. Reachable
+injected dependencies outside these forms are counted in the coverage reason.
 
 Both analyzers follow bounded local
 controller/handler-to-service-to-repository calls for up to four edges and can
@@ -109,7 +115,9 @@ asynchronous/conditional/nested or
 mutation-bearing `for...of`, chained collection transforms, dynamic module
 metadata with async/branching/runtime configuration, non-direct or non-Nest
 `forwardRef` callbacks, arbitrary `useValue` objects,
-providers/factories without a visible local class result, Sequelize scopes,
+providers/factories without a visible local class result, ambiguous controller
+module ownership, unsupported or over-limit module graphs, runtime bootstrap
+root selection, Sequelize scopes,
 MongoDB aggregation pipelines, deeper ORM/control-flow wrappers and external
 authorization engines remain partial static coverage and require review.
 
@@ -343,7 +351,7 @@ binaries and prepare the Trivy database before scanning.
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; some findings are explicitly `inferred` and require review |
 | FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
-| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local or one-hop directly imported immutable ESM route tables used by `forEach` and direct synchronous `for...of`, NestJS controllers/guards/local token providers, direct official `forwardRef` tokens and visibly imported synchronous static dynamic-module providers/`APP_GUARD` records, up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced, consumed through one single-condition `const`, or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, unsupported operators/scopes, unresolved providers/registration sites, package or mixin bases, complex wrappers and external policy engines still require review |
+| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local or one-hop directly imported immutable ESM route tables used by `forEach` and direct synchronous `for...of`, and NestJS controllers/guards/providers through local module imports, exports, re-exports and inferred application-global visibility; accepts direct official `forwardRef` tokens/modules and visible synchronous static dynamic-module metadata, with module traversal capped at eight edges and 256 entries; follows up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced, consumed through one single-condition `const`, or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, unsupported operators/scopes or module/bootstrap graphs, unresolved providers/registration sites, package or mixin bases, complex wrappers and external policy engines still require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |

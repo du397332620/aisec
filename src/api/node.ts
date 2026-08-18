@@ -75,6 +75,7 @@ interface ResolvedFunction {
 interface ResolvedClass {
   declaration: ts.ClassDeclaration;
   parsed: ParsedSource;
+  nestModule?: string;
   construction?: {
     parsed: ParsedSource;
     expression: ts.NewExpression;
@@ -98,7 +99,8 @@ interface LocalCallAnalyzer {
     objectIdFields: string[],
   ): LocalCallSemantics;
   resolveMethod(parsed: ParsedSource, expression: ts.Expression): ResolvedFunction | undefined;
-  globalGuardProviders(): ResolvedClass[];
+  nestControllerClass(parsed: ParsedSource, declaration: ts.ClassDeclaration): ResolvedClass;
+  globalGuardProviders(ownerClass: ResolvedClass | undefined): ResolvedClass[];
   unresolvedProviderDependencies(): number;
 }
 
@@ -165,6 +167,8 @@ const MAX_STATIC_ROUTE_ENTRIES = 128;
 const MAX_STATIC_ROUTE_EXPANSIONS = 512;
 const MAX_STATIC_PROVIDER_ENTRIES = 256;
 const MAX_PROVIDER_RESOLUTION_DEPTH = 8;
+const MAX_NEST_MODULE_GRAPH_ENTRIES = 256;
+const MAX_NEST_MODULE_GRAPH_DEPTH = 8;
 const MAX_LOCAL_CLASS_HERITAGE_DEPTH = 4;
 
 function scriptKind(path: string): ts.ScriptKind {
@@ -685,9 +689,14 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
   const classes = new Map<string, ResolvedClass>();
   const directEsmImports = new Set<string>();
   const classKey = (parsed: ParsedSource, local: string): string => `${parsed.file.relativePath}\u0000${local}`;
-  const resolvedClassIdentity = (resolved: ResolvedClass): string => resolved.construction
-    ? `new:${resolved.construction.parsed.file.relativePath}:${resolved.construction.expression.pos}`
-    : `class:${resolved.parsed.file.relativePath}:${resolved.declaration.pos}`;
+  const classDeclarationIdentity = (resolved: ResolvedClass): string =>
+    `class:${resolved.parsed.file.relativePath}:${resolved.declaration.pos}`;
+  const resolvedClassIdentity = (resolved: ResolvedClass): string => {
+    const base = resolved.construction
+      ? `new:${resolved.construction.parsed.file.relativePath}:${resolved.construction.expression.pos}`
+      : classDeclarationIdentity(resolved);
+    return resolved.nestModule ? `${base}:nest-module:${resolved.nestModule}` : base;
+  };
   for (const parsed of sources) {
     for (const statement of parsed.source.statements) {
       if (!ts.isImportDeclaration(statement) || !ts.isStringLiteral(statement.moduleSpecifier)) continue;
@@ -749,8 +758,6 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     unresolved?: boolean;
     signature: string;
   }
-  const classTokens = new Map<string, ResolvedClass>();
-  const providerTargets = new Map<string, ProviderTarget>();
   const unresolvedInjectedDependencies = new Set<string>();
   const importedReference = (
     parsed: ParsedSource,
@@ -807,23 +814,6 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     }
     const symbol = resolveExpressionSymbol(parsed, current, lookup);
     return symbol ? `symbol:${classKey(symbol.parsed, symbol.local)}` : undefined;
-  };
-  for (const [key, resolved] of classes) classTokens.set(`symbol:${key}`, resolved);
-  const registerProvider = (key: string, target: ProviderTarget): void => {
-    const existing = providerTargets.get(key);
-    if (!existing || existing.signature === target.signature) {
-      providerTargets.set(key, target);
-      return;
-    }
-    providerTargets.set(key, { unresolved: true, signature: "ambiguous" });
-  };
-  const providerClass = (key: string, seen = new Set<string>()): ResolvedClass | undefined => {
-    if (seen.has(key)) return undefined;
-    const target = providerTargets.get(key);
-    if (!target) return classTokens.get(key);
-    if (target.unresolved) return undefined;
-    if (target.implementation) return target.implementation;
-    return target.alias ? providerClass(target.alias, new Set(seen).add(key)) : undefined;
   };
   const nestDecoratorArguments = (
     parsed: ParsedSource,
@@ -926,16 +916,80 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       ? localProviderObject(parsed, initializer.expression, new Set(seen).add(key), depth + 1)
       : undefined;
   };
-  interface ProviderRecord {
+  interface ProviderObject {
     parsed: ParsedSource;
     object: ts.ObjectLiteralExpression;
   }
-  const providerRecords = new Map<string, ProviderRecord>();
-  const registerProviderEntry = (entry: { parsed: ParsedSource; expression: ts.Expression }): void => {
+  interface ProviderRecord extends ProviderObject {
+    moduleKey: string;
+  }
+  interface NestModuleRecord {
+    key: string;
+    resolved: ResolvedClass;
+    metadata?: ts.Expression;
+    providers: Map<string, ProviderTarget>;
+    providerRecords: Map<string, ProviderRecord>;
+    imports: Set<string>;
+    exports: Set<string>;
+    reExports: Set<string>;
+    global: boolean;
+  }
+  interface NestModuleResolutionBudget {
+    modules: Set<string>;
+    exceeded: boolean;
+  }
+  const moduleRecords = new Map<string, NestModuleRecord>();
+  const moduleRecordForClass = (resolved: ResolvedClass | undefined): NestModuleRecord | undefined =>
+    resolved ? moduleRecords.get(classDeclarationIdentity(resolved)) : undefined;
+  const hasOfficialNestDecorator = (
+    parsed: ParsedSource,
+    node: ts.Node,
+    importedName: "Global",
+  ): boolean => decorators(node).some((decorator) => ts.isCallExpression(decorator.expression)
+    && importedReference(parsed, decorator.expression.expression, "@nestjs/common", importedName));
+  for (const parsed of sources) {
+    for (const statement of parsed.source.statements) {
+      if (!ts.isClassDeclaration(statement)) continue;
+      const moduleArguments = nestDecoratorArguments(parsed, statement, "Module");
+      if (moduleArguments === undefined) continue;
+      const local = statement.name?.text
+        ?? (hasModifier(statement, ts.SyntaxKind.DefaultKeyword) ? syntheticExportLocal("default") : undefined);
+      const resolved = local ? classes.get(classKey(parsed, local)) : undefined;
+      if (!resolved) continue;
+      const key = classDeclarationIdentity(resolved);
+      moduleRecords.set(key, {
+        key,
+        resolved,
+        metadata: moduleArguments[0],
+        providers: new Map(),
+        providerRecords: new Map(),
+        imports: new Set(),
+        exports: new Set(),
+        reExports: new Set(),
+        global: hasOfficialNestDecorator(parsed, statement, "Global"),
+      });
+    }
+  }
+  const withNestModule = (resolved: ResolvedClass, moduleKey: string): ResolvedClass => ({
+    ...resolved,
+    nestModule: moduleKey,
+  });
+  const registerProvider = (module: NestModuleRecord, key: string, target: ProviderTarget): void => {
+    const existing = module.providers.get(key);
+    if (!existing || existing.signature === target.signature) {
+      module.providers.set(key, target);
+      return;
+    }
+    module.providers.set(key, { unresolved: true, signature: "ambiguous" });
+  };
+  const registerProviderEntry = (
+    module: NestModuleRecord,
+    entry: { parsed: ParsedSource; expression: ts.Expression },
+  ): void => {
     const directKey = providerTokenKey(entry.parsed, entry.expression);
     const directClass = classFromSymbol(resolveExpressionSymbol(entry.parsed, entry.expression, lookup));
     if (directKey && directClass) {
-      registerProvider(directKey, {
+      registerProvider(module, directKey, {
         implementation: directClass,
         signature: `class:${directClass.parsed.file.relativePath}:${directClass.declaration.pos}`,
       });
@@ -943,7 +997,8 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     }
     const record = providerObject(entry.parsed, entry.expression);
     if (!record) return;
-    providerRecords.set(`${record.parsed.file.relativePath}\u0000${record.object.pos}`, record);
+    const scopedRecord = { ...record, moduleKey: module.key };
+    module.providerRecords.set(`${record.parsed.file.relativePath}\u0000${record.object.pos}`, scopedRecord);
     const provide = objectProperty(record.object, "provide");
     const key = providerTokenKey(record.parsed, provide);
     if (!key) return;
@@ -952,7 +1007,7 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       ? classFromSymbol(resolveExpressionSymbol(record.parsed, useClass, lookup))
       : undefined;
     if (implementation) {
-      registerProvider(key, {
+      registerProvider(module, key, {
         implementation,
         signature: `class:${implementation.parsed.file.relativePath}:${implementation.declaration.pos}`,
       });
@@ -961,36 +1016,29 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     const useExisting = objectProperty(record.object, "useExisting");
     const alias = providerTokenKey(record.parsed, useExisting);
     if (alias) {
-      registerProvider(key, { alias, signature: `alias:${alias}` });
+      registerProvider(module, key, { alias, signature: `alias:${alias}` });
       return;
     }
     const useFactory = objectProperty(record.object, "useFactory");
     const factoryClass = useFactory && factoryResultClass(record.parsed, useFactory);
     if (factoryClass) {
-      registerProvider(key, {
+      registerProvider(module, key, {
         implementation: factoryClass,
         signature: `factory-class:${factoryClass.parsed.file.relativePath}:${factoryClass.declaration.pos}`,
       });
       return;
     }
-    registerProvider(key, { unresolved: true, signature: "unresolved" });
+    registerProvider(module, key, { unresolved: true, signature: "unresolved" });
   };
-  for (const parsed of sources) {
-    for (const statement of parsed.source.statements) {
-      if (!ts.isClassDeclaration(statement)) continue;
-      const moduleArguments = nestDecoratorArguments(parsed, statement, "Module");
-      const entries = providerArray(parsed, objectProperty(moduleArguments?.[0], "providers"));
-      for (const entry of entries ?? []) registerProviderEntry(entry);
-    }
-  }
   const dynamicModuleObject = (
     parsed: ParsedSource,
     expression: ts.Expression,
-  ): ProviderRecord | undefined => {
+  ): { module: NestModuleRecord; metadata: ProviderObject } | undefined => {
     const current = unwrapExpression(expression);
     if (!ts.isCallExpression(current) || !ts.isPropertyAccessExpression(current.expression)) return undefined;
     const owner = classFromSymbol(resolveExpressionSymbol(parsed, current.expression.expression, lookup));
-    if (!owner || nestDecoratorArguments(owner.parsed, owner.declaration, "Module") === undefined) return undefined;
+    const ownerModule = moduleRecordForClass(owner);
+    if (!owner || !ownerModule) return undefined;
     const methodName = current.expression.name.text;
     const candidates = owner.declaration.members.filter((member): member is ts.MethodDeclaration =>
       ts.isMethodDeclaration(member) && Boolean(member.body)
@@ -1009,22 +1057,269 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       ? classFromSymbol(resolveExpressionSymbol(record.parsed, moduleExpression, lookup))
       : undefined;
     if (!moduleClass || moduleClass.parsed !== owner.parsed || moduleClass.declaration !== owner.declaration) return undefined;
-    return record;
+    return { module: ownerModule, metadata: record };
   };
-  for (const parsed of sources) {
-    for (const statement of parsed.source.statements) {
-      if (!ts.isClassDeclaration(statement)) continue;
-      const moduleArguments = nestDecoratorArguments(parsed, statement, "Module");
-      const imports = providerArray(parsed, objectProperty(moduleArguments?.[0], "imports"));
-      for (const entry of imports ?? []) {
-        const dynamicModule = dynamicModuleObject(entry.parsed, entry.expression);
-        const providers = dynamicModule
-          ? providerArray(dynamicModule.parsed, objectProperty(dynamicModule.object, "providers"))
-          : undefined;
-        for (const provider of providers ?? []) registerProviderEntry(provider);
+  const moduleFromExpression = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+  ): NestModuleRecord | undefined => {
+    const forwarded = forwardRefValue(parsed, expression);
+    const candidate = forwarded ?? { parsed, expression };
+    return moduleRecordForClass(classFromSymbol(resolveExpressionSymbol(candidate.parsed, candidate.expression, lookup)));
+  };
+  const exportedTokenKey = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+  ): string | undefined => {
+    const direct = providerTokenKey(parsed, expression);
+    if (direct) return direct;
+    const record = providerObject(parsed, expression);
+    return record ? providerTokenKey(record.parsed, objectProperty(record.object, "provide")) : undefined;
+  };
+  const controllerModules = new Map<string, Set<string>>();
+  const metadataJobs: Array<{
+    module: NestModuleRecord;
+    parsed: ParsedSource;
+    metadata: ts.Expression;
+    dynamic: boolean;
+  }> = [];
+  for (const module of moduleRecords.values()) {
+    if (module.metadata) metadataJobs.push({
+      module,
+      parsed: module.resolved.parsed,
+      metadata: module.metadata,
+      dynamic: false,
+    });
+  }
+  const processedMetadata = new Set<string>();
+  for (let index = 0; index < metadataJobs.length; index += 1) {
+    const job = metadataJobs[index]!;
+    const metadata = unwrapExpression(job.metadata);
+    if (!ts.isObjectLiteralExpression(metadata)) continue;
+    const metadataKey = `${job.module.key}\u0000${job.parsed.file.relativePath}\u0000${metadata.pos}`;
+    if (processedMetadata.has(metadataKey)) continue;
+    processedMetadata.add(metadataKey);
+    if (job.dynamic && objectProperty(metadata, "global")?.kind === ts.SyntaxKind.TrueKeyword) {
+      job.module.global = true;
+    }
+    const providers = providerArray(job.parsed, objectProperty(metadata, "providers"));
+    for (const provider of providers ?? []) registerProviderEntry(job.module, provider);
+    const controllers = providerArray(job.parsed, objectProperty(metadata, "controllers"));
+    for (const controller of controllers ?? []) {
+      const resolved = classFromSymbol(resolveExpressionSymbol(controller.parsed, controller.expression, lookup));
+      if (!resolved) continue;
+      const identity = classDeclarationIdentity(resolved);
+      const hosts = controllerModules.get(identity) ?? new Set<string>();
+      hosts.add(job.module.key);
+      controllerModules.set(identity, hosts);
+    }
+    const imports = providerArray(job.parsed, objectProperty(metadata, "imports"));
+    for (const imported of imports ?? []) {
+      const dynamic = dynamicModuleObject(imported.parsed, imported.expression);
+      if (dynamic) {
+        job.module.imports.add(dynamic.module.key);
+        metadataJobs.push({
+          module: dynamic.module,
+          parsed: dynamic.metadata.parsed,
+          metadata: dynamic.metadata.object,
+          dynamic: true,
+        });
+        continue;
       }
+      const target = moduleFromExpression(imported.parsed, imported.expression);
+      if (target) job.module.imports.add(target.key);
+    }
+    const exported = providerArray(job.parsed, objectProperty(metadata, "exports"));
+    for (const item of exported ?? []) {
+      const target = moduleFromExpression(item.parsed, item.expression);
+      if (target && job.module.imports.has(target.key)) {
+        job.module.reExports.add(target.key);
+        continue;
+      }
+      const token = exportedTokenKey(item.parsed, item.expression);
+      if (token) job.module.exports.add(token);
     }
   }
+  const moduleParents = new Map<string, Set<string>>();
+  for (const module of moduleRecords.values()) {
+    for (const imported of module.imports) {
+      const parents = moduleParents.get(imported) ?? new Set<string>();
+      parents.add(module.key);
+      moduleParents.set(imported, parents);
+    }
+  }
+  const boundedModuleWalk = (
+    start: string,
+    adjacent: (key: string) => Iterable<string>,
+  ): Set<string> | undefined => {
+    const result = new Set<string>();
+    const queue: Array<{ key: string; depth: number }> = [{ key: start, depth: 0 }];
+    for (let index = 0; index < queue.length; index += 1) {
+      const current = queue[index]!;
+      if (result.has(current.key)) continue;
+      if (result.size >= MAX_NEST_MODULE_GRAPH_ENTRIES) return undefined;
+      result.add(current.key);
+      const next = [...adjacent(current.key)].filter((key) => !result.has(key));
+      if (current.depth >= MAX_NEST_MODULE_GRAPH_DEPTH) {
+        if (next.length > 0) return undefined;
+        continue;
+      }
+      for (const key of next) queue.push({ key, depth: current.depth + 1 });
+    }
+    return result;
+  };
+  const applicationGraphCache = new Map<string, Set<string>[] | null>();
+  const applicationGraphs = (moduleKey: string): Set<string>[] | undefined => {
+    const cached = applicationGraphCache.get(moduleKey);
+    if (cached !== undefined) return cached ?? undefined;
+    const ancestors = boundedModuleWalk(moduleKey, (key) => moduleParents.get(key) ?? []);
+    if (!ancestors) {
+      applicationGraphCache.set(moduleKey, null);
+      return undefined;
+    }
+    let roots = [...ancestors].filter((key) => (moduleParents.get(key)?.size ?? 0) === 0);
+    if (roots.length === 0) roots = [moduleKey];
+    const graphs: Set<string>[] = [];
+    for (const root of roots) {
+      const graph = boundedModuleWalk(root, (key) => moduleRecords.get(key)?.imports ?? []);
+      if (!graph || !graph.has(moduleKey)) {
+        applicationGraphCache.set(moduleKey, null);
+        return undefined;
+      }
+      graphs.push(graph);
+    }
+    applicationGraphCache.set(moduleKey, graphs);
+    return graphs;
+  };
+  const globalModuleCache = new Map<string, Set<string>>();
+  const globallyVisibleModules = (moduleKey: string): Set<string> => {
+    const cached = globalModuleCache.get(moduleKey);
+    if (cached) return cached;
+    const graphs = applicationGraphs(moduleKey);
+    if (!graphs || graphs.length === 0) return new Set();
+    const globalSets = graphs.map((graph) => new Set([...graph].filter((key) => moduleRecords.get(key)?.global)));
+    const intersection = new Set(globalSets[0]);
+    for (const candidates of globalSets.slice(1)) {
+      for (const key of intersection) if (!candidates.has(key)) intersection.delete(key);
+    }
+    globalModuleCache.set(moduleKey, intersection);
+    return intersection;
+  };
+  const uniqueResolvedClass = (values: ResolvedClass[]): ResolvedClass | undefined => {
+    const unique = new Map(values.map((value) => [resolvedClassIdentity(value), value]));
+    return unique.size === 1 ? [...unique.values()][0] : undefined;
+  };
+  const enterNestModuleResolution = (budget: NestModuleResolutionBudget, moduleKey: string): boolean => {
+    if (budget.exceeded) return false;
+    if (budget.modules.has(moduleKey)) return true;
+    if (budget.modules.size >= MAX_NEST_MODULE_GRAPH_ENTRIES) {
+      budget.exceeded = true;
+      return false;
+    }
+    budget.modules.add(moduleKey);
+    return true;
+  };
+  function localProviderClass(
+    moduleKey: string,
+    token: string,
+    seen: Set<string>,
+    moduleDepth: number,
+    providerDepth: number,
+    budget: NestModuleResolutionBudget,
+  ): ResolvedClass | undefined {
+    if (moduleDepth > MAX_NEST_MODULE_GRAPH_DEPTH || providerDepth > MAX_PROVIDER_RESOLUTION_DEPTH) return undefined;
+    if (!enterNestModuleResolution(budget, moduleKey)) return undefined;
+    const module = moduleRecords.get(moduleKey);
+    const target = module?.providers.get(token);
+    if (!module || !target || target.unresolved) return undefined;
+    const marker = `local:${moduleKey}:${token}`;
+    if (seen.has(marker)) return undefined;
+    const nextSeen = new Set(seen).add(marker);
+    if (target.implementation) return withNestModule(target.implementation, moduleKey);
+    return target.alias
+      ? visibleProviderClass(moduleKey, target.alias, nextSeen, moduleDepth, providerDepth + 1, budget)
+      : undefined;
+  }
+  function exportedProviderClasses(
+    moduleKey: string,
+    token: string,
+    seen: Set<string>,
+    moduleDepth: number,
+    providerDepth: number,
+    budget: NestModuleResolutionBudget,
+  ): ResolvedClass[] {
+    if (moduleDepth > MAX_NEST_MODULE_GRAPH_DEPTH || providerDepth > MAX_PROVIDER_RESOLUTION_DEPTH) return [];
+    if (!enterNestModuleResolution(budget, moduleKey)) return [];
+    const module = moduleRecords.get(moduleKey);
+    if (!module) return [];
+    const marker = `export:${moduleKey}:${token}`;
+    if (seen.has(marker)) return [];
+    const nextSeen = new Set(seen).add(marker);
+    const result: ResolvedClass[] = [];
+    if (module.exports.has(token)) {
+      const resolved = visibleProviderClass(moduleKey, token, nextSeen, moduleDepth, providerDepth, budget);
+      if (resolved) result.push(resolved);
+    }
+    for (const reExported of module.reExports) {
+      result.push(...exportedProviderClasses(
+        reExported,
+        token,
+        nextSeen,
+        moduleDepth + 1,
+        providerDepth,
+        budget,
+      ));
+    }
+    if (budget.exceeded) return [];
+    return [...new Map(result.map((value) => [resolvedClassIdentity(value), value])).values()];
+  }
+  function visibleProviderClass(
+    moduleKey: string,
+    token: string,
+    seen = new Set<string>(),
+    moduleDepth = 0,
+    providerDepth = 0,
+    budget: NestModuleResolutionBudget = { modules: new Set<string>(), exceeded: false },
+  ): ResolvedClass | undefined {
+    if (moduleDepth > MAX_NEST_MODULE_GRAPH_DEPTH || providerDepth > MAX_PROVIDER_RESOLUTION_DEPTH) return undefined;
+    if (!enterNestModuleResolution(budget, moduleKey)) return undefined;
+    const module = moduleRecords.get(moduleKey);
+    if (!module) return undefined;
+    const marker = `visible:${moduleKey}:${token}`;
+    if (seen.has(marker)) return undefined;
+    const nextSeen = new Set(seen).add(marker);
+    if (module.providers.has(token)) {
+      return localProviderClass(moduleKey, token, nextSeen, moduleDepth, providerDepth, budget);
+    }
+    const candidates: ResolvedClass[] = [];
+    for (const imported of module.imports) {
+      candidates.push(...exportedProviderClasses(
+        imported,
+        token,
+        nextSeen,
+        moduleDepth + 1,
+        providerDepth,
+        budget,
+      ));
+    }
+    for (const globalModule of globallyVisibleModules(moduleKey)) {
+      if (globalModule === moduleKey || module.imports.has(globalModule)) continue;
+      candidates.push(...exportedProviderClasses(
+        globalModule,
+        token,
+        nextSeen,
+        moduleDepth + 1,
+        providerDepth,
+        budget,
+      ));
+    }
+    return budget.exceeded ? undefined : uniqueResolvedClass(candidates);
+  }
+  const nestControllerClass = (parsed: ParsedSource, declaration: ts.ClassDeclaration): ResolvedClass => {
+    const resolved: ResolvedClass = { parsed, declaration };
+    const hosts = controllerModules.get(classDeclarationIdentity(resolved));
+    return hosts?.size === 1 ? withNestModule(resolved, [...hosts][0]!) : resolved;
+  };
 
   const dependencyCache = new Map<string, ResolvedClass | null>();
   const resolveValueClass = (
@@ -1040,6 +1335,7 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       return constructed ? {
         declaration: constructed.declaration,
         parsed: constructed.parsed,
+        nestModule: constructed.nestModule,
         construction: { parsed, expression: current, ownerClass },
       } : undefined;
     }
@@ -1065,7 +1361,9 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
   const parameterClass = (owner: ResolvedClass, parameter: ts.ParameterDeclaration): ResolvedClass | undefined => {
     const injected = injectedProvider(owner.parsed, parameter);
     if (injected.declared) {
-      const resolved = injected.key && providerClass(injected.key);
+      const resolved = owner.nestModule && injected.key
+        ? visibleProviderClass(owner.nestModule, injected.key)
+        : undefined;
       if (resolved) return resolved;
       unresolvedInjectedDependencies.add(`${owner.parsed.file.relativePath}\u0000${owner.declaration.pos}\u0000${parameter.pos}\u0000${injected.key ?? "unknown"}`);
       return undefined;
@@ -1095,7 +1393,9 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
       if (ts.isPropertyDeclaration(member) && propertyName(member.name) === property) {
         const injected = injectedProvider(owner.parsed, member);
         if (injected.declared) {
-          const provider = injected.key && providerClass(injected.key);
+          const provider = owner.nestModule && injected.key
+            ? visibleProviderClass(owner.nestModule, injected.key)
+            : undefined;
           if (provider) {
             dependencyCache.set(cacheKey, provider);
             return provider;
@@ -1146,7 +1446,8 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     // Calls represent mixins or runtime-generated bases. They intentionally stay
     // outside the static inheritance boundary.
     if (ts.isCallExpression(expression)) return undefined;
-    return classFromSymbol(resolveExpressionSymbol(owner.parsed, expression, lookup));
+    const base = classFromSymbol(resolveExpressionSymbol(owner.parsed, expression, lookup));
+    return base && owner.nestModule ? withNestModule(base, owner.nestModule) : base;
   };
   const classMethod = (owner: ResolvedClass, name: string): ResolvedFunction | undefined => {
     const seen = new Set<string>();
@@ -1838,29 +2139,50 @@ function createLocalCallAnalyzer(sources: ParsedSource[], lookup: Map<string, Pa
     cache.set(cacheKey, result);
     return result;
   };
-  const globalGuardProviders = (): ResolvedClass[] => {
-    const result = new Map<string, ResolvedClass>();
-    for (const record of providerRecords.values()) {
-      const provide = objectProperty(record.object, "provide");
-      if (!provide || !importedReference(record.parsed, provide, "@nestjs/core", "APP_GUARD")) continue;
-      const useClass = objectProperty(record.object, "useClass");
-      const useExisting = objectProperty(record.object, "useExisting");
-      const useFactory = objectProperty(record.object, "useFactory");
-      const useValue = objectProperty(record.object, "useValue");
-      const existingKey = providerTokenKey(record.parsed, useExisting);
-      const directValue = useValue && unwrapExpression(useValue);
-      const resolved = (useClass && classFromSymbol(resolveExpressionSymbol(record.parsed, useClass, lookup)))
-        || (existingKey && providerTargets.has(existingKey) && providerClass(existingKey))
-        || (useFactory && factoryResultClass(record.parsed, useFactory))
-        || (directValue && ts.isNewExpression(directValue)
-          && resolveValueClass(record.parsed, directValue, undefined));
-      if (resolved) result.set(resolvedClassIdentity(resolved), resolved);
+  const globalGuardProviders = (ownerClass: ResolvedClass | undefined): ResolvedClass[] => {
+    if (!ownerClass?.nestModule) return [];
+    const graphs = applicationGraphs(ownerClass.nestModule);
+    if (!graphs || graphs.length === 0) return [];
+    const guardsByGraph = graphs.map((graph) => {
+      const guards = new Map<string, ResolvedClass>();
+      for (const moduleKey of graph) {
+        const module = moduleRecords.get(moduleKey);
+        if (!module) continue;
+        for (const record of module.providerRecords.values()) {
+          const provide = objectProperty(record.object, "provide");
+          if (!provide || !importedReference(record.parsed, provide, "@nestjs/core", "APP_GUARD")) continue;
+          const useClass = objectProperty(record.object, "useClass");
+          const useExisting = objectProperty(record.object, "useExisting");
+          const useFactory = objectProperty(record.object, "useFactory");
+          const useValue = objectProperty(record.object, "useValue");
+          const existingKey = providerTokenKey(record.parsed, useExisting);
+          const directValue = useValue && unwrapExpression(useValue);
+          const directClass = useClass
+            ? classFromSymbol(resolveExpressionSymbol(record.parsed, useClass, lookup))
+            : undefined;
+          const factoryClass = useFactory && factoryResultClass(record.parsed, useFactory);
+          const valueClass = directValue && ts.isNewExpression(directValue)
+            ? resolveValueClass(record.parsed, directValue, undefined)
+            : undefined;
+          const resolved = (directClass && withNestModule(directClass, moduleKey))
+            || (existingKey && visibleProviderClass(moduleKey, existingKey))
+            || (factoryClass && withNestModule(factoryClass, moduleKey))
+            || (valueClass && withNestModule(valueClass, moduleKey));
+          if (resolved) guards.set(resolvedClassIdentity(resolved), resolved);
+        }
+      }
+      return guards;
+    });
+    const intersection = new Map(guardsByGraph[0]);
+    for (const guards of guardsByGraph.slice(1)) {
+      for (const key of intersection.keys()) if (!guards.has(key)) intersection.delete(key);
     }
-    return [...result.values()];
+    return [...intersection.values()];
   };
   return {
     analyze,
     resolveMethod,
+    nestControllerClass,
     globalGuardProviders,
     unresolvedProviderDependencies: () => unresolvedInjectedDependencies.size,
   };
@@ -2641,8 +2963,10 @@ function globalNestSecurity(
   semantics: NestSecuritySemantics,
   lookup: Map<string, ParsedSource>,
   localCalls: LocalCallAnalyzer,
+  ownerClass: ResolvedClass | undefined,
+  base?: NestGlobalSecurity,
 ): NestGlobalSecurity {
-  const result: NestGlobalSecurity = { authentication: false, ownership: false, role: false };
+  const result: NestGlobalSecurity = base ? { ...base } : { authentication: false, ownership: false, role: false };
   const classify = (parsed: ParsedSource, expression: ts.Expression): void => {
     let current = unwrapExpression(expression);
     if (ts.isNewExpression(current) || ts.isCallExpression(current)) current = current.expression;
@@ -2660,14 +2984,16 @@ function globalNestSecurity(
     result.ownership ||= ownership;
     result.role ||= role;
   };
-  for (const parsed of sources) {
-    visit(parsed.source, (node) => {
-      if (ts.isCallExpression(node) && /(?:^|\.)useGlobalGuards$/.test(expressionName(node.expression))) {
-        for (const argument of node.arguments) classify(parsed, argument);
-      }
-    });
+  if (!base) {
+    for (const parsed of sources) {
+      visit(parsed.source, (node) => {
+        if (ts.isCallExpression(node) && /(?:^|\.)useGlobalGuards$/.test(expressionName(node.expression))) {
+          for (const argument of node.arguments) classify(parsed, argument);
+        }
+      });
+    }
   }
-  for (const provider of localCalls.globalGuardProviders()) {
+  for (const provider of localCalls.globalGuardProviders(ownerClass)) {
     if (provider.declaration.name) classify(provider.parsed, provider.declaration.name);
   }
   return result;
@@ -2820,7 +3146,8 @@ function nestRoutePaths(
 
 function nestRoutes(
   parsed: ParsedSource,
-  globalSecurity: NestGlobalSecurity,
+  sources: ParsedSource[],
+  baseGlobalSecurity: NestGlobalSecurity,
   semantics: NestSecuritySemantics,
   lookup: Map<string, ParsedSource>,
   routing: NestRoutingConfig,
@@ -2832,6 +3159,8 @@ function nestRoutes(
     const classDecorators = decorators(statement).map(decoratorDetails);
     const controller = classDecorators.find((item) => item.name === "Controller");
     if (!controller) continue;
+    const ownerClass = localCalls.nestControllerClass(parsed, statement);
+    const globalSecurity = globalNestSecurity(sources, semantics, lookup, localCalls, ownerClass, baseGlobalSecurity);
     const prefix = normalizePath(literalText(controller.arguments[0]) ?? "");
     const classAuthenticated = nestDecoratorAuthentication(classDecorators, parsed, semantics, lookup);
     const classOwnership = nestDecoratorOwnership(classDecorators, parsed, semantics, lookup);
@@ -2850,7 +3179,7 @@ function nestRoutes(
         const localPath = joinPath(prefix, literalText(routeDecorator.arguments[0]) ?? "");
         for (const path of nestRoutePaths(localPath, methodDecorators, classDecorators, routing)) {
           const fields = objectIdFields(member, path, inputs.roots, inputs.fields);
-          const callSemantics = localCalls.analyze(parsed, member, { parsed, declaration: statement }, fields);
+          const callSemantics = localCalls.analyze(parsed, member, ownerClass, fields);
           routes.push({
             framework: "NestJS",
             method: routeDecorator.name === "All" ? "ALL" : routeDecorator.name.toUpperCase(),
@@ -2911,9 +3240,9 @@ export function analyzeNodeApi(files: ProjectFile[]): NodeApiAnalysis {
   }
   if (detectedNest) {
     const semantics = discoverNestSecurity(parsed, lookup);
-    const globalSecurity = globalNestSecurity(parsed, semantics, lookup, localCalls);
+    const baseGlobalSecurity = globalNestSecurity(parsed, semantics, lookup, localCalls, undefined);
     const routing = nestRoutingConfig(parsed);
-    for (const item of parsed) routes.push(...nestRoutes(item, globalSecurity, semantics, lookup, routing, localCalls));
+    for (const item of parsed) routes.push(...nestRoutes(item, parsed, baseGlobalSecurity, semantics, lookup, routing, localCalls));
   }
   const deduplicated = [...new Map(routes.map((route) => [routeKey(route), route])).values()]
     .sort((left, right) => left.path.localeCompare(right.path) || left.method.localeCompare(right.method));
