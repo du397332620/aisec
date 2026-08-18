@@ -165,6 +165,9 @@ const PRIVILEGED_ROUTE_HINT = /(?:^|\/)(?:admin|administration|manage|management
 const PRIVILEGED_HANDLER_HINT = /(?:admin|nonAdmin|allUsers?|manageUsers?|permissions?|roles?)/i;
 const MAX_STATIC_ROUTE_ENTRIES = 128;
 const MAX_STATIC_ROUTE_EXPANSIONS = 512;
+const MAX_STATIC_ROUTE_TRANSFORMS = 2;
+const MAX_STATIC_ROUTE_TABLE_DEPTH = 8;
+const MAX_STATIC_ROUTE_MAP_FIELDS = 32;
 const MAX_STATIC_PROVIDER_ENTRIES = 256;
 const MAX_PROVIDER_RESOLUTION_DEPTH = 8;
 const MAX_NEST_MODULE_GRAPH_ENTRIES = 256;
@@ -2433,10 +2436,11 @@ function expressRoutes(
   interface StaticValue {
     parsed: ParsedSource;
     expression: ts.Expression;
+    members?: ReadonlyMap<string, StaticValue>;
   }
   interface StaticRouteTable {
-    parsed: ParsedSource;
-    elements: ts.Expression[];
+    elements: StaticValue[];
+    transforms: number;
   }
   type StaticBindings = Map<string, StaticValue>;
   const objectMemberExpression = (object: ts.ObjectLiteralExpression, name: string): ts.Expression | undefined => {
@@ -2458,6 +2462,7 @@ function expressRoutes(
     const current = unwrapExpression(expression);
     if (ts.isIdentifier(current)) {
       const bound = bindings.get(current.text);
+      if (bound?.members) return bound;
       if (bound && (bound.parsed !== parsed || !ts.isIdentifier(bound.expression)
         || bound.expression.text !== current.text)) {
         return staticExpression(bound.parsed, bound.expression, bindings, seen, depth + 1);
@@ -2471,6 +2476,7 @@ function expressRoutes(
     }
     if (ts.isPropertyAccessExpression(current)) {
       const owner = staticExpression(parsed, current.expression, bindings, seen, depth + 1);
+      if (owner?.members) return owner.members.get(current.name.text);
       const ownerExpression = owner && unwrapExpression(owner.expression);
       if (owner && ownerExpression && ts.isObjectLiteralExpression(ownerExpression)) {
         const member = objectMemberExpression(ownerExpression, current.name.text);
@@ -2481,6 +2487,7 @@ function expressRoutes(
     if (ts.isElementAccessExpression(current) && current.argumentExpression) {
       const owner = staticExpression(parsed, current.expression, bindings, seen, depth + 1);
       const memberName = literalText(current.argumentExpression);
+      if (owner?.members && memberName !== undefined) return owner.members.get(memberName);
       const ownerExpression = owner && unwrapExpression(owner.expression);
       if (owner && memberName !== undefined && ownerExpression && ts.isObjectLiteralExpression(ownerExpression)) {
         const member = objectMemberExpression(ownerExpression, memberName);
@@ -2503,47 +2510,21 @@ function expressRoutes(
     const resolved = staticExpression(parsed, expression, new Map());
     const current = resolved && unwrapExpression(resolved.expression);
     if (!current || !ts.isArrayLiteralExpression(current) || current.elements.length > MAX_STATIC_ROUTE_ENTRIES) return undefined;
-    const elements: ts.Expression[] = [];
+    const elements: StaticValue[] = [];
     for (const element of current.elements) {
       if (!ts.isExpression(element) || ts.isSpreadElement(element)) return undefined;
-      elements.push(element);
+      const resolvedElement = staticExpression(resolved.parsed, element, new Map());
+      if (!resolvedElement) return undefined;
+      elements.push(resolvedElement);
     }
-    return { parsed: resolved.parsed, elements };
-  };
-  const importedStaticRouteTable = (
-    parsed: ParsedSource,
-    expression: ts.Expression,
-    seen = new Set<string>(),
-    depth = 0,
-  ): StaticRouteTable | undefined => {
-    if (depth > 8) return undefined;
-    const current = unwrapExpression(expression);
-    if (!ts.isIdentifier(current)) return undefined;
-    const key = `${parsed.file.relativePath}\u0000${current.text}`;
-    if (seen.has(key)) return undefined;
-    const nextSeen = new Set(seen).add(key);
-    const localInitializer = staticInitializers.get(key);
-    if (localInitializer) {
-      return staticArrayTable(localInitializer.parsed, localInitializer.expression)
-        ?? importedStaticRouteTable(localInitializer.parsed, localInitializer.expression, nextSeen, depth + 1);
-    }
-    if (!directEsmImports.has(key)) return undefined;
-    const binding = parsed.imports.get(current.text);
-    if (!binding || binding.namespace || !binding.module.startsWith(".")) return undefined;
-    const target = resolveModule(parsed, binding.module, lookup);
-    if (!target) return undefined;
-    const exportedLocal = directEsmExports.get(`${target.file.relativePath}\u0000${binding.imported}`);
-    if (!exportedLocal) return undefined;
-    const targetInitializer = staticInitializers.get(`${target.file.relativePath}\u0000${exportedLocal}`);
-    return targetInitializer && staticArrayTable(targetInitializer.parsed, targetInitializer.expression);
+    return { elements, transforms: 0 };
   };
   const bindingsForElement = (
-    elementParsed: ParsedSource,
+    element: StaticValue,
     bindingParsed: ParsedSource,
     bindingName: ts.BindingName,
-    element: ts.Expression,
   ): StaticBindings | undefined => {
-    const resolved = staticExpression(elementParsed, element, new Map());
+    const resolved = element.members ? element : staticExpression(element.parsed, element.expression, new Map());
     if (!resolved) return undefined;
     const bindings: StaticBindings = new Map();
     if (ts.isIdentifier(bindingName)) {
@@ -2552,16 +2533,204 @@ function expressRoutes(
     }
     if (!ts.isObjectBindingPattern(bindingName)) return undefined;
     const object = unwrapExpression(resolved.expression);
-    if (!ts.isObjectLiteralExpression(object)) return undefined;
+    if (!resolved.members && !ts.isObjectLiteralExpression(object)) return undefined;
     for (const binding of bindingName.elements) {
       if (binding.dotDotDotToken || !ts.isIdentifier(binding.name)) return undefined;
       const sourceName = propertyName(binding.propertyName) ?? binding.name.text;
-      const member = objectMemberExpression(object, sourceName);
-      if (member) bindings.set(binding.name.text, { parsed: resolved.parsed, expression: member });
+      const mappedMember = resolved.members?.get(sourceName);
+      const member = ts.isObjectLiteralExpression(object) ? objectMemberExpression(object, sourceName) : undefined;
+      const resolvedMember = mappedMember
+        ?? (member ? staticExpression(resolved.parsed, member, new Map()) : undefined);
+      if (resolvedMember) bindings.set(binding.name.text, resolvedMember);
       else if (binding.initializer) bindings.set(binding.name.text, { parsed: bindingParsed, expression: binding.initializer });
       else return undefined;
     }
     return bindings;
+  };
+  interface StaticTransformCallback {
+    parsed: ParsedSource;
+    parameter: ts.ParameterDeclaration;
+    returned: ts.Expression;
+  }
+  const staticTransformCallback = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+  ): StaticTransformCallback | undefined => {
+    const callback = unwrapExpression(expression);
+    if ((!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback))
+      || hasModifier(callback, ts.SyntaxKind.AsyncKeyword)
+      || (ts.isFunctionExpression(callback) && callback.asteriskToken)
+      || callback.parameters.length !== 1) return undefined;
+    const parameter = callback.parameters[0]!;
+    if (parameter.dotDotDotToken || parameter.initializer || parameter.questionToken
+      || (!ts.isIdentifier(parameter.name) && !ts.isObjectBindingPattern(parameter.name))) return undefined;
+    if (ts.isObjectBindingPattern(parameter.name)
+      && parameter.name.elements.some((binding) => binding.dotDotDotToken || binding.initializer
+        || !ts.isIdentifier(binding.name)
+        || (binding.propertyName !== undefined && propertyName(binding.propertyName) === undefined))) return undefined;
+    let returned: ts.Expression;
+    if (ts.isBlock(callback.body)) {
+      if (callback.body.statements.length !== 1) return undefined;
+      const statement = callback.body.statements[0]!;
+      if (!ts.isReturnStatement(statement) || !statement.expression) return undefined;
+      returned = statement.expression;
+    } else returned = callback.body;
+    return { parsed, parameter, returned };
+  };
+  type StaticPrimitive = string | number | boolean | null;
+  const staticPrimitive = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+    bindings: StaticBindings,
+  ): StaticPrimitive | undefined => {
+    const resolved = staticExpression(parsed, expression, bindings);
+    if (!resolved || resolved.members) return undefined;
+    const current = unwrapExpression(resolved.expression);
+    if (ts.isStringLiteral(current) || ts.isNoSubstitutionTemplateLiteral(current)) return current.text;
+    if (ts.isNumericLiteral(current)) return Number(current.text);
+    if (current.kind === ts.SyntaxKind.TrueKeyword) return true;
+    if (current.kind === ts.SyntaxKind.FalseKeyword) return false;
+    if (current.kind === ts.SyntaxKind.NullKeyword) return null;
+    return undefined;
+  };
+  const staticBoolean = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+    bindings: StaticBindings,
+  ): boolean | undefined => {
+    const resolved = staticExpression(parsed, expression, bindings);
+    if (!resolved || resolved.members) return undefined;
+    const current = unwrapExpression(resolved.expression);
+    if (ts.isPrefixUnaryExpression(current) && current.operator === ts.SyntaxKind.ExclamationToken) {
+      const value = staticBoolean(resolved.parsed, current.operand, bindings);
+      return value === undefined ? undefined : !value;
+    }
+    if (ts.isBinaryExpression(current)) {
+      if (current.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+        || current.operatorToken.kind === ts.SyntaxKind.BarBarToken) {
+        const left = staticBoolean(resolved.parsed, current.left, bindings);
+        const right = staticBoolean(resolved.parsed, current.right, bindings);
+        if (left === undefined || right === undefined) return undefined;
+        return current.operatorToken.kind === ts.SyntaxKind.AmpersandAmpersandToken
+          ? left && right
+          : left || right;
+      }
+      if (current.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken
+        || current.operatorToken.kind === ts.SyntaxKind.ExclamationEqualsEqualsToken) {
+        const left = staticPrimitive(resolved.parsed, current.left, bindings);
+        const right = staticPrimitive(resolved.parsed, current.right, bindings);
+        if (left === undefined || right === undefined) return undefined;
+        const equal = left === right;
+        return current.operatorToken.kind === ts.SyntaxKind.EqualsEqualsEqualsToken ? equal : !equal;
+      }
+      return undefined;
+    }
+    const primitive = staticPrimitive(resolved.parsed, current, bindings);
+    return typeof primitive === "boolean" ? primitive : undefined;
+  };
+  const staticMapSelector = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+    bindings: StaticBindings,
+  ): StaticValue | undefined => {
+    const current = unwrapExpression(expression);
+    const literal = ts.isStringLiteral(current) || ts.isNoSubstitutionTemplateLiteral(current)
+      || ts.isNumericLiteral(current)
+      || current.kind === ts.SyntaxKind.TrueKeyword
+      || current.kind === ts.SyntaxKind.FalseKeyword
+      || current.kind === ts.SyntaxKind.NullKeyword;
+    const identifier = ts.isIdentifier(current);
+    const property = ts.isPropertyAccessExpression(current) && !current.questionDotToken;
+    const element = ts.isElementAccessExpression(current) && !current.questionDotToken
+      && current.argumentExpression !== undefined && literalText(current.argumentExpression) !== undefined;
+    return literal || identifier || property || element
+      ? staticExpression(parsed, current, bindings)
+      : undefined;
+  };
+  const filterStaticRouteTable = (
+    table: StaticRouteTable,
+    callback: StaticTransformCallback,
+  ): StaticRouteTable | undefined => {
+    const elements: StaticValue[] = [];
+    for (const element of table.elements) {
+      const bindings = bindingsForElement(element, callback.parsed, callback.parameter.name);
+      if (!bindings) return undefined;
+      const included = staticBoolean(callback.parsed, callback.returned, bindings);
+      if (included === undefined) return undefined;
+      if (included) elements.push(element);
+    }
+    return { elements, transforms: table.transforms + 1 };
+  };
+  const mapStaticRouteTable = (
+    table: StaticRouteTable,
+    callback: StaticTransformCallback,
+  ): StaticRouteTable | undefined => {
+    const object = unwrapExpression(callback.returned);
+    if (!ts.isObjectLiteralExpression(object) || object.properties.length > MAX_STATIC_ROUTE_MAP_FIELDS) return undefined;
+    const elements: StaticValue[] = [];
+    for (const element of table.elements) {
+      const bindings = bindingsForElement(element, callback.parsed, callback.parameter.name);
+      if (!bindings) return undefined;
+      const members = new Map<string, StaticValue>();
+      for (const property of object.properties) {
+        if (!ts.isPropertyAssignment(property) && !ts.isShorthandPropertyAssignment(property)) return undefined;
+        if (ts.isShorthandPropertyAssignment(property) && property.objectAssignmentInitializer) return undefined;
+        const name = propertyName(property.name);
+        if (name === undefined || members.has(name)) return undefined;
+        const initializer = ts.isPropertyAssignment(property) ? property.initializer : property.name;
+        const value = staticMapSelector(callback.parsed, initializer, bindings);
+        if (!value) return undefined;
+        members.set(name, value);
+      }
+      elements.push({ parsed: callback.parsed, expression: object, members });
+    }
+    return { elements, transforms: table.transforms + 1 };
+  };
+  const staticRouteTable = (
+    parsed: ParsedSource,
+    expression: ts.Expression,
+    seen = new Set<string>(),
+    depth = 0,
+    importDepth = 0,
+  ): StaticRouteTable | undefined => {
+    if (depth > MAX_STATIC_ROUTE_TABLE_DEPTH) return undefined;
+    const current = unwrapExpression(expression);
+    if (ts.isCallExpression(current) && !current.questionDotToken
+      && ts.isPropertyAccessExpression(current.expression) && !current.expression.questionDotToken
+      && (current.expression.name.text === "filter" || current.expression.name.text === "map")) {
+      if (current.arguments.length !== 1 || current.typeArguments?.length) return undefined;
+      const table = staticRouteTable(parsed, current.expression.expression, seen, depth + 1, importDepth);
+      if (!table || table.transforms >= MAX_STATIC_ROUTE_TRANSFORMS) return undefined;
+      const callback = staticTransformCallback(parsed, current.arguments[0]!);
+      if (!callback) return undefined;
+      return current.expression.name.text === "filter"
+        ? filterStaticRouteTable(table, callback)
+        : mapStaticRouteTable(table, callback);
+    }
+    const direct = staticArrayTable(parsed, current);
+    if (direct) return direct;
+    if (!ts.isIdentifier(current)) return undefined;
+    const key = `${parsed.file.relativePath}\u0000${current.text}`;
+    if (seen.has(key)) return undefined;
+    const nextSeen = new Set(seen).add(key);
+    const localInitializer = staticInitializers.get(key);
+    if (localInitializer) {
+      return staticRouteTable(localInitializer.parsed, localInitializer.expression, nextSeen, depth + 1, importDepth);
+    }
+    if (importDepth >= 1 || !directEsmImports.has(key)) return undefined;
+    const binding = parsed.imports.get(current.text);
+    if (!binding || binding.namespace || !binding.module.startsWith(".")) return undefined;
+    const target = resolveModule(parsed, binding.module, lookup);
+    if (!target) return undefined;
+    const exportedLocal = directEsmExports.get(`${target.file.relativePath}\u0000${binding.imported}`);
+    if (!exportedLocal) return undefined;
+    const targetKey = `${target.file.relativePath}\u0000${exportedLocal}`;
+    if (nextSeen.has(targetKey)) return undefined;
+    const targetInitializer = staticInitializers.get(targetKey);
+    return targetInitializer
+      ? staticRouteTable(targetInitializer.parsed, targetInitializer.expression,
+        new Set(nextSeen).add(targetKey), depth + 1, importDepth + 1)
+      : undefined;
   };
   const resolvedArguments = (
     parsed: ParsedSource,
@@ -2663,7 +2832,7 @@ function expressRoutes(
     expandedRegistrationCalls.add(candidate);
     let fullyExpanded = true;
     for (const element of table.elements) {
-      const bindings = bindingsForElement(table.parsed, parsed, bindingName, element);
+      const bindings = bindingsForElement(element, parsed, bindingName);
       const target = bindings && registrationTarget(parsed, candidate, bindings);
       const expressions = bindings && resolvedArguments(parsed, candidate.arguments, bindings);
       if (!bindings || !target?.method || !expressions || expandedRouteCount >= MAX_STATIC_ROUTE_EXPANSIONS
@@ -2676,8 +2845,7 @@ function expressRoutes(
   for (const parsed of sources) visit(parsed.source, (node) => {
     if (!ts.isCallExpression(node) || !ts.isPropertyAccessExpression(node.expression)
       || node.expression.name.text !== "forEach" || !node.arguments[0]) return;
-    const table = staticArrayTable(parsed, node.expression.expression)
-      ?? importedStaticRouteTable(parsed, node.expression.expression);
+    const table = staticRouteTable(parsed, node.expression.expression);
     const callback = unwrapExpression(node.arguments[0]);
     if (!table || (!ts.isArrowFunction(callback) && !ts.isFunctionExpression(callback)) || !callback.parameters[0]) return;
     visit(callback, (candidate) => {
@@ -2707,9 +2875,7 @@ function expressRoutes(
     const declaration = node.initializer.declarations[0]!;
     if (declaration.initializer
       || (!ts.isIdentifier(declaration.name) && !ts.isObjectBindingPattern(declaration.name))) return;
-    const iterable = unwrapExpression(node.expression);
-    if (!ts.isIdentifier(iterable)) return;
-    const table = staticArrayTable(parsed, iterable) ?? importedStaticRouteTable(parsed, iterable);
+    const table = staticRouteTable(parsed, node.expression);
     const calls = directLoopCalls(node.statement);
     if (!table || !calls || calls.some((candidate) => !registrationCanExpand(parsed, candidate))) return;
     for (const candidate of calls) expandRegistrationCall(parsed, candidate, table, declaration.name);

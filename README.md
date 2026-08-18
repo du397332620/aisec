@@ -43,8 +43,14 @@ statically visible constructor arguments. Express also expands top-level local
 `const` route arrays, plus immutable arrays directly imported from one relative
 ESM module through a named or default import. The producer must directly export
 a file-level `const` array identifier; namespace imports, re-exports and a
-second module hop are rejected. Supported tables may be used by an inline
-`forEach` callback or by a synchronous `for...of` with a `const`
+second module hop are rejected. A table may pass through at most two direct
+`filter`/`map` calls. Transform callbacks must be inline, synchronous and
+single-parameter: filters accept only statically boolean literals, member
+selections, negation, strict equality and boolean conjunction/disjunction;
+maps must directly return an object literal whose unique fields select static
+values without calls, spreads or mutation. If any entry cannot be evaluated,
+the whole transformed table is rejected. Supported tables may be consumed by
+an inline `forEach` callback or by a synchronous `for...of` with a `const`
 identifier/object binding and only direct route registration statements. Path,
 guard, handler and evidence resolution retain the producer file context. Both
 forms are capped at 128 entries per array and 512 expanded routes per scan;
@@ -112,7 +118,8 @@ ownership or tenant constraints from role or permission checks on privileged
 operations. Package aliases or package-provided/mixin base classes,
 package/namespace/re-exported or mutable/generated route tables,
 asynchronous/conditional/nested or
-mutation-bearing `for...of`, chained collection transforms, dynamic module
+mutation-bearing `for...of`, arbitrary or over-two-step collection transforms,
+transform callbacks with runtime calls, spreads or mutation, dynamic module
 metadata with async/branching/runtime configuration, non-direct or non-Nest
 `forwardRef` callbacks, arbitrary `useValue` objects,
 providers/factories without a visible local class result, ambiguous controller
@@ -351,7 +358,7 @@ binaries and prepare the Trivy database before scanning.
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; some findings are explicitly `inferred` and require review |
 | FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
-| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local or one-hop directly imported immutable ESM route tables used by `forEach` and direct synchronous `for...of`, and NestJS controllers/guards/providers through local module imports, exports, re-exports and inferred application-global visibility; accepts direct official `forwardRef` tokens/modules and visible synchronous static dynamic-module metadata, with module traversal capped at eight edges and 256 entries; follows up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced, consumed through one single-condition `const`, or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, unsupported operators/scopes or module/bootstrap graphs, unresolved providers/registration sites, package or mixin bases, complex wrappers and external policy engines still require review |
+| Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local or one-hop directly imported immutable ESM route tables used by `forEach` and direct synchronous `for...of`, including at most two direct inline statically evaluable `filter`/`map` transforms, and NestJS controllers/guards/providers through local module imports, exports, re-exports and inferred application-global visibility; accepts direct official `forwardRef` tokens/modules and visible synchronous static dynamic-module metadata, with module traversal capped at eight edges and 256 entries; follows up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced, consumed through one single-condition `const`, or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, arbitrary collection transforms, unsupported operators/scopes or module/bootstrap graphs, unresolved providers/registration sites, package or mixin bases, complex wrappers and external policy engines still require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |

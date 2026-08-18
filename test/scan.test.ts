@@ -4107,6 +4107,277 @@ defaultRoutes.forEach(({ method, path, guard, handler }) => {
   }
 });
 
+test("Express analysis expands local static filter-map route tables", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-static-route-transforms-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+const app = express();
+
+function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+
+async function readDocument(req, res) {
+  return res.json(await db.document.findUnique({ where: { id: req.params.documentId } }));
+}
+
+async function readOwnedDocument(req, res) {
+  return res.json(await db.document.findFirst({
+    where: { id: req.params.documentId, userId: req.user.id },
+  }));
+}
+
+const definitions = [{
+  enabled: true,
+  surface: "public",
+  verb: "get",
+  url: "/transformed/documents/:documentId",
+  middleware: requireSession,
+  action: readDocument,
+}, {
+  enabled: true,
+  surface: "public",
+  verb: "get",
+  url: "/transformed/archived-documents/:documentId",
+  middleware: requireSession,
+  action: readDocument,
+}, {
+  enabled: true,
+  surface: "public",
+  verb: "get",
+  url: "/transformed/owned-documents/:documentId",
+  middleware: requireSession,
+  action: readOwnedDocument,
+}, {
+  enabled: false,
+  surface: "public",
+  verb: "get",
+  url: "/transformed/disabled/:documentId",
+  middleware: requireSession,
+  action: readDocument,
+}, {
+  enabled: true,
+  surface: "internal",
+  verb: "get",
+  url: "/transformed/internal/:documentId",
+  middleware: requireSession,
+  action: readDocument,
+}] as const;
+
+const selectedRoutes = definitions
+  .filter((route) => route.enabled === true
+    && (route.surface !== "internal" || route.surface === "partner"))
+  .map(({ verb, url, middleware, action }) => ({
+    method: verb,
+    path: url,
+    guard: middleware,
+    handler: action,
+  }));
+
+selectedRoutes.forEach((route) => {
+  app[route.method](route.path, route.guard, route.handler);
+});
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const vulnerableRoutes = [
+      "GET /transformed/documents/:documentId",
+      "GET /transformed/archived-documents/:documentId",
+    ];
+    const safeRoute = "GET /transformed/owned-documents/:documentId";
+    for (const route of [...vulnerableRoutes, safeRoute]) assert.ok(report.profile.routes.includes(route));
+    assert.ok(!report.profile.routes.some((route) => route.includes("/transformed/disabled/")
+      || route.includes("/transformed/internal/")));
+    const vulnerableSignals = report.signals.filter((signal) =>
+      signal.ruleId === "express.authorization.object-without-ownership-check"
+      && vulnerableRoutes.includes(String(signal.metadata?.route)));
+    assert.deepEqual(vulnerableSignals.map((signal) => signal.metadata?.route).sort(), vulnerableRoutes.sort());
+    assert.equal(new Set(vulnerableSignals.map((signal) => signal.fingerprint)).size, 2);
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("express.authorization.")
+      && signal.metadata?.route === safeRoute));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.doesNotMatch(coverage?.reason ?? "", /route registration site/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Express static transforms preserve direct-import context in for-of and exported producer chains", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-imported-route-transforms-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "handlers.ts"), `
+export function requireSession(req, res, next) {
+  if (!req.user) return res.status(401).end();
+  return next();
+}
+
+export async function readDocument(req, res) {
+  return res.json(await db.document.findUnique({ where: { id: req.params.documentId } }));
+}
+
+export async function readOwnedDocument(req, res) {
+  return res.json(await db.document.findFirst({
+    where: { id: req.params.documentId, userId: req.user.id },
+  }));
+}
+`);
+    await writeFile(join(temporary, "routes.ts"), `
+import { readDocument, readOwnedDocument, requireSession } from "./handlers";
+
+export const importedDefinitions = [{
+  disabled: false,
+  verb: "get",
+  url: "/imported-transform/documents/:documentId",
+  middleware: requireSession,
+  action: readDocument,
+}, {
+  disabled: true,
+  verb: "get",
+  url: "/imported-transform/disabled/:documentId",
+  middleware: requireSession,
+  action: readDocument,
+}] as const;
+
+const producerDefinitions = [{
+  enabled: true,
+  verb: "get",
+  url: "/producer-transform/owned-documents/:documentId",
+  middleware: requireSession,
+  action: readOwnedDocument,
+}, {
+  enabled: false,
+  verb: "get",
+  url: "/producer-transform/disabled/:documentId",
+  middleware: requireSession,
+  action: readDocument,
+}] as const;
+
+export const producerRoutes = producerDefinitions
+  .filter(({ enabled }) => enabled)
+  .map((route) => ({
+    method: route.verb,
+    path: route.url,
+    guard: route.middleware,
+    handler: route.action,
+  }));
+`);
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+import { importedDefinitions, producerRoutes } from "./routes";
+const app = express();
+
+for (const route of importedDefinitions
+  .filter((definition) => !definition.disabled)
+  .map(({ verb, url, middleware, action }) => ({
+    method: verb,
+    path: url,
+    guard: middleware,
+    handler: action,
+  }))) {
+  app[route.method](route.path, route.guard, route.handler);
+}
+
+producerRoutes.forEach(({ method, path, guard, handler }) => {
+  app[method](path, guard, handler);
+});
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const vulnerableRoute = "GET /imported-transform/documents/:documentId";
+    const safeRoute = "GET /producer-transform/owned-documents/:documentId";
+    assert.ok(report.profile.routes.includes(vulnerableRoute));
+    assert.ok(report.profile.routes.includes(safeRoute));
+    assert.ok(!report.profile.routes.some((route) => route.includes("/disabled/")));
+    const vulnerable = report.signals.find((signal) =>
+      signal.ruleId === "express.authorization.object-without-ownership-check"
+      && signal.metadata?.route === vulnerableRoute);
+    assert.ok(vulnerable);
+    assert.equal(vulnerable.locations[0]?.path, "routes.ts");
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("express.authorization.")
+      && signal.metadata?.route === safeRoute));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.doesNotMatch(coverage?.reason ?? "", /route registration site/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Express static route transforms fail closed outside the inline two-step boundary", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-unresolved-route-transforms-"));
+  try {
+    await writeFile(join(temporary, "package.json"), JSON.stringify({ dependencies: { express: "5.1.0" } }));
+    await writeFile(join(temporary, "base.ts"), `
+export const baseRoutes = [{
+  enabled: true,
+  method: "get",
+  path: "/unsupported/second-hop/:documentId",
+  guard: null,
+  handler: null,
+}] as const;
+`);
+    await writeFile(join(temporary, "derived.ts"), `
+import { baseRoutes } from "./base";
+export const secondHopRoutes = baseRoutes.filter((route) => route.enabled);
+`);
+    const unsupported = [
+      "routes.filter(isEnabled)",
+      "routes.filter(async (route) => route.enabled)",
+      "routes.filter(function* (route) { return route.enabled; })",
+      "routes.filter((route, index) => route.enabled)",
+      "routes.filter((route = fallbackRoute) => route.enabled)",
+      "routes.filter((...items) => items[0].enabled)",
+      "routes.filter((route) => route.enabled, filterContext)",
+      "routes.filter((route) => featureEnabled(route))",
+      "routes.filter((route) => route.enabled ? true : false)",
+      "routes.filter((route) => { observe(route); return route.enabled; })",
+      "routes.filter((route) => route.enabled == true)",
+      "routes.map((route) => ({ ...route }))",
+      "routes.map((route) => buildRoute(route))",
+      "routes.map((route) => route.enabled ? route : fallbackRoute)",
+      "routes.map((route) => { observe(route); return route; })",
+      "routes.filter((route) => route.enabled).map((route) => route).filter((route) => route.enabled)",
+      "routes.flatMap((route) => [route])",
+      "secondHopRoutes.filter((route) => route.enabled)",
+      "mutableRoutes.filter((route) => route.enabled)",
+      "routes.map((route) => ({ method: route.method, method: \"post\", path: route.path, guard: route.guard, handler: route.handler }))",
+      "routes.map((route) => ({ [route.key]: route.method, path: route.path, guard: route.guard, handler: route.handler }))",
+      "routes.map((route) => ({ method() { return route.method; }, path: route.path, guard: route.guard, handler: route.handler }))",
+    ];
+    assert.equal(unsupported.length, 22);
+    const registrations = unsupported.map((expression) => `${expression}.forEach((route) => {
+  app[route.method](route.path, route.guard, route.handler);
+});`).join("\n");
+    await writeFile(join(temporary, "app.ts"), `
+import express from "express";
+import { secondHopRoutes } from "./derived";
+const app = express();
+function isEnabled(route) { return route.enabled; }
+const routes = [{
+  enabled: true,
+  key: "method",
+  method: "get",
+  path: "/unsupported/runtime/:documentId",
+  guard: null,
+  handler: null,
+}] as const;
+let mutableRoutes = routes;
+${registrations}
+`);
+
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.deepEqual(report.profile.routes, []);
+    assert.ok(!report.signals.some((signal) => signal.ruleId.startsWith("express.")));
+    const coverage = report.coverage.find((item) => item.domain === "node-api-security");
+    assert.match(coverage?.reason ?? "", /22 Express route registration site\(s\) could not be statically expanded/);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("Express imported route-table expansion rejects indirect or mutable module boundaries", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-node-api-unresolved-imported-route-tables-"));
   try {
