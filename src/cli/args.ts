@@ -11,7 +11,7 @@ export function parseArgs(argv: string[]): ParsedArgs {
   const positionals: string[] = [];
   let subcommand: string | undefined;
   let index = 1;
-  if (command === "engines" && argv[1] && !argv[1].startsWith("-")) {
+  if (["engines", "rule-pack"].includes(command ?? "") && argv[1] && !argv[1].startsWith("-")) {
     subcommand = argv[1];
     index = 2;
   }

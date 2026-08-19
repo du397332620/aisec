@@ -18,6 +18,27 @@ export interface FileInventory {
   skippedReasons: Record<string, number>;
 }
 
+const PARTIAL_INVENTORY_REASONS = new Set([
+  "file_limit",
+  "entry_limit",
+  "total_bytes_limit",
+  "directory_depth",
+  "oversized_file",
+  "binary_file",
+  "non_regular_file",
+  "unreadable_file",
+  "unreadable_directory",
+  "symbolic_link",
+  "path_escape",
+]);
+
+export function inventoryCoverage(inventory: FileInventory): { status: "complete" | "partial"; reason?: string } {
+  if (inventory.skippedFiles === 0) return { status: "complete" };
+  const entries = Object.entries(inventory.skippedReasons).sort(([left], [right]) => left.localeCompare(right));
+  const status = entries.some(([reason, count]) => count > 0 && PARTIAL_INVENTORY_REASONS.has(reason)) ? "partial" : "complete";
+  return { status, reason: entries.map(([reason, count]) => `${reason}: ${count}`).join(", ") };
+}
+
 function isTextCandidate(name: string): boolean {
   if (MANIFEST_NAMES.has(name)) return true;
   if (name === ".aisec.yml") return true;

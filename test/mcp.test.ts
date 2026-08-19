@@ -19,6 +19,27 @@ test("MCP stdio server advertises only local read-oriented tools", async (contex
   await writeFile(join(dataDirectory, "scans", `${corruptedScanId}.json`), JSON.stringify({ schemaVersion: "1.0.0", scanId: corruptedScanId }));
   await writeFile(join(target, "policy.yml"), "schemaVersion: 1.0.0\n");
   await writeFile(join(target, "rules.yml"), "schemaVersion: 1.0.0\n");
+  const trustedRules = join(dataDirectory, "trusted-rules.yml");
+  await writeFile(trustedRules, `schemaVersion: 1.1.0
+packId: mcp.preview
+description: MCP selector preview test
+rules:
+  - ruleId: custom.mcp.preview.required-security-file
+    title: Required security file selector
+    description: Preview an intentionally empty required selector.
+    severity: medium
+    evidenceLevel: inferred
+    confidence: medium
+    cwe: [CWE-693]
+    tags: [preview]
+    remediation: Review the selected files.
+    files:
+      extensions: [.ts]
+      pathSuffixes: [security.ts]
+    match:
+      containsAny: [helmet(]
+      emitWhen: absent
+`);
   const cli = join(here, "..", "src", "cli.js");
   const child = spawn(process.execPath, [cli, "mcp"], { env: { ...process.env, AISEC_DATA_DIR: dataDirectory }, stdio: ["pipe", "pipe", "pipe"] });
   let output = "";
@@ -32,6 +53,8 @@ test("MCP stdio server advertises only local read-oriented tools", async (contex
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 5, method: "tools/call", params: { _meta: meta, name: "get_report", arguments: { reference: corruptedScanId } } })}\n`);
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 6, method: "tools/call", params: { _meta: meta, name: "run_predeploy_scan", arguments: { path: target, policy: join(target, "policy.yml") } } })}\n`);
   child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 7, method: "tools/call", params: { _meta: meta, name: "run_predeploy_scan", arguments: { path: target, rulePacks: [join(target, "rules.yml")] } } })}\n`);
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { _meta: meta, name: "preview_rule_packs", arguments: { path: target, rulePacks: [trustedRules] } } })}\n`);
+  child.stdin.write(`${JSON.stringify({ jsonrpc: "2.0", id: 9, method: "tools/call", params: { _meta: meta, name: "preview_rule_packs", arguments: { path: target, rulePacks: [join(target, "rules.yml")] } } })}\n`);
   child.stdin.end();
   await once(child, "close");
   const responses = output.trim().split("\n").map((line) => JSON.parse(line));
@@ -40,13 +63,16 @@ test("MCP stdio server advertises only local read-oriented tools", async (contex
   assert.equal(responses[1].result.resultType, "complete");
   assert.equal(responses[1].result.cacheScope, "public");
   const names = responses[1].result.tools.map((tool: { name: string }) => tool.name);
-  assert.deepEqual(names, ["inspect_project", "run_predeploy_scan", "get_report", "create_fix_contract", "verify_fix"]);
+  assert.deepEqual(names, ["inspect_project", "run_predeploy_scan", "preview_rule_packs", "get_report", "create_fix_contract", "verify_fix"]);
   const predeploy = responses[1].result.tools.find((tool: { name: string }) => tool.name === "run_predeploy_scan");
+  const previewRulePacks = responses[1].result.tools.find((tool: { name: string }) => tool.name === "preview_rule_packs");
   const verifyFix = responses[1].result.tools.find((tool: { name: string }) => tool.name === "verify_fix");
   assert.equal(predeploy.inputSchema.properties.policy.type, "string");
   assert.equal(predeploy.inputSchema.properties.confirmPolicySuppressions.type, "boolean");
   assert.equal(predeploy.inputSchema.properties.rulePacks.type, "array");
   assert.equal(predeploy.inputSchema.properties.rulePacks.maxItems, 8);
+  assert.equal(previewRulePacks.inputSchema.properties.rulePacks.minItems, 1);
+  assert.equal(previewRulePacks.inputSchema.properties.rulePacks.maxItems, 8);
   assert.equal(verifyFix.inputSchema.properties.policy.type, "string");
   assert.equal(verifyFix.inputSchema.properties.confirmPolicySuppressions.type, "boolean");
   assert.equal(verifyFix.inputSchema.properties.rulePacks.type, "array");
@@ -61,4 +87,10 @@ test("MCP stdio server advertises only local read-oriented tools", async (contex
   assert.match(responses[5].error.message, /outside the scanned target/);
   assert.equal(responses[6].error.code, -32602);
   assert.match(responses[6].error.message, /outside the scanned target/);
+  assert.equal(responses[7].result.structuredContent.schemaVersion, "1.0.0");
+  assert.equal(responses[7].result.structuredContent.status, "partial");
+  assert.equal(responses[7].result.structuredContent.rulePacks[0].packId, "mcp.preview");
+  assert.doesNotMatch(JSON.stringify(responses[7].result.structuredContent), /helmet\(|trusted-rules\.yml/);
+  assert.equal(responses[8].error.code, -32602);
+  assert.match(responses[8].error.message, /outside the scanned target/);
 });

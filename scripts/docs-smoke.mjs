@@ -55,7 +55,9 @@ try {
     "## Beta capability matrix",
     "--policy ../trusted/security-policy.yml",
     "--rule-pack ../trusted/rule-pack.yml",
+    "aisec rule-pack check ../target",
     "RulePack 1.1.0",
+    "RulePackPreview 1.0.0",
     "emitWhen: absent",
     "--confirm-policy-suppressions",
     "target-owned `.aisec.yml` is ignored",
@@ -78,6 +80,7 @@ try {
   assert.match(help, /--profile predeploy\|native/);
   assert.match(help, /--policy <file>/);
   assert.match(help, /--rule-pack <file>/);
+  assert.match(help, /rule-pack check \[path\]/);
   assert.match(help, /--confirm-policy-suppressions/);
   assert.match(help, /terminal\|json\|html\|sarif\|ci\|github\|markdown/);
   assert.match(help, /verify-bola --authorization <manifest\.yml> --confirm/);
@@ -171,6 +174,12 @@ rules:
     match:
       containsAny: [console.log(refreshToken)]
 `);
+  const rulePackPreview = report(run(["rule-pack", "check", policyTarget, "--rule-pack", trustedRulePack, "--format", "json"]), "rule-pack selector preview");
+  assert.equal(rulePackPreview.schemaVersion, "1.0.0");
+  assert.equal(rulePackPreview.status, "complete");
+  assert.equal(rulePackPreview.rulePacks[0].packId, "docs.smoke");
+  assert.deepEqual(rulePackPreview.rulePacks[0].rules[0].selectedFiles, ["index.ts"]);
+  assert.doesNotMatch(JSON.stringify(rulePackPreview), /console\.log\(refreshToken\)|trusted-rule-pack\.yml/);
   const rulePackReport = report(run(["scan", policyTarget, "--profile", "native", "--rule-pack", trustedRulePack, "--no-persist", "--format", "json"], 1), "declarative rule-pack scan");
   assert.equal(rulePackReport.rulePacks[0].packId, "docs.smoke");
   assert.ok(rulePackReport.signals.some((item) => item.ruleId === "custom.docs.smoke.refresh-token-log"));
@@ -199,6 +208,7 @@ rules:
   assert.deepEqual(mcpResponse.result.tools.map((tool) => tool.name), [
     "inspect_project",
     "run_predeploy_scan",
+    "preview_rule_packs",
     "get_report",
     "create_fix_contract",
     "verify_fix",
@@ -206,6 +216,7 @@ rules:
   assert.equal(mcpResponse.result.tools.find((tool) => tool.name === "run_predeploy_scan").inputSchema.properties.policy.type, "string");
   assert.equal(mcpResponse.result.tools.find((tool) => tool.name === "run_predeploy_scan").inputSchema.properties.confirmPolicySuppressions.type, "boolean");
   assert.equal(mcpResponse.result.tools.find((tool) => tool.name === "run_predeploy_scan").inputSchema.properties.rulePacks.maxItems, 8);
+  assert.equal(mcpResponse.result.tools.find((tool) => tool.name === "preview_rule_packs").inputSchema.properties.rulePacks.minItems, 1);
 
   process.stdout.write(`Documentation smoke passed on ${process.platform}/${process.arch} with ${process.version}.\n`);
 } finally {

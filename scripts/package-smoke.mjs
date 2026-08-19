@@ -61,6 +61,7 @@ try {
   assert.ok(packedPaths.has("rules/catalog.json"), "machine-readable rule catalog must be packaged");
   assert.ok(packedPaths.has("schemas/rule-catalog.schema.json"), "rule catalog schema must be packaged");
   assert.ok(packedPaths.has("schemas/rule-pack.schema.json"), "declarative rule-pack schema must be packaged");
+  assert.ok(packedPaths.has("schemas/rule-pack-preview.schema.json"), "rule-pack preview schema must be packaged");
   assert.ok(packedPaths.has("schemas/security-policy.schema.json"), "security policy schema must be packaged");
   assert.ok(packedPaths.has("schemas/ci-report.schema.json"), "CI report schema must be packaged");
   assert.ok(packedPaths.has("examples/security-policy.example.yml"), "trusted policy example must be packaged");
@@ -92,6 +93,7 @@ try {
   await access(join(packageRoot, "schemas", "bola-draft.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "rule-catalog.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "rule-pack.schema.json"), constants.R_OK);
+  await access(join(packageRoot, "schemas", "rule-pack-preview.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "security-policy.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "ci-report.schema.json"), constants.R_OK);
   await access(join(packageRoot, "RULES.md"), constants.R_OK);
@@ -135,6 +137,7 @@ try {
   assert.equal(run(executable, ["--version"], { cwd: consumer, env: scanEnvironment }).trim(), packageMetadata.version);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /--policy <file>/);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /--rule-pack <file>/);
+  assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /rule-pack check \[path\]/);
 
   process.stdout.write("Running the installed CLI against safe and vulnerable fixtures...\n");
   const safe = parseReport(run(executable, [
@@ -151,6 +154,27 @@ try {
   await mkdir(join(customTarget, "src"), { recursive: true });
   await writeFile(join(customTarget, "src", "transport.ts"), "const options = { rejectUnauthorized: false };\n");
   await writeFile(join(customTarget, "src", "security.ts"), "app.use(helmet());\n");
+  const previewApi = parseReport(run(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `import { previewRulePacks, validateRulePackPreview } from ${JSON.stringify(packageMetadata.name)}; const value = validateRulePackPreview(await previewRulePacks(${JSON.stringify(customTarget)}, { rulePackPaths: [${JSON.stringify(join(packageRoot, "examples", "rule-pack.example.yml"))}] })); process.stdout.write(JSON.stringify(value));`,
+  ], { cwd: consumer, env: scanEnvironment }), "installed rule-pack preview API");
+  assert.equal(previewApi.schemaVersion, "1.0.0");
+  assert.equal(previewApi.status, "complete");
+  assert.equal(previewApi.rulePacks[0].packId, "example.local");
+  assert.doesNotMatch(JSON.stringify(previewApi), /rejectUnauthorized: false|helmet\(|rule-pack\.example\.yml/);
+
+  const previewCli = parseReport(run(executable, [
+    "rule-pack",
+    "check",
+    customTarget,
+    "--rule-pack",
+    join(packageRoot, "examples", "rule-pack.example.yml"),
+    "--format",
+    "json",
+  ], { cwd: consumer, env: scanEnvironment }), "installed rule-pack preview CLI");
+  assert.equal(previewCli.status, "complete");
+  assert.equal(previewCli.rulePacks[0].rules.length, 2);
   const custom = parseReport(run(executable, [
     "scan",
     customTarget,

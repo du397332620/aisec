@@ -15,6 +15,7 @@ import { draftBola } from "./web/bola-draft.js";
 import { TOOL_VERSION } from "./core/constants.js";
 import { parsePositiveInt } from "./core/utils.js";
 import { prepareTrivyDatabase, trivyDatabaseStatus } from "./engines/trivy-db.js";
+import { previewRulePacks, renderRulePackPreview } from "./rules/preview.js";
 
 const HELP = `AIsec ${TOOL_VERSION} — local-first security acceptance for AI-built applications
 
@@ -27,6 +28,7 @@ Usage:
   aisec draft-bola --scan <scan-id|report.json> [--output file]
   aisec verify-web --authorization <manifest.yml> --confirm [--output file]
   aisec verify-bola --authorization <manifest.yml> --confirm [--output file]
+  aisec rule-pack check [path] --rule-pack <trusted-rules.yml> [--format terminal|json] [--output file]
   aisec doctor [--json]
   aisec engines status [--json]
   aisec engines prepare trivy [--timeout-ms 600000]
@@ -55,8 +57,14 @@ Scan options:
   --timeout-ms <ms>          External engine/artifact timeout (default 120000)
   --no-persist               Do not store the generated report
 
+Rule-pack preview:
+  Validates explicit RulePack 1.0/1.1 files and lists bounded selected project
+  paths without evaluating literals or producing vulnerability findings.
+  Uses the scan inventory limits and the same outside-target trust boundary.
+
 Decision exit codes:
-  0 no_blockers_found/review, 1 block, 2 incomplete, 64 invalid usage/error
+  Scans: 0 no_blockers_found/review, 1 block, 2 incomplete
+  Rule-pack preview: 0 complete, 2 partial; 64 invalid usage/error
 `;
 
 function formatValue(value: string | undefined): OutputFormat {
@@ -75,6 +83,12 @@ function scanProfile(value: string | undefined): "predeploy" | "native" {
   if (value === undefined || value === "predeploy") return "predeploy";
   if (value === "native") return "native";
   throw new Error(`Unsupported scan profile: ${value}`);
+}
+
+function rulePackPreviewFormat(value: string | undefined): "terminal" | "json" {
+  const format = value ?? "terminal";
+  if (format !== "terminal" && format !== "json") throw new Error(`Unsupported rule-pack preview format: ${format}`);
+  return format;
 }
 
 function pathFlags(parsed: ReturnType<typeof parseArgs>, name: string): string[] {
@@ -161,6 +175,23 @@ async function main(): Promise<void> {
     if (result.signals.some((signal) => ["critical", "high"].includes(signal.severity))) process.exitCode = 1;
     else if (result.coverage.some((item) => item.required && item.status !== "complete")) process.exitCode = 2;
     else process.exitCode = 0;
+    return;
+  }
+
+  if (parsed.command === "rule-pack" && parsed.subcommand === "check") {
+    if (parsed.positionals.length > 1) throw new Error("rule-pack check accepts at most one target path");
+    const rulePackPaths = pathFlags(parsed, "rule-pack");
+    if (rulePackPaths.length === 0) throw new Error("rule-pack check requires at least one --rule-pack <file>");
+    const preview = await previewRulePacks(parsed.positionals[0] ?? ".", {
+      rulePackPaths,
+      maxFiles: parsePositiveInt(flag(parsed, "max-files"), 20_000),
+      maxFileBytes: parsePositiveInt(flag(parsed, "max-file-bytes"), 2 * 1024 * 1024),
+      maxTotalBytes: parsePositiveInt(flag(parsed, "max-total-bytes"), 64 * 1024 * 1024),
+    });
+    const format = rulePackPreviewFormat(flag(parsed, "format"));
+    const output = format === "json" ? `${JSON.stringify(preview, null, 2)}\n` : `${renderRulePackPreview(preview)}\n`;
+    await writeOrStdout(output, flag(parsed, "output"));
+    process.exitCode = preview.status === "partial" ? 2 : 0;
     return;
   }
 

@@ -88,6 +88,11 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   required coverage rather than an absence finding. Reports record its ID, rule
   count and SHA-256 without recording its local path or literal definitions.
   Baselines require the same pack set and digest.
+- Rule-pack preview uses the same outside-target loader, safe source inventory
+  and selector predicate. It evaluates no rule literals and produces no
+  findings. Its strict output omits pack paths and literal definitions, lists
+  only bounded normalized relative target paths, and becomes `partial` when
+  inventory, selector-work or path-output limits prevent a complete preview.
 - Trivy scans use an AIsec-owned offline cache. Missing, invalid or stale
   database metadata fails coverage; database download happens only through the
   explicit `engines prepare trivy` setup command.
@@ -124,7 +129,10 @@ rule-file selection work, inspected bytes, literal-byte work and evaluated lines
 are separately bounded. Reaching a custom-rule work or output limit makes its
 required coverage `partial`. A RulePack absence result proves only that its
 reviewed line-local literal was not found in a selected inspected source file;
-it does not prove that a runtime security control is missing.
+it does not prove that a runtime security control is missing. Selector preview
+lists at most 100 paths per rule and 2,000 total under the shared 1,000,000
+rule-file evaluation ceiling. Preview output says nothing about whether a
+literal is present or whether a rule would produce a finding.
 
 Mobile archive inspection selects at most 25 supported members after validating
 up to 200,000 listed paths. It accepts at most 8 MiB from one member, 16 MiB of

@@ -42,7 +42,10 @@ discovery, suppressions or gate relaxation. Update the public RulePack,
 ScanReport and CI schemas plus path, resource, baseline and installed-package
 tests together. Required-literal absence rules must remain inferred and
 path-only: selecting no file or reaching a bound is partial coverage, never a
-fabricated vulnerability finding.
+fabricated vulnerability finding. Selector-preview changes must reuse the scan
+predicate, retain strict output validation and deterministic path/work bounds,
+and must not expose local pack paths, literal definitions or vulnerability
+claims.
 
 Report-format changes must validate their public contract before serialization
 and include hostile target-controlled text tests. GitHub annotations must reject

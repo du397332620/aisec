@@ -1,21 +1,15 @@
-import { extname } from "node:path";
 import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
 import { createSignal, makeLocation } from "../core/utils.js";
 import type { ScanContext } from "../core/context.js";
 import type { CoverageRecord, RulePackRule, Signal, SourceLocation } from "../schema.js";
 import type { LoadedRulePack } from "../rules/pack.js";
+import { MAX_RULE_PACK_SELECTOR_EVALUATIONS, rulePackFileSelected } from "../rules/selection.js";
+
+export { MAX_RULE_PACK_SELECTOR_EVALUATIONS } from "../rules/selection.js";
 
 export const MAX_RULE_PACK_EVALUATED_BYTES = 256 * 1024 * 1024;
 export const MAX_RULE_PACK_LITERAL_WORK_BYTES = 256 * 1024 * 1024;
 export const MAX_RULE_PACK_LINE_EVALUATIONS = 2_000_000;
-export const MAX_RULE_PACK_SELECTOR_EVALUATIONS = 1_000_000;
-
-function fileSelected(path: string, extensions: readonly string[], prefixes: readonly string[], suffixes: readonly string[], excluded: readonly string[]): boolean {
-  if (!extensions.includes(extname(path).toLowerCase())) return false;
-  if (prefixes.length > 0 && !prefixes.some((prefix) => path.startsWith(prefix))) return false;
-  if (suffixes.length > 0 && !suffixes.some((suffix) => path.endsWith(suffix))) return false;
-  return !excluded.some((prefix) => path.startsWith(prefix));
-}
 
 function lineMatches(line: string, any: readonly string[], all: readonly string[], excluded: readonly string[], caseSensitive: boolean): boolean {
   const candidate = caseSensitive ? line : line.toLowerCase();
@@ -69,9 +63,6 @@ export async function runRulePacks(
     let firstMissingSelectionRule: string | undefined;
     if (!limitReason) {
       for (const rule of [...loaded.pack.rules].sort((left, right) => left.ruleId.localeCompare(right.ruleId))) {
-        const prefixes = rule.files.pathPrefixes ?? [];
-        const suffixes = rule.files.pathSuffixes ?? [];
-        const excludedPrefixes = rule.files.excludePathPrefixes ?? [];
         const caseSensitive = rule.match.caseSensitive ?? true;
         const normalize = (literal: string): string => caseSensitive ? literal : literal.toLowerCase();
         const any = rule.match.containsAny.map(normalize);
@@ -86,7 +77,7 @@ export async function runRulePacks(
             packTruncated = true;
             break;
           }
-          if (!fileSelected(file.relativePath, rule.files.extensions, prefixes, suffixes, excludedPrefixes)) continue;
+          if (!rulePackFileSelected(file.relativePath, rule.files)) continue;
           selectedFiles += 1;
           if (evaluatedBytes + file.size > MAX_RULE_PACK_EVALUATED_BYTES) {
             limitReason = `custom rule evaluation reached the ${MAX_RULE_PACK_EVALUATED_BYTES} byte shared work limit`;

@@ -1,0 +1,146 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/rule-pack-preview-1.0.0.json",
+  "title": "AIsec RulePackPreview 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "toolVersion",
+    "target",
+    "status",
+    "inventory",
+    "rulePacks",
+    "reasons",
+    "disclaimer"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "toolVersion": { "$ref": "#/$defs/nonEmptyText" },
+    "target": { "$ref": "#/$defs/pathText" },
+    "status": { "$ref": "#/$defs/status" },
+    "inventory": { "$ref": "#/$defs/inventory" },
+    "rulePacks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/pack" }
+    },
+    "reasons": { "$ref": "#/$defs/reasons" },
+    "disclaimer": { "$ref": "#/$defs/longText" }
+  },
+  "$defs": {
+    "status": { "enum": ["complete", "partial"] },
+    "nonEmptyText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "\\S"
+    },
+    "longText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "pattern": "\\S"
+    },
+    "pathText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096
+    },
+    "reason": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "reasons": {
+      "type": "array",
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/reason" }
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024
+    },
+    "inventory": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "fileCount", "totalBytes", "skippedFiles", "skippedReasons", "reasons"],
+      "properties": {
+        "status": { "$ref": "#/$defs/status" },
+        "fileCount": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "totalBytes": { "type": "integer", "minimum": 0, "maximum": 536870912 },
+        "skippedFiles": { "type": "integer", "minimum": 0, "maximum": 100001 },
+        "skippedReasons": {
+          "type": "object",
+          "maxProperties": 32,
+          "propertyNames": { "pattern": "^[a-z_]+$" },
+          "additionalProperties": { "type": "integer", "minimum": 1, "maximum": 100000 }
+        },
+        "reasons": { "$ref": "#/$defs/reasons" }
+      }
+    },
+    "rule": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "ruleId",
+        "title",
+        "emitWhen",
+        "status",
+        "evaluatedFileCount",
+        "selectedFileCount",
+        "selectedFiles",
+        "omittedSelectedFileCount",
+        "reasons"
+      ],
+      "properties": {
+        "ruleId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 160,
+          "pattern": "^custom\\.[a-z0-9]+(?:[.-][a-z0-9]+)+$"
+        },
+        "title": { "$ref": "#/$defs/nonEmptyText" },
+        "emitWhen": { "enum": ["present", "absent"] },
+        "status": { "$ref": "#/$defs/status" },
+        "evaluatedFileCount": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "selectedFileCount": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "selectedFiles": {
+          "type": "array",
+          "maxItems": 100,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/relativePath" }
+        },
+        "omittedSelectedFileCount": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "reasons": { "$ref": "#/$defs/reasons" }
+      }
+    },
+    "pack": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["packId", "digestSha256", "ruleCount", "status", "rules", "reasons"],
+      "properties": {
+        "packId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$"
+        },
+        "digestSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "ruleCount": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "status": { "$ref": "#/$defs/status" },
+        "rules": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 100,
+          "items": { "$ref": "#/$defs/rule" }
+        },
+        "reasons": { "$ref": "#/$defs/reasons" }
+      }
+    }
+  }
+}

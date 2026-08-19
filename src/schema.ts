@@ -1,6 +1,7 @@
 export const SCHEMA_VERSION = "1.0.0" as const;
 export const SCAN_REPORT_SCHEMA_VERSION = "1.2.0" as const;
 export const CI_REPORT_SCHEMA_VERSION = "1.1.0" as const;
+export const RULE_PACK_PREVIEW_SCHEMA_VERSION = "1.0.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type EvidenceLevel = "verified" | "static_confirmed" | "inferred";
@@ -126,6 +127,46 @@ export interface RulePackRecord {
   packId: string;
   digestSha256: string;
   ruleCount: number;
+}
+
+export type RulePackPreviewStatus = "complete" | "partial";
+
+export interface RulePackRulePreview {
+  ruleId: string;
+  title: string;
+  emitWhen: "present" | "absent";
+  status: RulePackPreviewStatus;
+  evaluatedFileCount: number;
+  selectedFileCount: number;
+  selectedFiles: string[];
+  omittedSelectedFileCount: number;
+  reasons: string[];
+}
+
+export interface RulePackPreviewRecord extends RulePackRecord {
+  status: RulePackPreviewStatus;
+  rules: RulePackRulePreview[];
+  reasons: string[];
+}
+
+export interface RulePackPreviewInventory {
+  status: RulePackPreviewStatus;
+  fileCount: number;
+  totalBytes: number;
+  skippedFiles: number;
+  skippedReasons: Record<string, number>;
+  reasons: string[];
+}
+
+export interface RulePackPreview {
+  schemaVersion: typeof RULE_PACK_PREVIEW_SCHEMA_VERSION;
+  toolVersion: string;
+  target: string;
+  status: RulePackPreviewStatus;
+  inventory: RulePackPreviewInventory;
+  rulePacks: RulePackPreviewRecord[];
+  reasons: string[];
+  disclaimer: string;
 }
 
 export interface SourceLocation {

@@ -2,9 +2,10 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import type { AuthorizationManifest, BolaAuthorizationManifest, BolaDraftPlan, CiReport, FixContract, RuleCatalog, RulePack, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
+import type { AuthorizationManifest, BolaAuthorizationManifest, BolaDraftPlan, CiReport, FixContract, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
+import { safeRelativePath } from "../reporters/safety.js";
 
-type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaDraftPlan" | "RuleCatalog" | "RulePack" | "SecurityPolicy";
+type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaDraftPlan" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
 
 function loadSchema(filename: string): object {
   const path = fileURLToPath(new URL(`../../../schemas/${filename}`, import.meta.url));
@@ -23,6 +24,7 @@ const bolaAuthorizationManifestValidator = ajv.compile(loadSchema("bola-authoriz
 const bolaDraftPlanValidator = ajv.compile(loadSchema("bola-draft.schema.json"));
 const ruleCatalogValidator = ajv.compile(loadSchema("rule-catalog.schema.json"));
 const rulePackValidator = ajv.compile(loadSchema("rule-pack.schema.json"));
+const rulePackPreviewValidator = ajv.compile(loadSchema("rule-pack-preview.schema.json"));
 const securityPolicyValidator = ajv.compile(loadSchema("security-policy.schema.json"));
 
 function describeError(error: ErrorObject): string {
@@ -349,6 +351,52 @@ export function validateRulePack(value: unknown): RulePack {
     if (literalBytes > 16 * 1024) throw new Error(`RulePack rule ${rule.ruleId} literals exceed 16 KiB`);
   }
   return pack;
+}
+
+export function validateRulePackPreview(value: unknown): RulePackPreview {
+  const preview = assertSchema<RulePackPreview>("RulePackPreview", rulePackPreviewValidator, value);
+  const inventoryShouldBePartial = preview.inventory.reasons.length > 0;
+  if ((preview.inventory.status === "partial") !== inventoryShouldBePartial) {
+    throw new Error("RulePackPreview inventory status must agree with its reasons");
+  }
+  const packIds = new Set<string>();
+  const ruleIds = new Set<string>();
+  for (const pack of preview.rulePacks) {
+    if (packIds.has(pack.packId)) throw new Error(`RulePackPreview contains duplicate rule pack: ${pack.packId}`);
+    packIds.add(pack.packId);
+    if (pack.ruleCount !== pack.rules.length) throw new Error(`RulePackPreview rule count does not match pack ${pack.packId}`);
+    for (const rule of pack.rules) {
+      if (!rule.ruleId.startsWith(`custom.${pack.packId}.`)) {
+        throw new Error(`RulePackPreview rule ID does not match pack ${pack.packId}: ${rule.ruleId}`);
+      }
+      if (ruleIds.has(rule.ruleId)) throw new Error(`RulePackPreview contains duplicate rule: ${rule.ruleId}`);
+      ruleIds.add(rule.ruleId);
+      if (rule.evaluatedFileCount > preview.inventory.fileCount || rule.selectedFileCount > rule.evaluatedFileCount) {
+        throw new Error(`RulePackPreview rule ${rule.ruleId} contains impossible file counts`);
+      }
+      if (rule.selectedFiles.length + rule.omittedSelectedFileCount !== rule.selectedFileCount) {
+        throw new Error(`RulePackPreview rule ${rule.ruleId} selected-file counts are inconsistent`);
+      }
+      if (rule.selectedFiles.some((path) => safeRelativePath(path) !== path)) {
+        throw new Error(`RulePackPreview rule ${rule.ruleId} contains an unsafe or non-normalized selected path`);
+      }
+      if ((rule.status === "partial") !== (rule.reasons.length > 0)) {
+        throw new Error(`RulePackPreview rule ${rule.ruleId} status must agree with its reasons`);
+      }
+      if (rule.emitWhen === "absent" && rule.selectedFileCount === 0 && rule.status !== "partial") {
+        throw new Error(`RulePackPreview absent rule ${rule.ruleId} cannot be complete with no selected files`);
+      }
+    }
+    const packShouldBePartial = preview.inventory.status === "partial" || pack.rules.some((rule) => rule.status === "partial");
+    if ((pack.status === "partial") !== packShouldBePartial || (pack.status === "partial") !== (pack.reasons.length > 0)) {
+      throw new Error(`RulePackPreview pack ${pack.packId} status is inconsistent`);
+    }
+  }
+  const previewShouldBePartial = preview.inventory.status === "partial" || preview.rulePacks.some((pack) => pack.status === "partial");
+  if ((preview.status === "partial") !== previewShouldBePartial || (preview.status === "partial") !== (preview.reasons.length > 0)) {
+    throw new Error("RulePackPreview status is inconsistent");
+  }
+  return preview;
 }
 
 let bundledRuleIds: Set<string> | undefined;

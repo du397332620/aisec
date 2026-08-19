@@ -3,6 +3,7 @@ import { inspectOnly, scanProject } from "../core/scan.js";
 import { loadReport } from "../core/store.js";
 import { createFixContract } from "../core/contracts.js";
 import { TOOL_VERSION } from "../core/constants.js";
+import { previewRulePacks } from "../rules/preview.js";
 
 type JsonRpcId = string | number | null;
 type JsonRpcRequest = { jsonrpc?: string; id?: JsonRpcId; method?: string; params?: Record<string, unknown> };
@@ -48,6 +49,7 @@ const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint
 const tools = [
   { name: "inspect_project", description: "Inspect a local project stack and attack surface without running external scanners.", annotations, inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false } },
   { name: "run_predeploy_scan", description: "Run a non-persisting local pre-deploy security scan. This never runs project build, install scripts or rule-pack code. Optional policies and declarative rule packs must be explicit operator-owned files outside the target.", annotations, inputSchema: { type: "object", properties: { path: { type: "string" }, artifacts: { type: "array", maxItems: 10, items: { type: "string" } }, nativeOnly: { type: "boolean" }, policy: { type: "string" }, rulePacks: { type: "array", maxItems: 8, items: { type: "string" } }, confirmPolicySuppressions: { type: "boolean" } }, required: ["path"], additionalProperties: false } },
+  { name: "preview_rule_packs", description: "Validate explicit operator-owned RulePack files outside a local target and preview bounded selector reach without evaluating literals or producing findings.", annotations, inputSchema: { type: "object", properties: { path: { type: "string" }, rulePacks: { type: "array", minItems: 1, maxItems: 8, items: { type: "string" } } }, required: ["path", "rulePacks"], additionalProperties: false } },
   { name: "get_report", description: "Read a previously stored scan report by its AIsec scan id.", annotations, inputSchema: { type: "object", properties: { reference: { type: "string", pattern: "^scan_" } }, required: ["reference"], additionalProperties: false } },
   { name: "create_fix_contract", description: "Create a constrained repair contract for one finding in a stored report.", annotations, inputSchema: { type: "object", properties: { scan: { type: "string", pattern: "^scan_" }, finding: { type: "string" } }, required: ["scan", "finding"], additionalProperties: false } },
   { name: "verify_fix", description: "Rescan a project without persisting output and compare it with a stored baseline scan. Policy and rule-pack baselines require the same explicit operator-owned inputs.", annotations, inputSchema: { type: "object", properties: { path: { type: "string" }, baseline: { type: "string", pattern: "^scan_" }, nativeOnly: { type: "boolean" }, policy: { type: "string" }, rulePacks: { type: "array", maxItems: 8, items: { type: "string" } }, confirmPolicySuppressions: { type: "boolean" } }, required: ["path", "baseline"], additionalProperties: false } },
@@ -87,6 +89,11 @@ async function callTool(name: string, args: Record<string, unknown>, modern: boo
       confirmPolicySuppressions: optionalBoolean(args, "confirmPolicySuppressions"),
       persist: false,
     })).report, modern);
+  }
+  if (name === "preview_rule_packs") {
+    const rulePackPaths = optionalStringArray(args, "rulePacks", 8);
+    if (rulePackPaths.length === 0) throw new Error("rulePacks must contain at least one path");
+    return textContent(await previewRulePacks(requiredString(args, "path"), { rulePackPaths }), modern);
   }
   if (name === "get_report") return textContent(await loadReport(scanId(args.reference)), modern);
   if (name === "create_fix_contract") return textContent(createFixContract(await loadReport(scanId(args.scan)), requiredString(args, "finding")), modern);

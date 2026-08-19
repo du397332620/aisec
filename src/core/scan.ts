@@ -3,7 +3,7 @@ import { SCAN_REPORT_SCHEMA_VERSION } from "../schema.js";
 import { lstat } from "node:fs/promises";
 import { join } from "node:path";
 import { TOOL_VERSION } from "./constants.js";
-import { collectProjectFiles } from "./files.js";
+import { collectProjectFiles, inventoryCoverage } from "./files.js";
 import { buildAssetGraph, inspectProject } from "./inspect.js";
 import { resolveSafeRoot, newId, sortSignals } from "./utils.js";
 import { runNativeDetectors } from "../detectors/index.js";
@@ -41,7 +41,7 @@ const HARD_SCAN_LIMITS = {
   rulePacks: MAX_RULE_PACKS,
 } as const;
 
-function normalizeOptions(overrides: Partial<ScanOptions>): ScanOptions {
+export function normalizeScanOptions(overrides: Partial<ScanOptions>): ScanOptions {
   const options = { ...DEFAULT_SCAN_OPTIONS, ...overrides };
   if (!['predeploy', 'native'].includes(options.profile)) throw new Error(`Unsupported scan profile: ${options.profile}`);
   if (options.profile === "native") options.nativeOnly = true;
@@ -117,7 +117,7 @@ export async function scanProject(
   baselineReference?: string,
 ): Promise<{ report: ScanReport; storedAt?: string }> {
   const startedAt = new Date().toISOString();
-  const options = normalizeOptions(overrides);
+  const options = normalizeScanOptions(overrides);
   const root = await resolveSafeRoot(inputPath);
   const loadedPolicy = options.policyPath ? await loadTrustedPolicy(options.policyPath, root) : undefined;
   const loadedRulePacks = await loadTrustedRulePacks(options.rulePackPaths, root);
@@ -146,18 +146,7 @@ export async function scanProject(
     runRulePacks(context, loadedRulePacks),
   ]);
   const coverage = [...native.coverage, ...external.coverage, artifacts.coverage, ...custom.coverage];
-  if (inventory.skippedFiles > 0) {
-    coverage.push({
-      domain: "project-inventory",
-      engine: "aisec-native",
-      status: ["file_limit", "entry_limit", "total_bytes_limit", "directory_depth", "oversized_file", "binary_file", "non_regular_file", "unreadable_file", "unreadable_directory", "symbolic_link", "path_escape"]
-        .some((reason) => inventory.skippedReasons[reason]) ? "partial" : "complete",
-      required: true,
-      reason: Object.entries(inventory.skippedReasons).map(([reason, count]) => `${reason}: ${count}`).join(", "),
-    });
-  } else {
-    coverage.push({ domain: "project-inventory", engine: "aisec-native", status: "complete", required: true });
-  }
+  coverage.push({ domain: "project-inventory", engine: "aisec-native", required: true, ...inventoryCoverage(inventory) });
 
   const signals = deduplicateSignals([...native.signals, ...external.signals, ...artifacts.signals, ...custom.signals]);
   const attackPaths = correlateAttackPaths(signals, assetGraph);
@@ -193,7 +182,7 @@ export async function scanProject(
 export async function inspectOnly(inputPath: string, options: Partial<ScanOptions> = {}) {
   if (options.policyPath !== undefined || options.confirmPolicySuppressions) throw new Error("inspectOnly does not evaluate release policies; use scanProject");
   if (options.rulePackPaths && options.rulePackPaths.length > 0) throw new Error("inspectOnly does not evaluate rule packs; use scanProject");
-  const merged = normalizeOptions(options);
+  const merged = normalizeScanOptions(options);
   const root = await resolveSafeRoot(inputPath);
   const inventory = await collectProjectFiles(root, merged);
   const profile = await inspectProject(root, inventory, merged.artifacts);

@@ -235,7 +235,8 @@ source checkout, prefix those commands with `npm exec --no --`.
 Exit codes are stable: `0` means `no_blockers_found` or `review`, `1` means
 `block`, `2` means `incomplete`, and `64` means invalid usage or execution
 failure. A missing required scanner therefore cannot silently become a clean
-result.
+result. For `rule-pack check`, `0` means the selector preview is complete and
+`2` means it is partial; that command never returns a vulnerability decision.
 
 ### First-run check
 
@@ -264,6 +265,7 @@ before treating a pre-deploy result as complete.
 aisec inspect [path]
 aisec scan [path] [--profile predeploy|native] [--policy trusted-policy.yml] [--rule-pack trusted-rules.yml] [--native-only] [--artifact app.apk]
 aisec rescan [path] --baseline <scan-id|report.json> [--policy trusted-policy.yml] [--rule-pack trusted-rules.yml]
+aisec rule-pack check [path] --rule-pack <trusted-rules.yml> [--format terminal|json]
 aisec report <scan-id|report.json> --format terminal|json|html|sarif|ci|github|markdown
 aisec fix-contract --scan <scan-id> --finding <id> --format json
 aisec draft-bola --scan <scan-id|report.json> --output bola-draft.json
@@ -332,6 +334,8 @@ explicitly and resolve outside the target root:
 mkdir -p ../trusted
 cp examples/rule-pack.example.yml ../trusted/rule-pack.yml
 # Review every literal, severity and evidence level before use.
+aisec rule-pack check ../target \
+  --rule-pack ../trusted/rule-pack.yml
 aisec scan ../target --profile native \
   --rule-pack ../trusted/rule-pack.yml
 ```
@@ -353,10 +357,22 @@ absence can be established, AIsec emits no invented absence finding and marks
 that pack's required coverage `partial`. This is a narrow source invariant—not
 proof that middleware or another control is absent at runtime.
 
+`rule-pack check` validates the explicit packs and previews their selectors
+without evaluating `containsAny`, `containsAll` or `excludes`, so it never emits
+a vulnerability finding. Its strict
+[`RulePackPreview 1.0.0` contract](schemas/rule-pack-preview.schema.json) lists
+only pack ID/digest, rule ID/title/mode and bounded selected relative paths; it
+does not contain the local pack path or literal definitions. An absent rule
+selecting no existing file makes the preview `partial`, while a present rule
+with no selection remains a valid empty preview. Inventory, selector or path
+output truncation also returns exit `2`.
+
 At most 8 packs, 256 total rules and 256 KiB per pack are accepted. Per-rule
 selectors/literals plus shared selector, byte, literal-work and line-evaluation
 budgets are bounded; all packs share the normal 2,000-signal output ceiling. A
-reached work or output bound makes the affected required coverage `partial`. Reports record only pack ID, rule
+preview lists at most 100 selected paths per rule and 2,000 total, and shares
+the 1,000,000 rule-file selector-work limit with scanning. A reached scan work
+or output bound makes the affected required coverage `partial`. Reports record only pack ID, rule
 count and SHA-256—not the local pack path or its literals—and expose this record
 in JSON, terminal, HTML, SARIF, CI JSON and Markdown. A baseline rescan requires
 the same set of pack IDs, counts and digests; a deliberate pack edit starts a
@@ -438,12 +454,14 @@ Use the compiled CLI as a stdio MCP server:
 ```
 
 The MCP surface contains only local, read-oriented tools:
-`inspect_project`, `run_predeploy_scan`, `get_report`,
+`inspect_project`, `run_predeploy_scan`, `preview_rule_packs`, `get_report`,
 `create_fix_contract`, and `verify_fix`. Web verification is intentionally not
 available over MCP, so an agent cannot autonomously send probes to a target.
 `run_predeploy_scan` and `verify_fix` accept an optional explicit `policy` path
 and a separate `confirmPolicySuppressions` boolean; the same outside-target and
-baseline-digest checks used by the CLI apply.
+baseline-digest checks used by the CLI apply. `preview_rule_packs` accepts one
+to eight explicit outside-target packs and returns the same strict bounded
+selector preview as `rule-pack check`, without evaluating literals.
 The stdio server supports the current stateless MCP `2026-07-28` discovery
 envelope and legacy `initialize` negotiation through `2025-11-25`.
 
@@ -529,7 +547,7 @@ finding fingerprints and accepted suppressions for compatible consumers.
 | --- | --- | --- |
 | Public rule catalog | JSON + generated Markdown | 56 shipped deterministic rules: 53 native and 3 bundled Opengrep; strict schema and drift checks tie detector IDs, corpus coverage, CWE/evidence metadata, Opengrep YAML/verified version and `RULES.md` to one catalog; `*` means syntax/config/artifact based without a dependency-semver gate, not complete framework support |
 | Trusted release policy | Explicit operator-owned YAML | Strict public schema; policy must resolve outside the scanned target, retain the full predeploy engine boundary and may only keep or strengthen the default gate; shipped rule IDs are catalog-validated, narrow suppressions expire and require a second explicit confirmation, reports retain digest/gate/approval evidence, and policy baselines require the same digest; target-owned `.aisec.yml` is ignored |
-| Declarative rule packs | Explicit operator-owned YAML/JSON | Strict `RulePack 1.1.0` with unchanged 1.0 compatibility; outside-target, digest-bound, bounded line-local present or required-literal-absent checks only; absence findings are inferred and path-only, while an empty selection or reached bound makes coverage partial; no code, regex, target discovery, suppression or gate relaxation; ScanReport/CI/reporters retain pack ID, rule count and digest, and baselines require the same pack set |
+| Declarative rule packs | Explicit operator-owned YAML/JSON | Strict `RulePack 1.1.0` with unchanged 1.0 compatibility; outside-target, digest-bound, bounded line-local present or required-literal-absent checks only; `rule-pack check`, Node API and MCP expose a strict bounded selector-only preview without literals/findings; absence findings are inferred and path-only, while an empty selection or reached bound makes coverage partial; no code, regex, target discovery, suppression or gate relaxation; ScanReport/CI/reporters retain pack ID, rule count and digest, and baselines require the same pack set |
 | Project inventory and stack map | Native | Local read only; supported text candidates and manifests, no dependency installation or project execution |
 | Secrets in selected source files | Native | Deterministic patterns; working tree only, not Git history |
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
@@ -545,7 +563,7 @@ finding fingerprints and accepted suppressions for compatible consumers.
 | Passive test/staging Web checks | `verify-web` | Explicit authorization plus `--confirm`; bounded GET/header/cookie checks only, no auth/IDOR/injection testing |
 | Static-to-active BOLA planning | `draft-bola` | Converts open static BOLA/IDOR signals into a non-executable review worksheet; mutation routes are excluded and object IDs/markers remain placeholders |
 | Two-account BOLA verification | `verify-bola` | Exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
-| Agent integration | stdio MCP | Local read-oriented inspection, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
+| Agent integration | stdio MCP | Local read-oriented inspection, bounded rule-pack selector previews, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
 | Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
 
 `--profile native` is the deterministic source-only first pass: external and
@@ -750,17 +768,18 @@ as resolved, with no new high/critical finding.
 ## Versioned data contracts
 
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, CI
-reports, fix contracts, the rule catalog, declarative rule packs, trusted security policies, passive-web
+reports, fix contracts, the rule catalog, declarative rule packs and their selector previews, trusted security policies, passive-web
 authorization, BOLA draft plans and BOLA authorization manifests in
 [`schemas/`](schemas/). `RulePack 1.1.0` adds bounded required-literal absence
 assertions and continues to accept legacy `1.0.0` packs only when the new field
-is absent. The policy and other unchanged contracts remain at `1.0.0`.
+is absent. `RulePackPreview 1.0.0` is the strict bounded output of the CLI,
+Node API and MCP selector-preview operation. The policy and other unchanged contracts remain at `1.0.0`.
 `CiReport 1.1.0` adds rule-pack records while accepting legacy
 `1.0.0` input without them. `ScanReport 1.1.0` added the required machine-readable
 policy record, and `ScanReport 1.2.0` adds the required rule-pack record array;
 the validator continues to accept legacy `1.0.0` and `1.1.0` reports only when
 their newer fields are absent. Contracts are validated at runtime when a report is generated,
-serialized, saved or loaded, when a fix contract is generated, and before
+serialized, saved or loaded, when a rule-pack preview or fix contract is generated, and before
 authorization semantics are evaluated. Unknown fields, unsupported schema
 versions and malformed nested values fail closed instead of flowing into CLI
 or MCP output.
@@ -768,9 +787,9 @@ or MCP output.
 The package also exports `validateScanReport`, `validateCiReport`,
 `buildCiReport`, `renderGithubAnnotations`, `renderMarkdownSummary`,
 `validateFixContract`,
-`validateRuleCatalog`, `validateRulePack`, `validateSecurityPolicy`, `loadRuleCatalog`,
+`validateRuleCatalog`, `validateRulePack`, `validateRulePackPreview`, `validateSecurityPolicy`, `loadRuleCatalog`,
 `renderRuleCatalog`, `parseRulePack`, `loadTrustedRulePack`,
-`loadTrustedRulePacks`, `parseSecurityPolicy`, `loadTrustedPolicy`,
+`loadTrustedRulePacks`, `previewRulePacks`, `renderRulePackPreview`, `parseSecurityPolicy`, `loadTrustedPolicy`,
 `validateAuthorizationManifestSchema`, `validateBolaDraftPlan` and
 `validateBolaAuthorizationManifestSchema` for integrations that consume these
 objects directly. The JSON catalog is also exported at
@@ -797,6 +816,11 @@ boundary.
   coverage partial instead of claiming a vulnerability when no file is
   selected or a safety bound interrupts evaluation. Reports retain their digest
   but not their local path or literal definitions.
+- Rule-pack preview uses that same loader, inventory and selector predicate. It
+  does not evaluate matching literals or create findings; it exposes only
+  bounded selected relative paths through a validated contract. Unsafe or
+  excessive paths, incomplete inventory and selector exhaustion make the
+  preview partial rather than silently claiming complete selector reach.
 - External adapters override target-controlled scanner configuration and ignore
   files with AIsec-owned temporary inputs; inline scanner suppressions are also
   disabled where the engine exposes that control. If Trivy inline ignore
