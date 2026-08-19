@@ -55,6 +55,7 @@ try {
   assert.ok(packedPaths.has("rules/catalog.json"), "machine-readable rule catalog must be packaged");
   assert.ok(packedPaths.has("schemas/rule-catalog.schema.json"), "rule catalog schema must be packaged");
   assert.ok(packedPaths.has("schemas/security-policy.schema.json"), "security policy schema must be packaged");
+  assert.ok(packedPaths.has("schemas/ci-report.schema.json"), "CI report schema must be packaged");
   assert.ok(packedPaths.has("examples/security-policy.example.yml"), "trusted policy example must be packaged");
   assert.ok(![...packedPaths].some((path) => path.startsWith("docs/") || path.startsWith(".scratch/")), "local progress documents must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/node-api-calibration.mjs"), "networked calibration runner must stay out of the npm package");
@@ -78,6 +79,7 @@ try {
   await access(join(packageRoot, "schemas", "bola-draft.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "rule-catalog.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "security-policy.schema.json"), constants.R_OK);
+  await access(join(packageRoot, "schemas", "ci-report.schema.json"), constants.R_OK);
   await access(join(packageRoot, "RULES.md"), constants.R_OK);
   const ruleCatalog = JSON.parse(await readFile(join(packageRoot, "rules", "catalog.json"), "utf8"));
   assert.equal(ruleCatalog.rules.length, 52);
@@ -130,11 +132,28 @@ try {
     "json",
   ], { cwd: consumer, env: scanEnvironment, expectedStatus: 1 }), "vulnerable fixture");
   assert.equal(vulnerable.decision, "block");
+  const storedReport = join(temporary, "data", "scans", `${vulnerable.scanId}.json`);
+  const ci = parseReport(run(executable, ["report", storedReport, "--format", "ci"], { cwd: consumer, env: scanEnvironment }), "installed CI report");
+  assert.equal(ci.schemaVersion, "1.0.0");
+  assert.equal(ci.recommendedExitCode, 1);
+  assert.ok(ci.annotations.length <= 71);
+  const github = run(executable, ["report", storedReport, "--format", "github"], { cwd: consumer, env: scanEnvironment });
+  assert.match(github, /^::error title=AIsec decision%3A block::/u);
+  const markdown = run(executable, ["report", storedReport, "--format", "markdown"], { cwd: consumer, env: scanEnvironment });
+  assert.match(markdown, /^# AIsec security acceptance/u);
+
+  const ciApi = parseReport(run(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `import { readFileSync } from "node:fs"; import { buildCiReport, validateCiReport } from ${JSON.stringify(packageMetadata.name)}; const scan = JSON.parse(readFileSync(${JSON.stringify(storedReport)}, "utf8")); const value = validateCiReport(buildCiReport(scan)); process.stdout.write(JSON.stringify({ schemaVersion: value.schemaVersion, annotations: value.annotations.length }));`,
+  ], { cwd: consumer, env: scanEnvironment }), "installed CI report API");
+  assert.equal(ciApi.schemaVersion, "1.0.0");
+  assert.equal(ciApi.annotations, ci.annotations.length);
 
   const bolaDraft = parseReport(run(executable, [
     "draft-bola",
     "--scan",
-    join(temporary, "data", "scans", `${vulnerable.scanId}.json`),
+    storedReport,
   ], { cwd: consumer, env: scanEnvironment }), "installed BOLA draft");
   assert.equal(bolaDraft.status, "review_required");
   assert.equal(bolaDraft.scanId, vulnerable.scanId);

@@ -262,7 +262,7 @@ before treating a pre-deploy result as complete.
 aisec inspect [path]
 aisec scan [path] [--profile predeploy|native] [--policy trusted-policy.yml] [--native-only] [--artifact app.apk]
 aisec rescan [path] --baseline <scan-id|report.json> [--policy trusted-policy.yml]
-aisec report <scan-id|report.json> --format terminal|json|html|sarif
+aisec report <scan-id|report.json> --format terminal|json|html|sarif|ci|github|markdown
 aisec fix-contract --scan <scan-id> --finding <id> --format json
 aisec draft-bola --scan <scan-id|report.json> --output bola-draft.json
 aisec verify-web --authorization authorization.yml --confirm
@@ -313,8 +313,9 @@ exact file; the report records this approval.
 A policy cannot be combined with `--profile native` or `--native-only`. Missing,
 partial or failed predeploy coverage remains `incomplete`. A target-owned
 `.aisec.yml` is ignored and this disposition is recorded in JSON, terminal,
-HTML and SARIF output; it cannot suppress a finding. Reports record the applied
-policy ID, expiry, effective gates and SHA-256 digest but not its local path.
+HTML, SARIF, CI JSON, GitHub annotation and Markdown output; it cannot suppress
+a finding. Reports record the applied policy ID, expiry, effective gates and
+SHA-256 digest but not its local path.
 Rescanning an operator-policy baseline requires the same explicit policy
 digest; a deliberate policy change starts a new baseline.
 
@@ -436,15 +437,41 @@ jobs:
         run: |
           npm ci --ignore-scripts --registry=https://registry.npmjs.org
           npm run build
-      - name: Run the source-only gate
+      - name: Run the source-only gate and render CI outputs
         working-directory: aisec
-        run: npm exec --no -- aisec scan ../target --profile native --no-persist --format sarif --output ../aisec.sarif
+        shell: bash
+        run: |
+          set +e
+          npm exec --no -- aisec scan ../target --profile native --no-persist --format json --output ../aisec-report.json
+          scan_status=$?
+          set -e
+          npm exec --no -- aisec report ../aisec-report.json --format github
+          npm exec --no -- aisec report ../aisec-report.json --format markdown --output "$GITHUB_STEP_SUMMARY"
+          npm exec --no -- aisec report ../aisec-report.json --format sarif --output ../aisec.sarif
+          exit "$scan_status"
 ```
 
 Exit `1` or `2` fails the job. Replace the placeholder with a reviewed commit;
 do not use a branch name as a security-tool pin. A full `predeploy` CI gate must
 also provision the exact three compatible engine versions, authenticate their
 binaries and prepare the Trivy database before scanning.
+
+`--format ci` emits the strict [`CiReport 1.0.0`](schemas/ci-report.schema.json)
+JSON contract: decision and recommended exit code, open counts, required
+coverage gaps, effective policy, baseline counts and bounded annotations.
+`--format github` converts that same contract to workflow commands, while
+`--format markdown` creates a GitHub step summary. Output is deterministic and
+bounded to one decision, 20 required-coverage gaps and 50 prioritized findings;
+omitted counts remain explicit. Target-controlled text is reduced to one line,
+workflow metacharacters are escaped, and only normalized relative paths can
+become file annotations. These renderers read no environment variables, make
+no network requests and upload nothing, so the example retains only
+`contents: read`. The final `exit` deliberately preserves the original scan
+decision after the non-gating `report` commands finish.
+
+HTML and SARIF now carry the same decision reasons, required-coverage gaps,
+effective policy and baseline comparison. SARIF additionally records stable
+finding fingerprints and accepted suppressions for compatible consumers.
 
 ## Beta capability matrix
 
@@ -468,7 +495,7 @@ binaries and prepare the Trivy database before scanning.
 | Static-to-active BOLA planning | `draft-bola` | Converts open static BOLA/IDOR signals into a non-executable review worksheet; mutation routes are excluded and object IDs/markers remain placeholders |
 | Two-account BOLA verification | `verify-bola` | Exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
 | Agent integration | stdio MCP | Local read-oriented inspection, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
-| Reports and release decisions | CLI / JSON / HTML / SARIF | Coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; never certification |
+| Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
 
 `--profile native` is the deterministic source-only first pass: external and
 artifact domains are non-required. The default `predeploy` profile is the
@@ -646,11 +673,11 @@ as resolved, with no new high/critical finding.
 
 ## Versioned data contracts
 
-AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, fix
-contracts, the rule catalog, trusted security policies, passive-web
+AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, CI
+reports, fix contracts, the rule catalog, trusted security policies, passive-web
 authorization, BOLA draft plans and BOLA authorization manifests in
 [`schemas/`](schemas/). Version
-`1.0.0` remains current for the policy and the other listed contracts.
+`1.0.0` remains current for `CiReport`, the policy and the other listed contracts.
 `ScanReport 1.1.0` adds the required machine-readable policy record; the report
 validator continues to accept legacy `1.0.0` reports only when that newer field
 is absent. Contracts are validated at runtime when a report is generated,
@@ -659,7 +686,9 @@ authorization semantics are evaluated. Unknown fields, unsupported schema
 versions and malformed nested values fail closed instead of flowing into CLI
 or MCP output.
 
-The package also exports `validateScanReport`, `validateFixContract`,
+The package also exports `validateScanReport`, `validateCiReport`,
+`buildCiReport`, `renderGithubAnnotations`, `renderMarkdownSummary`,
+`validateFixContract`,
 `validateRuleCatalog`, `validateSecurityPolicy`, `loadRuleCatalog`,
 `renderRuleCatalog`, `parseSecurityPolicy`, `loadTrustedPolicy`,
 `validateAuthorizationManifestSchema`, `validateBolaDraftPlan` and
@@ -695,6 +724,10 @@ boundary.
   at most 2,000 signals. Reaching a safety limit makes the affected required
   coverage `partial`, so it cannot produce a clean acceptance decision.
 - Secret values are redacted from native and normalized third-party findings.
+- CI, GitHub and Markdown renderers validate a strict bounded intermediate
+  contract. Project-controlled text cannot create extra workflow commands,
+  unsafe absolute/traversal paths cannot become annotations, and Markdown links
+  are defanged. Rendering does not read ambient CI credentials or upload data.
 - AIsec supplies only local scanner rules/configuration, disables engine version
   and database updates, and runs Trivy in explicit offline mode. For a hard
   no-egress guarantee around third-party binaries, enforce it with an OS sandbox

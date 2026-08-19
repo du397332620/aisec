@@ -20,9 +20,9 @@ const HELP = `AIsec ${TOOL_VERSION} — local-first security acceptance for AI-b
 
 Usage:
   aisec inspect [path] [--artifact app.apk]
-  aisec scan [path] [--profile predeploy|native] [--policy trusted-policy.yml] [--native-only] [--artifact app.apk] [--format terminal|json|html|sarif] [--output file]
+  aisec scan [path] [--profile predeploy|native] [--policy trusted-policy.yml] [--native-only] [--artifact app.apk] [--format terminal|json|html|sarif|ci|github|markdown] [--output file]
   aisec rescan [path] --baseline <scan-id|report.json> [scan options]
-  aisec report <scan-id|report.json> [--format terminal|json|html|sarif] [--output file]
+  aisec report <scan-id|report.json> [--format terminal|json|html|sarif|ci|github|markdown] [--output file]
   aisec fix-contract --scan <scan-id|report.json> --finding <id|fingerprint> [--format terminal|json] [--output file]
   aisec draft-bola --scan <scan-id|report.json> [--output file]
   aisec verify-web --authorization <manifest.yml> --confirm [--output file]
@@ -60,7 +60,7 @@ Decision exit codes:
 
 function formatValue(value: string | undefined): OutputFormat {
   const format = value ?? "terminal";
-  if (!["terminal", "json", "html", "sarif"].includes(format)) throw new Error(`Unsupported output format: ${format}`);
+  if (!["terminal", "json", "html", "sarif", "ci", "github", "markdown"].includes(format)) throw new Error(`Unsupported output format: ${format}`);
   return format as OutputFormat;
 }
 

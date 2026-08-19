@@ -33,3 +33,8 @@ strengthen default predeploy requirements. Do not add target policy discovery,
 rule/engine disable lists, coverage overrides or silent baseline-policy
 migration. Update the public policy/report schemas and positive/negative policy
 tests together.
+
+Report-format changes must validate their public contract before serialization
+and include hostile target-controlled text tests. GitHub annotations must reject
+unsafe paths, escape workflow-command syntax and retain deterministic bounds;
+Markdown and HTML must not turn report content into active links or markup.

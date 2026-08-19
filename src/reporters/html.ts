@@ -1,4 +1,5 @@
 import type { ScanReport } from "../schema.js";
+import { buildCiReport } from "./ci.js";
 
 function escape(value: unknown): string {
   return String(value ?? "")
@@ -9,26 +10,49 @@ function escape(value: unknown): string {
     .replaceAll("'", "&#039;");
 }
 
+function comparisonState(report: ScanReport, fingerprint: string): string {
+  if (report.comparison?.new.includes(fingerprint)) return "new";
+  if (report.comparison?.remaining.includes(fingerprint)) return "remaining";
+  return "not compared";
+}
+
+function comparisonList(report: ScanReport, title: string, fingerprints: string[]): string {
+  const items = fingerprints.slice(0, 20).map((fingerprint) => {
+    const finding = report.findings.find((item) => item.fingerprint === fingerprint);
+    return `<li>${finding ? escape(finding.title) : "fingerprint"} <code>${escape(fingerprint.slice(0, 16))}…</code></li>`;
+  }).join("");
+  const omitted = fingerprints.length > 20 ? `<li>${fingerprints.length - 20} additional entries omitted from this view</li>` : "";
+  return `<section class="comparison-card"><h3>${escape(title)} <span>${fingerprints.length}</span></h3>${items || omitted ? `<ul>${items}${omitted}</ul>` : "<p>None</p>"}</section>`;
+}
+
 export function renderHtml(report: ScanReport): string {
+  const ci = buildCiReport(report);
   const findingRows = report.findings.map((finding) => {
-    const signal = report.signals.find((candidate) => candidate.id === finding.signalIds[0]);
+    const signal = report.signals.find((candidate) => finding.signalIds.includes(candidate.id));
     const location = signal?.locations[0];
-    return `<tr><td><span class="severity ${escape(finding.severity)}">${escape(finding.severity)}</span></td><td><strong>${escape(finding.title)}</strong><br><small>${escape(finding.id)} · ${escape(finding.evidenceLevel)}</small></td><td>${escape(location?.path ?? "")}${location?.line ? `:${location.line}` : ""}</td><td>${escape(signal?.description ?? "Correlated attack path")}</td></tr>`;
+    const baseline = comparisonState(report, finding.fingerprint);
+    return `<tr class="finding-${escape(finding.status)}"><td><span class="severity ${escape(finding.severity)}">${escape(finding.severity)}</span></td><td><strong>${escape(finding.title)}</strong><br><small>${escape(finding.id)} · ${escape(finding.evidenceLevel)}</small></td><td><span class="status">${escape(finding.status)}</span><br><small>${escape(baseline)}</small></td><td><code>${escape(location?.path ?? "not recorded")}${location?.line ? `:${location.line}` : ""}</code></td><td>${escape(signal?.description ?? "Correlated attack path")}</td></tr>`;
   }).join("\n");
-  const coverageRows = report.coverage.map((item) => `<tr><td>${escape(item.domain)}</td><td>${escape(item.engine)}</td><td>${escape(item.status)}</td><td>${escape(item.reason ?? "")}</td></tr>`).join("\n");
+  const coverageRows = report.coverage.map((item) => `<tr class="coverage-${escape(item.status)}"><td>${escape(item.domain)}</td><td>${escape(item.engine)}</td><td>${escape(item.required ? "required" : "optional")}</td><td>${escape(item.status)}</td><td>${escape(item.reason ?? "")}</td></tr>`).join("\n");
   const paths = report.attackPaths.map((item) => `<article><h3>${escape(item.title)}</h3><p>${escape(item.summary)}</p><ol>${item.steps.map((step) => `<li>${escape(step.action)}</li>`).join("")}</ol><p><strong>Remediation:</strong> ${escape(item.remediation)}</p></article>`).join("\n");
-  const policy = report.policy?.source === "operator"
-    ? `${escape(report.policy.policyId)} · sha256:${escape(report.policy.digestSha256)} · expires ${escape(report.policy.expiresAt)}`
-    : report.policy ? "trusted defaults" : "not recorded by this report producer";
-  const targetPolicy = report.policy?.targetConfiguration === "ignored" ? " · target-owned .aisec.yml ignored" : "";
-  const suppressions = report.policy?.suppressionCount ? ` · suppressions: ${report.policy.suppressionCount} (${escape(report.policy.suppressionApproval)})` : "";
-  const relaxations = report.policy?.relaxations.length ? ` · relaxations: ${escape(report.policy.relaxations.join(", "))}` : "";
+  const policy = ci.policy.source === "operator"
+    ? `${escape(ci.policy.policyId)} · sha256:${escape(ci.policy.digestSha256)} · expires ${escape(ci.policy.expiresAt)}`
+    : ci.policy.source === "defaults" ? "trusted built-in defaults" : "not recorded by this report producer";
+  const gate = ci.policy.gate
+    ? `minimum ${escape(ci.policy.gate.minimumSeverity)} · inferred ${ci.policy.gate.includeInferred ? "included" : "review only"} · no suppressions ${ci.policy.gate.requireNoSuppressions ? "required" : "not required"}`
+    : "not recorded";
+  const coverageAlert = ci.requiredCoverage.gaps.length > 0
+    ? `<section class="alert error"><h2>Required coverage gaps</h2><ul>${ci.requiredCoverage.gaps.map((gap) => `<li><strong>${escape(gap.domain)}</strong> (${escape(gap.engine)}): ${escape(gap.status)}${gap.reason ? ` — ${escape(gap.reason)}` : ""}</li>`).join("")}</ul></section>`
+    : `<section class="alert success"><strong>Required coverage:</strong> all ${ci.requiredCoverage.total} records complete.</section>`;
+  const comparison = report.comparison ? `<section><h2>Baseline comparison</h2><p><code>${escape(report.comparison.baselineScanId)}</code></p><div class="comparison-grid">${comparisonList(report, "New", report.comparison.new)}${comparisonList(report, "Remaining", report.comparison.remaining)}${comparisonList(report, "Resolved", report.comparison.resolved)}${comparisonList(report, "Not rechecked", report.comparison.notRechecked)}</div></section>` : "";
   return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; form-action 'none'; base-uri 'none'">
 <title>AIsec report ${escape(report.scanId)}</title><style>
-:root{color-scheme:light dark;font-family:ui-sans-serif,system-ui,sans-serif}body{max-width:1200px;margin:0 auto;padding:2rem;line-height:1.45}header{display:flex;justify-content:space-between;gap:2rem;align-items:flex-start}.decision{font-size:1.4rem;padding:.5rem .8rem;border:2px solid;border-radius:.5rem}table{width:100%;border-collapse:collapse;margin:1rem 0 2rem}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #8885;padding:.6rem}.severity{font-weight:700}.critical{color:#e5484d}.high{color:#f76b15}.medium{color:#d6a300}.low{color:#3e63dd}article{border:1px solid #8885;padding:1rem;margin:1rem 0;border-radius:.5rem}small{opacity:.75}code{overflow-wrap:anywhere}</style></head>
-<body><header><div><h1>AIsec security acceptance report</h1><p><code>${escape(report.target)}</code><br>${escape(report.scanId)} · ${escape(report.completedAt)}</p></div><div class="decision">${escape(report.decision)}</div></header>
-<p>${escape(report.disclaimer)}</p><h2>Policy</h2><p>${policy}${targetPolicy}${suppressions}${relaxations}</p><h2>Summary</h2><p>${report.summary.critical} critical · ${report.summary.high} high · ${report.summary.medium} medium · ${report.summary.low} low · ${report.summary.attackPaths} attack paths</p>
-${paths ? `<h2>Attack paths</h2>${paths}` : ""}<h2>Findings</h2><table><thead><tr><th>Risk</th><th>Finding</th><th>Location</th><th>Evidence</th></tr></thead><tbody>${findingRows}</tbody></table>
-<h2>Coverage</h2><table><thead><tr><th>Domain</th><th>Engine</th><th>Status</th><th>Reason</th></tr></thead><tbody>${coverageRows}</tbody></table></body></html>`;
+:root{color-scheme:light dark;font-family:ui-sans-serif,system-ui,sans-serif}body{max-width:1200px;margin:0 auto;padding:2rem;line-height:1.45}header{display:flex;justify-content:space-between;gap:2rem;align-items:flex-start}.decision{font-size:1.35rem;font-weight:700;padding:.55rem .85rem;border:2px solid;border-radius:.5rem}.decision.block,.decision.incomplete{color:#e5484d}.decision.review{color:#d6a300}.decision.no_blockers_found{color:#2f9e44}.metrics,.comparison-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:.8rem}.metric,.comparison-card,.alert,article{border:1px solid #8885;padding:1rem;border-radius:.5rem}.metric strong{display:block;font-size:1.5rem}.alert{margin:1rem 0}.alert.error{border-color:#e5484d}.alert.success{border-color:#2f9e44}table{width:100%;border-collapse:collapse;margin:1rem 0 2rem}th,td{text-align:left;vertical-align:top;border-bottom:1px solid #8885;padding:.6rem}.severity,.status{font-weight:700}.critical,.high,.coverage-failed,.coverage-not_run{color:#e5484d}.medium,.coverage-partial{color:#d6a300}.low{color:#3e63dd}.finding-suppressed{opacity:.7}.comparison-card h3{display:flex;justify-content:space-between;margin-top:0}.comparison-card ul{padding-left:1.2rem}small{opacity:.75}code{overflow-wrap:anywhere}h2{margin-top:2rem}</style></head>
+<body><header><div><h1>AIsec security acceptance report</h1><p><code>${escape(report.target)}</code><br>${escape(report.scanId)} · ${escape(report.completedAt)}</p></div><div class="decision ${escape(report.decision)}">${escape(report.decision)}</div></header>
+<p>${escape(report.disclaimer)}</p><section class="alert"><h2>Decision reasons</h2><ul>${ci.decisionReasons.map((reason) => `<li>${escape(reason)}</li>`).join("")}</ul></section>${coverageAlert}
+<h2>Summary</h2><div class="metrics"><div class="metric"><strong>${ci.counts.critical}</strong>critical</div><div class="metric"><strong>${ci.counts.high}</strong>high</div><div class="metric"><strong>${ci.counts.medium}</strong>medium</div><div class="metric"><strong>${ci.counts.open}</strong>open</div><div class="metric"><strong>${ci.counts.suppressed}</strong>suppressed</div><div class="metric"><strong>${ci.counts.attackPaths}</strong>attack paths</div></div>
+<h2>Policy</h2><p>${policy}</p><ul><li>Gate: ${gate}</li><li>Required engines: ${ci.policy.requiredEngines.length ? escape(ci.policy.requiredEngines.join(", ")) : "none recorded"}</li><li>Target configuration: ${escape(ci.policy.targetConfiguration)}</li><li>Suppressions: ${ci.policy.suppressionCount} (${escape(ci.policy.suppressionApproval)})</li><li>Relaxations: ${ci.policy.relaxations.length ? escape(ci.policy.relaxations.join(", ")) : "none"}</li></ul>
+${comparison}${paths ? `<h2>Attack paths</h2>${paths}` : ""}<h2>Findings</h2>${findingRows ? `<table><thead><tr><th>Risk</th><th>Finding</th><th>Status</th><th>Location</th><th>Evidence</th></tr></thead><tbody>${findingRows}</tbody></table>` : "<p>No findings in the executed coverage.</p>"}
+<h2>Coverage</h2><table><thead><tr><th>Domain</th><th>Engine</th><th>Requirement</th><th>Status</th><th>Reason</th></tr></thead><tbody>${coverageRows}</tbody></table></body></html>`;
 }

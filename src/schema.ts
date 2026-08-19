@@ -1,5 +1,6 @@
 export const SCHEMA_VERSION = "1.0.0" as const;
 export const SCAN_REPORT_SCHEMA_VERSION = "1.1.0" as const;
+export const CI_REPORT_SCHEMA_VERSION = "1.0.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type EvidenceLevel = "verified" | "static_confirmed" | "inferred";
@@ -236,6 +237,79 @@ export interface ScanReport {
   summary: ScanSummary;
   policy?: ScanPolicyRecord;
   comparison?: ScanComparison;
+  disclaimer: string;
+}
+
+export type CiAnnotationLevel = "error" | "warning" | "notice";
+export type CiAnnotationKind = "decision" | "coverage" | "finding";
+export type CiBaselineState = "new" | "unchanged";
+
+export interface CiCoverageGap {
+  domain: string;
+  engine: string;
+  status: Exclude<CoverageStatus, "complete">;
+  reason?: string;
+}
+
+export interface CiPolicySummary {
+  source: "defaults" | "operator" | "not_recorded";
+  targetConfiguration: "absent" | "ignored" | "not_recorded";
+  policyId?: string;
+  digestSha256?: string;
+  expiresAt?: string;
+  gate?: SecurityPolicyGate;
+  requiredEngines: SecurityPolicyEngine[];
+  suppressionCount: number;
+  suppressionApproval: "not_applicable" | "explicit" | "not_recorded";
+  relaxations: PolicyRelaxation[];
+}
+
+export interface CiAnnotation {
+  kind: CiAnnotationKind;
+  level: CiAnnotationLevel;
+  title: string;
+  message: string;
+  path?: string;
+  startLine?: number;
+  startColumn?: number;
+  endLine?: number;
+  endColumn?: number;
+  findingId?: string;
+  fingerprint?: string;
+  severity?: Severity;
+  evidenceLevel?: EvidenceLevel;
+  findingStatus?: Finding["status"];
+  blocksRelease?: boolean;
+  baselineState?: CiBaselineState;
+}
+
+export interface CiReport {
+  schemaVersion: typeof CI_REPORT_SCHEMA_VERSION;
+  toolVersion: string;
+  scanId: string;
+  profileName: ScanReport["profileName"];
+  decision: Decision;
+  recommendedExitCode: 0 | 1 | 2;
+  decisionReasons: string[];
+  counts: ScanSummary & { open: number };
+  requiredCoverage: {
+    total: number;
+    complete: number;
+    gaps: CiCoverageGap[];
+  };
+  policy: CiPolicySummary;
+  comparison?: {
+    baselineScanId: string;
+    new: number;
+    remaining: number;
+    resolved: number;
+    notRechecked: number;
+  };
+  annotations: CiAnnotation[];
+  omitted: {
+    coverageAnnotations: number;
+    findingAnnotations: number;
+  };
   disclaimer: string;
 }
 

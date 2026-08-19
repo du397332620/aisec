@@ -50,6 +50,7 @@ try {
     "npm exec --no -- aisec doctor",
     "ref: <40-character-reviewed-aisec-commit>",
     "npm exec --no -- aisec scan ../target --profile native",
+    "terminal|json|html|sarif|ci|github|markdown",
     "## Beta capability matrix",
     "--policy ../trusted/security-policy.yml",
     "--confirm-policy-suppressions",
@@ -71,6 +72,7 @@ try {
   assert.match(help, /--profile predeploy\|native/);
   assert.match(help, /--policy <file>/);
   assert.match(help, /--confirm-policy-suppressions/);
+  assert.match(help, /terminal\|json\|html\|sarif\|ci\|github\|markdown/);
   assert.match(help, /verify-bola --authorization <manifest\.yml> --confirm/);
   assert.match(help, /draft-bola --scan <scan-id\|report\.json>/);
   const doctor = report(run(["doctor", "--json"]), "doctor");
@@ -86,6 +88,21 @@ try {
   assert.equal(vulnerable.decision, "block");
   const stored = join(temporary, "data", "scans", `${vulnerable.scanId}.json`);
   await access(stored);
+  const ci = report(run(["report", stored, "--format", "ci"]), "CI report");
+  assert.equal(ci.schemaVersion, "1.0.0");
+  assert.equal(ci.scanId, vulnerable.scanId);
+  assert.equal(ci.recommendedExitCode, 1);
+  assert.ok(ci.annotations.length <= 71);
+  assert.equal(ci.annotations.filter((item) => item.kind === "decision").length, 1);
+  const github = run(["report", stored, "--format", "github"]).stdout;
+  assert.match(github, /^::error title=AIsec decision%3A block::/u);
+  assert.equal(github.trimEnd().split("\n").length, ci.annotations.length);
+  const markdownOutput = join(temporary, "github-step-summary.md");
+  assert.equal(run(["report", stored, "--format", "markdown", "--output", markdownOutput]).stdout, "");
+  const markdown = await readFile(markdownOutput, "utf8");
+  assert.match(markdown, /^# AIsec security acceptance/u);
+  assert.match(markdown, /## Required coverage/u);
+  assert.match(markdown, /## Policy/u);
   const finding = vulnerable.findings.find((item) => item.status === "open");
   assert.ok(finding, "vulnerable fixture must expose a finding for the documented fix-contract path");
   const contract = JSON.parse(run(["fix-contract", "--scan", vulnerable.scanId, "--finding", finding.id, "--format", "json"]).stdout);

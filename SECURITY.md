@@ -59,6 +59,10 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
 - Only the engine versions listed in the verified Beta compatibility matrix are
   executed. Unknown or unparsable versions fail coverage closed.
 - Third-party scanner output is untrusted and normalized/redacted before use.
+- Report titles, descriptions and source locations remain untrusted when they
+  enter CI output. GitHub workflow-command data and properties are escaped,
+  annotations accept only normalized relative paths, and CI/Markdown output is
+  bounded. Report rendering performs no upload and reads no ambient CI tokens.
 - Target-controlled Gitleaks, Opengrep and Trivy configuration/ignore files are
   not trusted by the adapters and cannot silently suppress acceptance findings.
   This includes Gitleaks allow comments, Opengrep `nosemgrep`/ignore files and

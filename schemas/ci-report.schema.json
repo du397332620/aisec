@@ -1,0 +1,219 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/ci-report-1.0.0.json",
+  "title": "AIsec CiReport 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "toolVersion",
+    "scanId",
+    "profileName",
+    "decision",
+    "recommendedExitCode",
+    "decisionReasons",
+    "counts",
+    "requiredCoverage",
+    "policy",
+    "annotations",
+    "omitted",
+    "disclaimer"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "toolVersion": { "$ref": "#/$defs/semver" },
+    "scanId": { "$ref": "#/$defs/scanId" },
+    "profileName": { "enum": ["predeploy", "native"] },
+    "decision": { "$ref": "#/$defs/decision" },
+    "recommendedExitCode": { "enum": [0, 1, 2] },
+    "decisionReasons": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/reason" }
+    },
+    "counts": { "$ref": "#/$defs/counts" },
+    "requiredCoverage": { "$ref": "#/$defs/requiredCoverage" },
+    "policy": { "$ref": "#/$defs/policy" },
+    "comparison": { "$ref": "#/$defs/comparison" },
+    "annotations": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 71,
+      "items": { "$ref": "#/$defs/annotation" }
+    },
+    "omitted": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["coverageAnnotations", "findingAnnotations"],
+      "properties": {
+        "coverageAnnotations": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "findingAnnotations": { "type": "integer", "minimum": 0, "maximum": 100000 }
+      }
+    },
+    "disclaimer": { "type": "string", "minLength": 1, "maxLength": 2000 }
+  },
+  "$defs": {
+    "semver": {
+      "type": "string",
+      "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$"
+    },
+    "scanId": {
+      "type": "string",
+      "pattern": "^scan_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "findingId": { "type": "string", "pattern": "^finding_[0-9a-f]{16}$" },
+    "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "decision": { "enum": ["block", "incomplete", "review", "no_blockers_found"] },
+    "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
+    "evidenceLevel": { "enum": ["verified", "static_confirmed", "inferred"] },
+    "reason": { "type": "string", "minLength": 1, "maxLength": 1000 },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["critical", "high", "medium", "low", "info", "open", "attackPaths", "suppressed"],
+      "properties": {
+        "critical": { "type": "integer", "minimum": 0 },
+        "high": { "type": "integer", "minimum": 0 },
+        "medium": { "type": "integer", "minimum": 0 },
+        "low": { "type": "integer", "minimum": 0 },
+        "info": { "type": "integer", "minimum": 0 },
+        "open": { "type": "integer", "minimum": 0 },
+        "attackPaths": { "type": "integer", "minimum": 0 },
+        "suppressed": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "coverageGap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain", "engine", "status"],
+      "properties": {
+        "domain": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "engine": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "status": { "enum": ["partial", "not_run", "failed"] },
+        "reason": { "$ref": "#/$defs/reason" }
+      }
+    },
+    "requiredCoverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["total", "complete", "gaps"],
+      "properties": {
+        "total": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "complete": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "gaps": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/coverageGap" }
+        }
+      }
+    },
+    "policyGate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimumSeverity", "includeInferred", "requireNoSuppressions"],
+      "properties": {
+        "minimumSeverity": { "enum": ["high", "medium", "low", "info"] },
+        "includeInferred": { "type": "boolean" },
+        "requireNoSuppressions": { "type": "boolean" }
+      }
+    },
+    "policy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source",
+        "targetConfiguration",
+        "requiredEngines",
+        "suppressionCount",
+        "suppressionApproval",
+        "relaxations"
+      ],
+      "properties": {
+        "source": { "enum": ["defaults", "operator", "not_recorded"] },
+        "targetConfiguration": { "enum": ["absent", "ignored", "not_recorded"] },
+        "policyId": { "type": "string", "minLength": 1, "maxLength": 128 },
+        "digestSha256": { "$ref": "#/$defs/fingerprint" },
+        "expiresAt": { "type": "string", "format": "date-time" },
+        "gate": { "$ref": "#/$defs/policyGate" },
+        "requiredEngines": {
+          "type": "array",
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": { "enum": ["gitleaks", "opengrep", "trivy"] }
+        },
+        "suppressionCount": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "suppressionApproval": { "enum": ["not_applicable", "explicit", "not_recorded"] },
+        "relaxations": {
+          "type": "array",
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "enum": ["source_only_profile", "external_engines_disabled"] }
+        }
+      }
+    },
+    "comparison": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["baselineScanId", "new", "remaining", "resolved", "notRechecked"],
+      "properties": {
+        "baselineScanId": { "$ref": "#/$defs/scanId" },
+        "new": { "type": "integer", "minimum": 0 },
+        "remaining": { "type": "integer", "minimum": 0 },
+        "resolved": { "type": "integer", "minimum": 0 },
+        "notRechecked": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "safePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1024,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "annotation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kind", "level", "title", "message"],
+      "properties": {
+        "kind": { "enum": ["decision", "coverage", "finding"] },
+        "level": { "enum": ["error", "warning", "notice"] },
+        "title": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "path": { "$ref": "#/$defs/safePath" },
+        "startLine": { "type": "integer", "minimum": 1 },
+        "startColumn": { "type": "integer", "minimum": 1 },
+        "endLine": { "type": "integer", "minimum": 1 },
+        "endColumn": { "type": "integer", "minimum": 1 },
+        "findingId": { "$ref": "#/$defs/findingId" },
+        "fingerprint": { "$ref": "#/$defs/fingerprint" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "evidenceLevel": { "$ref": "#/$defs/evidenceLevel" },
+        "findingStatus": { "enum": ["open", "suppressed"] },
+        "blocksRelease": { "type": "boolean" },
+        "baselineState": { "enum": ["new", "unchanged"] }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "kind": { "const": "finding" } }, "required": ["kind"] },
+          "then": {
+            "properties": {
+              "findingId": true,
+              "fingerprint": true,
+              "severity": true,
+              "evidenceLevel": true,
+              "findingStatus": true,
+              "blocksRelease": true
+            },
+            "required": ["findingId", "fingerprint", "severity", "evidenceLevel", "findingStatus", "blocksRelease"]
+          }
+        }
+      ],
+      "dependentRequired": {
+        "startLine": ["path"],
+        "startColumn": ["path", "startLine"],
+        "endLine": ["path", "startLine"],
+        "endColumn": ["path", "startLine", "startColumn"]
+      }
+    }
+  }
+}
