@@ -42,7 +42,9 @@ export function redactSnippet(snippet: string): string {
     .replace(/\b([A-Z][A-Z0-9_]*(?:SECRET|TOKEN|PASSWORD|PRIVATE_KEY|SERVICE_ROLE_KEY|API_KEY)[A-Z0-9_]*)(\s*=\s*)([^\s#]+)/g,
       (_m, name: string, separator: string, secret: string) => `${name}${separator}${redact(secret.replace(/^['"]|['"]$/g, ""))}`)
     .replace(/(password|passwd|secret|token|api[_-]?key)(\s*[:=]\s*)["']?([^\s"']{6,})/gi,
-      (_m, name: string, separator: string, secret: string) => `${name}${separator}${redact(secret)}`);
+      (_m, name: string, separator: string, secret: string) => `${name}${separator}${redact(secret)}`)
+    .replace(/\$\{\s*([A-Z][A-Z0-9_]*(?:ACCESS_KEY|API_KEY|AUTH_KEY|CREDENTIAL|PASSWORD|PASSWD|PRIVATE_KEY|SECRET|TOKEN)[A-Z0-9_]*)\s*(:?-)\s*[^}\r\n]+\}/g,
+      (_m, name: string, operator: string) => `\${${name}${operator}[REDACTED]}`);
 }
 
 export function makeLocation(path: string, text: string, offset: number, snippet?: string): SourceLocation {

@@ -48,6 +48,33 @@ test("vulnerable full-stack fixture produces evidence-backed attack paths and re
   }
 });
 
+test("secret analysis detects concrete interpolation fallbacks without retaining their values", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-secret-fallback-"));
+  const synthetic = ["svc-A1b2C3d4E5f6", "G7h8I9j0K1l2"].join(".");
+  try {
+    await writeFile(join(temporary, "docker-compose.yml"), [
+      "services:",
+      "  model:",
+      "    environment:",
+      `      - MODEL_API_KEY=\${MODEL_API_KEY:-${synthetic}}`,
+      `      - SECONDARY_CLIENT_SECRET=\${SECONDARY_CLIENT_SECRET-${synthetic}}`,
+      "      - EMPTY_API_KEY=${EMPTY_API_KEY:-}",
+      "      - MODEL_API_KEY_FILE=${MODEL_API_KEY_FILE:-/run/secrets/model-api-key}",
+      "      - EXAMPLE_API_KEY=${EXAMPLE_API_KEY:-replace-me}",
+    ].join("\n"));
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const signals = report.signals.filter((signal) => signal.ruleId === "secret.concrete-interpolation-fallback");
+    assert.equal(signals.length, 2);
+    assert.equal(signals.find((signal) => signal.metadata?.variable === "MODEL_API_KEY")?.locations[0]?.snippet,
+      "${MODEL_API_KEY:-[REDACTED]}");
+    assert.equal(signals.find((signal) => signal.metadata?.variable === "SECONDARY_CLIENT_SECRET")?.locations[0]?.snippet,
+      "${SECONDARY_CLIENT_SECRET-[REDACTED]}");
+    assert.doesNotMatch(serializeReport(report, "json"), new RegExp(synthetic.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("safe near-miss fixture is not blocked in native-only mode", async () => {
   const { report } = await scanProject(join(fixtures, "safe"), { nativeOnly: true, persist: false });
   assert.equal(report.decision, "no_blockers_found");
@@ -6210,9 +6237,16 @@ test("Python API configuration detects CORS, exception, JWT, and published ungua
   const rules = new Set(report.signals.map((signal) => signal.ruleId));
   assert.ok(rules.has("fastapi.config.wildcard-cors-with-credentials"));
   assert.ok(rules.has("fastapi.config.raw-exception-response"));
+  assert.ok(rules.has("fastapi.config.route-raw-exception-response"));
   assert.ok(rules.has("jwt.config.committed-signing-secret"));
   assert.ok(rules.has("jwt.config.long-lived-access-token"));
   assert.ok(rules.has("docker.config.unguarded-service-published"));
+  const routeExceptions = report.signals.filter((signal) => signal.ruleId === "fastapi.config.route-raw-exception-response");
+  assert.equal(routeExceptions.length, 2);
+  assert.ok(routeExceptions.some((signal) => signal.metadata?.route === "POST /projects/{project_id}"
+    && signal.metadata?.handler === "project_detail"));
+  assert.ok(routeExceptions.some((signal) => signal.metadata?.route === "GET /reports"
+    && signal.metadata?.handler === "report_list"));
   assert.doesNotMatch(serializeReport(report, "json"), /aisec-benchmark-signing-secret-value/);
 });
 

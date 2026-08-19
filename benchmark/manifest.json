@@ -15,6 +15,7 @@
         "secret.aws-access-key",
         "secret.github-token",
         "secret.private-key",
+        "secret.concrete-interpolation-fallback",
         "secret.client-public-privileged-variable",
         "secret.client-public-privileged-reference"
       ]
@@ -32,6 +33,7 @@
         "secret.aws-access-key",
         "secret.github-token",
         "secret.private-key",
+        "secret.concrete-interpolation-fallback",
         "secret.client-public-privileged-variable",
         "secret.client-public-privileged-reference"
       ]
@@ -204,6 +206,7 @@
         "fastapi.auth.sensitive-route-without-guard",
         "fastapi.config.wildcard-cors-with-credentials",
         "fastapi.config.raw-exception-response",
+        "fastapi.config.route-raw-exception-response",
         "jwt.config.committed-signing-secret",
         "jwt.config.long-lived-access-token",
         "docker.config.unguarded-service-published"
@@ -219,6 +222,7 @@
       "nearMissRuleIds": [
         "fastapi.config.wildcard-cors-with-credentials",
         "fastapi.config.raw-exception-response",
+        "fastapi.config.route-raw-exception-response",
         "jwt.config.committed-signing-secret",
         "jwt.config.long-lived-access-token",
         "docker.config.unguarded-service-published"

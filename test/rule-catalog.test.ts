@@ -16,8 +16,8 @@ const catalogPath = join(repositoryRoot, "rules", "catalog.json");
 test("the public rule catalog is strict, complete and semantically linked", () => {
   const catalog = loadRuleCatalog(catalogPath);
   assert.equal(validateRuleCatalog(catalog), catalog);
-  assert.equal(catalog.rules.length, 56);
-  assert.equal(catalog.rules.filter((rule) => rule.source === "native").length, 53);
+  assert.equal(catalog.rules.length, 58);
+  assert.equal(catalog.rules.filter((rule) => rule.source === "native").length, 55);
   assert.equal(catalog.rules.filter((rule) => rule.source === "bundled_opengrep").length, 3);
   assert.ok(catalog.rules.every((rule) => rule.cwe.length > 0
     && rule.applicability.length > 0 && rule.falsePositiveModes.length > 0 && rule.reviewGuidance.length > 0));

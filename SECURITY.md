@@ -62,6 +62,10 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
 - Only the engine versions listed in the verified Beta compatibility matrix are
   executed. Unknown or unparsable versions fail coverage closed.
 - Third-party scanner output is untrusted and normalized/redacted before use.
+- A concrete credential found inside a sensitive environment interpolation
+  fallback is never retained in evidence or metadata. The native signal keeps
+  only the variable name and a fully redacted placeholder, so the value also
+  cannot influence its report fingerprint.
 - APK/IPA filenames, archive paths and member bytes are untrusted. AIsec rejects
   unsafe paths before reading members, invokes `unzip` without a shell, keeps
   member output in bounded memory and never extracts archive members onto disk.

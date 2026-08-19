@@ -1,4 +1,4 @@
-from fastapi import Depends, FastAPI, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -30,3 +30,14 @@ async def exception_handler(request: Request, exc: Exception):
 @app.post("/generate")
 async def generate(payload: dict):
     return {"ok": True}
+
+
+@app.post("/projects/{project_id}")
+async def project_detail(project_id: int):
+    try:
+        return load_project(project_id)
+    except ValueError as error:
+        raise HTTPException(status_code=400, detail=str(error))
+    except Exception as error:
+        record_server_error(error)
+        raise HTTPException(status_code=500, detail="internal error")

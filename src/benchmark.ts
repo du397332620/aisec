@@ -60,6 +60,7 @@ function syntheticValues(): Record<string, string> {
     __AISEC_AWS_ACCESS_KEY__: ["AKIA", "AISECFIXTURE1234"].join(""),
     __AISEC_GITHUB_TOKEN__: ["ghp", "aisecfixture12345678"].join("_"),
     __AISEC_PRIVATE_KEY_HEADER__: ["-----BEGIN", "PRIVATE KEY-----"].join(" "),
+    __AISEC_INTERPOLATION_FALLBACK__: ["svc-A1b2C3d4E5f6", "G7h8I9j0K1l2"].join("."),
   };
 }
 

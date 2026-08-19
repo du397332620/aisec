@@ -198,6 +198,17 @@
       "reviewGuidance": "Confirm whether usable private material is present, replace the key pair if real, and remove it from repository and release history."
     },
     {
+      "ruleId": "secret.concrete-interpolation-fallback",
+      "source": "native",
+      "category": "secrets",
+      "summary": "Concrete credential used as an environment fallback",
+      "cwe": ["CWE-798"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["generic-source"],
+      "falsePositiveModes": ["A high-entropy fallback may be synthetic, revoked or an intentionally non-secret identifier despite the sensitive variable name."],
+      "reviewGuidance": "Do not test the value. Establish provenance through deployment configuration, revoke any real credential, remove the fallback from history and require secret-store injection."
+    },
+    {
       "ruleId": "secret.client-public-privileged-variable",
       "source": "native",
       "category": "secrets",
@@ -485,6 +496,17 @@
       "applicability": ["fastapi"],
       "falsePositiveModes": ["The caught exception type or string conversion may produce only a fixed client-safe message."],
       "reviewGuidance": "Exercise representative failures and confirm clients receive a fixed message/correlation ID while details stay only in protected server logs."
+    },
+    {
+      "ruleId": "fastapi.config.route-raw-exception-response",
+      "source": "native",
+      "category": "api-security",
+      "summary": "FastAPI route returns raw catch-all exception text",
+      "cwe": ["CWE-209"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["fastapi"],
+      "falsePositiveModes": ["The broad exception may have a fixed, client-safe string representation, or the response constructor may be replaced before delivery."],
+      "reviewGuidance": "Exercise representative route failures and confirm the client receives only a stable message or correlation ID while full exception details remain in protected logs."
     },
     {
       "ruleId": "jwt.config.committed-signing-secret",

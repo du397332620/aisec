@@ -16,7 +16,11 @@ interface Block {
   text: string;
 }
 
-function findClosing(text: string, opening: number): number {
+interface NamedExceptionBlock extends Block {
+  variable: string;
+}
+
+function findClosing(text: string, opening: number, openCharacter = "(", closeCharacter = ")"): number {
   let depth = 0;
   let quote = "";
   let escaped = false;
@@ -38,13 +42,78 @@ function findClosing(text: string, opening: number): number {
       index = newline;
       continue;
     }
-    if (character === "(") depth += 1;
-    else if (character === ")") {
+    if (character === openCharacter) depth += 1;
+    else if (character === closeCharacter) {
       depth -= 1;
       if (depth === 0) return index;
     }
   }
   return -1;
+}
+
+function broadExceptionBlocks(block: Block): NamedExceptionBlock[] {
+  const result: NamedExceptionBlock[] = [];
+  const pattern = /^([ \t]*)except[ \t]+Exception[ \t]+as[ \t]+([A-Za-z_]\w*)[ \t]*:[ \t]*(.*)$/gm;
+  for (const match of block.text.matchAll(pattern)) {
+    const start = match.index ?? 0;
+    const headerIndent = (match[1] ?? "").length;
+    const lineEnd = block.text.indexOf("\n", start);
+    let end = lineEnd === -1 ? block.text.length : lineEnd;
+    const inlineBody = (match[3] ?? "").trim();
+    if ((!inlineBody || inlineBody.startsWith("#")) && lineEnd !== -1) {
+      let cursor = lineEnd + 1;
+      end = cursor;
+      while (cursor < block.text.length) {
+        const nextLineEnd = block.text.indexOf("\n", cursor);
+        const line = block.text.slice(cursor, nextLineEnd === -1 ? block.text.length : nextLineEnd);
+        const trimmed = line.trim();
+        if (trimmed && !trimmed.startsWith("#") && (line.match(/^[ \t]*/)?.[0].length ?? 0) <= headerIndent) break;
+        end = nextLineEnd === -1 ? block.text.length : nextLineEnd + 1;
+        if (nextLineEnd === -1) break;
+        cursor = nextLineEnd + 1;
+      }
+    }
+    result.push({
+      offset: block.offset + start,
+      text: block.text.slice(start, end),
+      variable: match[2]!,
+    });
+  }
+  return result;
+}
+
+function escapedRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function rawExceptionResponse(block: NamedExceptionBlock): Block | undefined {
+  const variable = escapedRegExp(block.variable);
+  const rawException = new RegExp(
+    `(?:\\b(?:repr|str)\\s*\\(\\s*${variable}\\s*\\)|\\b${variable}\\s*\\.\\s*args\\b|\\{\\s*${variable}\\s*(?:![ars])?(?:\\s*:[^}]*)?\\})`,
+    "i",
+  );
+  const responseField = /(?:\b(?:content|detail|message|msg)\b|["'](?:content|detail|message|msg)["'])\s*(?:=|:)/i;
+  const responseCall = /\b(?:[A-Za-z_]\w*\.)*(?:HTTPException|[A-Za-z_]*JSONResponse|PlainTextResponse|Response)\s*\(/g;
+  for (const match of block.text.matchAll(responseCall)) {
+    const start = match.index ?? 0;
+    const before = block.text.slice(Math.max(0, start - 80), start);
+    if (!/(?:^|\n)\s*(?:raise|return)\s*(?:await\s+)?$/.test(before)) continue;
+    const opening = block.text.indexOf("(", start);
+    const closing = opening === -1 ? -1 : findClosing(block.text, opening);
+    if (closing === -1) continue;
+    const text = block.text.slice(start, closing + 1);
+    if (responseField.test(text) && rawException.test(text)) return { offset: block.offset + start, text };
+  }
+
+  for (const match of block.text.matchAll(/\breturn\s*\{/g)) {
+    const start = match.index ?? 0;
+    const opening = block.text.indexOf("{", start);
+    const closing = opening === -1 ? -1 : findClosing(block.text, opening, "{", "}");
+    if (closing === -1) continue;
+    const text = block.text.slice(start, closing + 1);
+    if (responseField.test(text) && rawException.test(text)) return { offset: block.offset + start, text };
+  }
+  return undefined;
 }
 
 function callBlocks(file: ProjectFile, pattern: RegExp): Block[] {
@@ -194,6 +263,33 @@ export async function runPythonApiConfig(context: ScanContext): Promise<Detector
         remediation: "Log a correlation ID and full exception only on the server. Return a fixed client-safe message with the real 5xx status code.",
       }), `${file.relativePath}:exception`);
     }
+  }
+
+  const pythonFilesByPath = new Map(pythonFiles.map((file) => [file.relativePath, file]));
+  for (const route of analysis.routes) {
+    const file = pythonFilesByPath.get(route.sourcePath);
+    if (!file) continue;
+    const handlerOffset = file.content.indexOf(route.handlerSource);
+    if (handlerOffset === -1) continue;
+    for (const caught of broadExceptionBlocks({ offset: handlerOffset, text: route.handlerSource })) {
+      const disclosure = rawExceptionResponse(caught);
+      if (!disclosure) continue;
+      add(configSignal({
+        ruleId: "fastapi.config.route-raw-exception-response",
+        title: "FastAPI route returns raw catch-all exception text",
+        description: `${route.method} ${route.path} catches a broad Exception and serializes its text into a client response. Runtime failures may disclose database details, filesystem paths, internal hosts, query text or implementation state.`,
+        severity: "medium",
+        evidenceLevel: "static_confirmed",
+        locations: [makeLocation(file.relativePath, file.content, disclosure.offset, disclosure.text)],
+        cwe: ["CWE-209"],
+        owasp: ["A05:2021", "API8:2023"],
+        tags: ["fastapi", "api", "error-handling", "information-disclosure", "route"],
+        remediation: "Log a correlation ID and the full exception only on the server. Return a fixed client-safe message from broad exception handlers.",
+        metadata: { route: `${route.method} ${route.path}`, handler: route.handlerName },
+      }), `${file.relativePath}:${route.handlerName}:${disclosure.offset}:route-exception`);
+      if (truncated) break;
+    }
+    if (truncated) break;
   }
 
   for (const file of context.inventory.files.filter((candidate) => PRODUCTION_FILE.test(candidate.relativePath))) {
