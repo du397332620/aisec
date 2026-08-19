@@ -75,7 +75,7 @@
       "id": "firebase-rules",
       "languages": ["Firebase Security Rules"],
       "technologies": [{ "name": "Cloud Firestore/Storage Security Rules", "versionRange": "*", "basis": "configuration" }],
-      "versionStatement": "Rules-version declarations are not used as a gate; coverage is limited to recognized unconditional allow syntax in scanned rule files."
+      "versionStatement": "Rules-version declarations are not used as a gate; coverage is limited to recognized allow expressions, direct single-return local helpers and visible Storage upload-size checks in scanned rule files."
     },
     {
       "id": "android-manifest",
@@ -543,6 +543,28 @@
       "reviewGuidance": "Review target roles and commands in the deployed policy and bind private rows to auth.uid(), tenant membership or another trusted claim."
     },
     {
+      "ruleId": "supabase.authenticated-policy-without-row-filter",
+      "source": "native",
+      "category": "baas",
+      "summary": "Supabase permissive policy authenticates callers without filtering rows",
+      "cwe": ["CWE-862"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["supabase-postgres"],
+      "falsePositiveModes": ["The table or command may intentionally be global to every authenticated user, or an unscanned database role/grant boundary may prevent client access."],
+      "reviewGuidance": "Inspect every permissive policy for the same role and command because they compose with OR; bind private rows to auth.uid(), a protected membership table or trusted app_metadata tenant claim."
+    },
+    {
+      "ruleId": "supabase.user-metadata-authorization",
+      "source": "native",
+      "category": "baas",
+      "summary": "Supabase policy trusts user-editable JWT metadata for authorization",
+      "cwe": ["CWE-863"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["supabase-postgres"],
+      "falsePositiveModes": ["A custom token-issuance boundary may make the similarly named claim immutable, or the scanned policy may not be deployed."],
+      "reviewGuidance": "Confirm the exact JWT claim source; move roles and tenant membership to server-controlled app_metadata or protected tables, then bind the trusted claim to each row."
+    },
+    {
       "ruleId": "firebase.unconditional-access",
       "source": "native",
       "category": "baas",
@@ -552,6 +574,28 @@
       "applicability": ["firebase-rules"],
       "falsePositiveModes": ["The matched path may intentionally contain public data or the scanned rule file may not be the deployed ruleset."],
       "reviewGuidance": "Confirm the deployed rules and data sensitivity, then require request.auth plus ownership/tenant checks for non-public operations."
+    },
+    {
+      "ruleId": "firebase.authenticated-access-without-resource-check",
+      "source": "native",
+      "category": "baas",
+      "summary": "Firebase rule authenticates callers without authorizing the resource",
+      "cwe": ["CWE-862"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["firebase-rules"],
+      "falsePositiveModes": ["The matched documents or files may intentionally be shared with every authenticated user, or a different deployed ruleset may be active."],
+      "reviewGuidance": "Review overlapping matches because any true allow grants access; compare request.auth.uid or a trusted custom claim with path, owner, tenant, resource or protected membership data."
+    },
+    {
+      "ruleId": "firebase.storage-upload-without-size-limit",
+      "source": "native",
+      "category": "baas",
+      "summary": "Firebase Storage upload rule has no visible file-size ceiling",
+      "cwe": ["CWE-770"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["firebase-rules"],
+      "falsePositiveModes": ["A trusted server-only client, platform quota or external upload gateway may impose a smaller effective limit, or the path may intentionally accept large files."],
+      "reviewGuidance": "Confirm the deployed Storage rules and upload path, add a request.resource.size upper bound, and validate contentType/metadata when the application expects a constrained format."
     },
 
     {

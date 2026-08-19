@@ -59,7 +59,7 @@
   "$defs": {
     "ruleIds": {
       "type": "array",
-      "maxItems": 52,
+      "maxItems": 56,
       "uniqueItems": true,
       "items": {
         "type": "string",

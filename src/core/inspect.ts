@@ -81,7 +81,7 @@ export async function inspectProject(
 
   const baas: string[] = [];
   if (dependencies.has("@supabase/supabase-js") || inventory.files.some((f) => /supabase\/(?:migrations|config\.toml)/.test(f.relativePath))) baas.push("Supabase");
-  if (dependencies.has("firebase") || manifests.some((path) => path.endsWith("firebase.json")) || inventory.files.some((f) => /firestore\.rules$/.test(f.relativePath))) baas.push("Firebase");
+  if (dependencies.has("firebase") || manifests.some((path) => path.endsWith("firebase.json")) || inventory.files.some((f) => /(?:firestore|storage)\.rules$/.test(f.relativePath))) baas.push("Firebase");
 
   const mobilePlatforms: string[] = [];
   if (manifests.some((path) => /AndroidManifest\.xml$/.test(path))) mobilePlatforms.push("Android");

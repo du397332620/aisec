@@ -56,6 +56,7 @@ try {
     "--policy ../trusted/security-policy.yml",
     "--confirm-policy-suppressions",
     "target-owned `.aisec.yml` is ignored",
+    "npm run calibrate:baas -- --confirm-download",
     "npm run calibrate:mobile-artifacts -- --confirm-download",
     "0.1.0` is not published to npm",
     "npm registry\npublication is intentionally not planned",

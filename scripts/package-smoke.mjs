@@ -64,6 +64,8 @@ try {
   assert.ok(packedPaths.has("schemas/ci-report.schema.json"), "CI report schema must be packaged");
   assert.ok(packedPaths.has("examples/security-policy.example.yml"), "trusted policy example must be packaged");
   assert.ok(![...packedPaths].some((path) => path.startsWith("docs/") || path.startsWith(".scratch/")), "local progress documents must stay out of the npm package");
+  assert.ok(!packedPaths.has("scripts/baas-calibration.mjs"), "BaaS calibration runner must stay out of the npm package");
+  assert.ok(!packedPaths.has("scripts/calibration/baas-targets.json"), "real BaaS calibration manifest must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/node-api-calibration.mjs"), "networked calibration runner must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/calibration/node-api-targets.json"), "real-project calibration manifest must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/mobile-artifact-calibration.mjs"), "mobile artifact calibration runner must stay out of the npm package");
@@ -91,7 +93,7 @@ try {
   await access(join(packageRoot, "schemas", "ci-report.schema.json"), constants.R_OK);
   await access(join(packageRoot, "RULES.md"), constants.R_OK);
   const ruleCatalog = JSON.parse(await readFile(join(packageRoot, "rules", "catalog.json"), "utf8"));
-  assert.equal(ruleCatalog.rules.length, 52);
+  assert.equal(ruleCatalog.rules.length, 56);
   await access(join(packageRoot, "examples", "authorization.bola.local.yml"), constants.R_OK);
   await access(join(packageRoot, "examples", "security-policy.example.yml"), constants.R_OK);
   const scanEnvironment = { AISEC_DATA_DIR: join(temporary, "data") };
@@ -101,7 +103,7 @@ try {
     "--eval",
     `import { loadRuleCatalog } from ${JSON.stringify(packageMetadata.name)}; process.stdout.write(JSON.stringify(loadRuleCatalog()));`,
   ], { cwd: consumer, env: scanEnvironment }), "installed rule catalog API");
-  assert.equal(catalogApi.rules.length, 52);
+  assert.equal(catalogApi.rules.length, 56);
 
   const policyApi = parseReport(run(process.execPath, [
     "--input-type=module",
@@ -174,8 +176,8 @@ try {
   });
   assert.ok(benchmarkOutput.trim(), "the installed benchmark entry point must produce a result");
   const benchmark = JSON.parse(benchmarkOutput);
-  assert.deepEqual(benchmark.catalog, { totalRules: 49, rulesWithPositive: 49, rulesWithNearMiss: 49 });
-  assert.equal(benchmark.totals.truePositive, 50);
+  assert.deepEqual(benchmark.catalog, { totalRules: 53, rulesWithPositive: 53, rulesWithNearMiss: 53 });
+  assert.equal(benchmark.totals.truePositive, 54);
   assert.equal(benchmark.totals.falsePositive, 0);
   assert.equal(benchmark.totals.falseNegative, 0);
   assert.equal(benchmark.totals.evidenceMismatches, 0);

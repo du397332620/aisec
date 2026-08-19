@@ -1,0 +1,13 @@
+rules_version = '2';
+service firebase.storage {
+  match /b/{bucket}/o {
+    function validSize() {
+      return request.resource.size < 5 * 1024 * 1024;
+    }
+    match /users/{userId}/{fileName} {
+      allow write: if request.auth != null
+        && request.auth.uid == userId
+        && validSize();
+    }
+  }
+}

@@ -230,7 +230,12 @@
       "framework": "Supabase",
       "variant": "positive",
       "path": "test/fixtures/corpus/supabase/positive",
-      "expectedRuleIds": ["supabase.table-without-rls", "supabase.permissive-rls-policy"]
+      "expectedRuleIds": [
+        "supabase.table-without-rls",
+        "supabase.permissive-rls-policy",
+        "supabase.authenticated-policy-without-row-filter",
+        "supabase.user-metadata-authorization"
+      ]
     },
     {
       "id": "supabase-near-miss",
@@ -239,7 +244,12 @@
       "variant": "near_miss",
       "path": "test/fixtures/corpus/supabase/near-miss",
       "expectedRuleIds": [],
-      "nearMissRuleIds": ["supabase.table-without-rls", "supabase.permissive-rls-policy"]
+      "nearMissRuleIds": [
+        "supabase.table-without-rls",
+        "supabase.permissive-rls-policy",
+        "supabase.authenticated-policy-without-row-filter",
+        "supabase.user-metadata-authorization"
+      ]
     },
     {
       "id": "firebase-positive",
@@ -247,7 +257,11 @@
       "framework": "Firebase",
       "variant": "positive",
       "path": "test/fixtures/corpus/firebase/positive",
-      "expectedRuleIds": ["firebase.unconditional-access"]
+      "expectedRuleIds": [
+        "firebase.unconditional-access",
+        "firebase.authenticated-access-without-resource-check",
+        "firebase.storage-upload-without-size-limit"
+      ]
     },
     {
       "id": "firebase-near-miss",
@@ -256,7 +270,11 @@
       "variant": "near_miss",
       "path": "test/fixtures/corpus/firebase/near-miss",
       "expectedRuleIds": [],
-      "nearMissRuleIds": ["firebase.unconditional-access"]
+      "nearMissRuleIds": [
+        "firebase.unconditional-access",
+        "firebase.authenticated-access-without-resource-check",
+        "firebase.storage-upload-without-size-limit"
+      ]
     },
     {
       "id": "android-positive",

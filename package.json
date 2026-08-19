@@ -33,6 +33,7 @@
     "start": "node dist/src/cli.js",
     "benchmark": "npm run build && node dist/src/benchmark.js",
     "benchmark:resources": "npm run build && node scripts/resource-benchmark.mjs",
+    "calibrate:baas": "npm run build && node scripts/baas-calibration.mjs",
     "calibrate:node-api": "npm run build && node scripts/node-api-calibration.mjs",
     "calibrate:mobile-artifacts": "npm run build && node scripts/mobile-artifact-calibration.mjs",
     "release:build": "npm run build && node scripts/build-release.mjs",

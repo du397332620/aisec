@@ -4,5 +4,8 @@ service cloud.firestore {
     match /profiles/{profileId} {
       allow read, write: if true;
     }
+    match /documents/{documentId} {
+      allow read: if request.auth != null;
+    }
   }
 }

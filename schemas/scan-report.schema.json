@@ -328,13 +328,13 @@
         },
         "requiredRuleIds": {
           "type": "array",
-          "maxItems": 52,
+          "maxItems": 56,
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1, "maxLength": 160 }
         },
         "blockingRuleIds": {
           "type": "array",
-          "maxItems": 52,
+          "maxItems": 56,
           "uniqueItems": true,
           "items": { "type": "string", "minLength": 1, "maxLength": 160 }
         },

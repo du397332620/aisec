@@ -1,0 +1,63 @@
+{
+  "schemaVersion": 1,
+  "description": "Fixed-commit, static-only BaaS authorization calibration. Passing checks confirms rule-specific behavior on these revisions; it does not prove exploitability, deployment state or overall project security.",
+  "targets": [
+    {
+      "id": "firebase-quickstart-js",
+      "repository": "https://github.com/firebase/quickstart-js.git",
+      "commit": "0f12f1c8e13dfa54773838b5c130f115b78d1c20",
+      "scanPath": ".",
+      "sparsePaths": ["firestore", "storage"],
+      "expected": {
+        "baas": ["Firebase"],
+        "coverageStatus": "complete",
+        "decision": "block",
+        "signals": [
+          {
+            "ruleId": "firebase.authenticated-access-without-resource-check",
+            "count": 2,
+            "paths": [
+              { "path": "firestore/firestore.rules", "count": 2 }
+            ]
+          },
+          {
+            "ruleId": "firebase.storage-upload-without-size-limit",
+            "count": 1,
+            "paths": [
+              { "path": "storage/storage.rules", "count": 1 }
+            ]
+          },
+          {
+            "ruleId": "firebase.unconditional-access",
+            "count": 3,
+            "paths": [
+              { "path": "firestore/firestore.rules", "count": 2 },
+              { "path": "storage/storage.rules", "count": 1 }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "supabase-nextjs-user-management",
+      "repository": "https://github.com/supabase/supabase.git",
+      "commit": "cb9394246bc1832e9c18eb9a680d5f3c5854440f",
+      "scanPath": "examples/user-management/nextjs-user-management",
+      "sparsePaths": ["examples/user-management/nextjs-user-management"],
+      "expected": {
+        "baas": ["Supabase"],
+        "coverageStatus": "complete",
+        "decision": "block",
+        "signals": [
+          {
+            "ruleId": "supabase.permissive-rls-policy",
+            "count": 1,
+            "paths": [
+              { "path": "supabase/migrations/20221017024722_init.sql", "count": 1 }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

@@ -477,12 +477,12 @@ finding fingerprints and accepted suppressions for compatible consumers.
 
 | Capability | Mode / engine | Beta behavior and boundary |
 | --- | --- | --- |
-| Public rule catalog | JSON + generated Markdown | 52 shipped deterministic rules: 49 native and 3 bundled Opengrep; strict schema and drift checks tie detector IDs, corpus coverage, CWE/evidence metadata, Opengrep YAML/verified version and `RULES.md` to one catalog; `*` means syntax/config/artifact based without a dependency-semver gate, not complete framework support |
+| Public rule catalog | JSON + generated Markdown | 56 shipped deterministic rules: 53 native and 3 bundled Opengrep; strict schema and drift checks tie detector IDs, corpus coverage, CWE/evidence metadata, Opengrep YAML/verified version and `RULES.md` to one catalog; `*` means syntax/config/artifact based without a dependency-semver gate, not complete framework support |
 | Trusted release policy | Explicit operator-owned YAML | Strict public schema; policy must resolve outside the scanned target, retain the full predeploy engine boundary and may only keep or strengthen the default gate; shipped rule IDs are catalog-validated, narrow suppressions expire and require a second explicit confirmation, reports retain digest/gate/approval evidence, and policy baselines require the same digest; target-owned `.aisec.yml` is ignored |
 | Project inventory and stack map | Native | Local read only; supported text candidates and manifests, no dependency installation or project execution |
 | Secrets in selected source files | Native | Deterministic patterns; working tree only, not Git history |
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
-| Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; some findings are explicitly `inferred` and require review |
+| Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; BaaS analysis recognizes bounded PostgreSQL RLS and Firebase Firestore/Storage authorization expressions, while unsupported helpers or syntax make coverage `partial`; some findings are explicitly `inferred` and require review |
 | FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
 | Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local or one-hop directly imported immutable ESM route tables used by `forEach` and direct synchronous `for...of`, including at most two direct inline statically evaluable `filter`/`map` transforms, and NestJS controllers/guards/providers through local module imports, exports, re-exports and application-global visibility; accepts direct official `forwardRef` tokens/modules, visible synchronous static dynamic-module metadata, fully resolved direct official `NestFactory.create` roots from conventional runtime entry files, same-container direct `useGlobalGuards`, `setGlobalPrefix` and URI `enableVersioning` calls on their awaited `const` application instances, plus direct official static `RouterModule.register` trees from real module imports; composes independently scoped global/version/module/controller paths for shared controllers and otherwise retains bounded inferred-root routes without trusting imperative configuration, with both module and RouterModule traversal capped at eight edges and 256 entries; follows up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced, consumed through one single-condition `const`, or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, arbitrary collection transforms, unsupported operators/scopes or bootstrap graphs, unresolved providers/registration/bootstrap/global-guard/application-routing/RouterModule sites, package or mixin bases, complex wrappers and external policy engines still require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; recognizes selected validation boundaries and reports partial coverage |
@@ -508,6 +508,31 @@ neither relaxation and therefore rejects both `--profile native` and
 Missing, partial or failed required coverage prevents a clean result. APK/IPA
 analysis examines selected static resources only; mobile runtime behavior
 remains out of scope.
+
+Supabase policy analysis is static and migration-order agnostic. It recognizes
+bounded top-level table, RLS and `CREATE POLICY` statements, client roles,
+permissive versus restrictive policies, authentication-only grants and
+authorization based on `auth.jwt()` user metadata. PostgreSQL combines
+applicable permissive policies with `OR` and restrictive policies with `AND`;
+the scanner therefore does not treat a restrictive authentication-only policy
+as an independent grant. Supabase documents that `raw_user_meta_data` can be
+updated by the authenticated user and should not be used as authorization data;
+server-controlled `raw_app_meta_data` is the safer claim boundary.
+
+Firebase analysis recognizes Firestore and Storage `allow` statements and
+direct, single-return local helpers, including bounded parameter substitution.
+It reports authentication-only grants even when another matching rule is
+narrower because overlapping Firebase `allow` expressions grant with `OR`.
+Storage write/create/update grants are also checked for a visible upper bound on
+`request.resource.size`. Unknown services, malformed expressions, unsupported
+helper bodies or resource limits produce `partial` coverage instead of a clean
+result. See the official [Supabase RLS guide](https://supabase.com/docs/guides/database/postgres/row-level-security),
+[PostgreSQL row-security policy documentation](https://www.postgresql.org/docs/17/ddl-rowsecurity.html),
+[Firebase rule behavior](https://firebase.google.com/docs/rules/rules-behavior),
+[Firestore conditions](https://firebase.google.com/docs/firestore/security/rules-conditions),
+and [Storage validation](https://firebase.google.com/docs/storage/security/rules-conditions)
+for the platform semantics. AIsec does not determine which rules or migrations
+are actually deployed.
 
 ## Authorized passive web verification
 
@@ -761,11 +786,11 @@ npm run test:engines
 ```
 
 The public synthetic corpus contains 32 isolated cases: 16 positive/near-miss
-pairs covering all 49 deterministic native Beta rules across secrets, data
+pairs covering all 53 deterministic native Beta rules across secrets, data
 flow, application configuration, FastAPI authentication and object
 authorization, Express/NestJS authentication and object authorization, Python
 API data flow/configuration, BaaS, mobile source and mobile artifacts. Together
-with the 3 bundled Opengrep rules, these form the 52 entries in the public rule
+with the 3 bundled Opengrep rules, these form the 56 entries in the public rule
 catalog. The benchmark reports each category separately and verifies expected
 evidence and CWE metadata as well as false positives and false negatives. Its
 perfect fixture score is **not** a real-world efficacy claim; the corpus is
@@ -780,6 +805,40 @@ truncated projects at runtime. It records elapsed time and peak RSS in isolated
 child processes and enforces broad cross-platform regression ceilings. These
 measurements are guards against major performance or memory regressions, not a
 promise for every repository or machine.
+
+### Fixed-commit BaaS authorization calibration
+
+Maintainers can repeat rule-specific scans of the Firebase Web Quickstart and
+the Supabase Next.js user-management example. The manifest pins both upstream
+repositories to exact commits and expected BaaS findings:
+
+```bash
+# Explicitly downloads sparse worktrees at the two allowlisted commits
+npm run calibrate:baas -- --confirm-download
+
+# Download and scan only the Firebase target
+npm run calibrate:baas -- --confirm-download --target firebase-quickstart-js
+
+# Reuse a clean local repository at the exact manifest commit
+npm run calibrate:baas -- \
+  --target supabase-nextjs-user-management \
+  --local supabase-nextjs-user-management=/absolute/path/to/supabase
+```
+
+The runner defaults to no network access. Downloads use HTTPS, sparse checkout
+and a temporary directory; local repositories must have the exact recorded
+`HEAD`, a clean worktree and no target-owned AIsec policy. Only AIsec's native
+scanner runs: dependencies are not installed, project code is not executed,
+rules and migrations are not deployed, backend requests are not sent, and raw
+reports are not retained.
+
+At the pinned revisions, the Firebase sample deliberately contains public and
+authenticated-only quickstart rules, while its Storage starter rule is public
+and has no upload-size ceiling. The Supabase sample deliberately makes profiles
+publicly readable. These expected matches test rule behavior and syntax against
+real source; they are not claims that the examples are accidentally vulnerable
+or that either repository is insecure overall. The runner and fixed-target
+manifest are excluded from the npm package.
 
 ### Fixed-commit Node API calibration
 
