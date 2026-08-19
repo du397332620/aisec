@@ -49,9 +49,10 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
 
 - Project source, Git metadata, configuration, archives and dependency names are
   untrusted.
-- AIsec's own shipped rules and an explicitly selected operator-owned security
-  policy outside the scanned target are trusted inputs. Target repository
-  configuration is not promoted into this boundary.
+- AIsec's own shipped rules and explicitly selected operator-owned security
+  policies or declarative rule packs outside the scanned target are trusted
+  data inputs. Target repository configuration is not promoted into this
+  boundary, and rule packs are never trusted as executable code.
 - PATH executables are trusted by the invoking user; managed executables have a
   pinned SHA-256 checked before every run.
 - Scanner child processes receive no ambient variable whose name indicates an
@@ -78,6 +79,12 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   `.aisec.yml` is ignored and cannot suppress native findings. Policy baselines
   require the same explicitly supplied digest. Non-empty policy suppressions
   also require a separate explicit confirmation and record that approval.
+- A declarative rule pack is also never discovered from the target. Its real
+  path must be outside the scan root, its strict schema has no regex, script,
+  command, import or callback fields, and matching is bounded to line-local
+  literals over the existing inventory. Reports record its ID, rule count and
+  SHA-256 without recording its local path or literal definitions. Baselines
+  require the same pack set and digest.
 - Trivy scans use an AIsec-owned offline cache. Missing, invalid or stale
   database metadata fails coverage; database download happens only through the
   explicit `engines prepare trivy` setup command.
@@ -108,6 +115,12 @@ failed coverage rather than a clean result. The synthetic resource benchmark
 checks broad time/RSS budgets, but repository shape and third-party parser
 behavior can still vary.
 
+At most 8 operator rule packs, 100 rules per pack and 256 total custom rules are
+accepted; each pack is at most 256 KiB. Literal/selector counts, aggregate
+rule-file selection work, inspected bytes, literal-byte work and evaluated lines
+are separately bounded. Reaching a custom-rule work or output limit makes its
+required coverage `partial`.
+
 Mobile archive inspection selects at most 25 supported members after validating
 up to 200,000 listed paths. It accepts at most 8 MiB from one member, 16 MiB of
 aggregate uncompressed member input and 8 MiB of recovered text. It semantically
@@ -132,6 +145,11 @@ Policy SHA-256 records exact policy bytes for reproducibility; it is not a
 signature and does not prove who authored or approved the file. Protect the
 operator policy with normal repository/CI access controls and use a new
 baseline for an intentional policy change.
+
+Rule-pack SHA-256 has the same limitation: it binds report and baseline evidence
+to exact bytes but does not establish authorship, review quality or provenance.
+Protect rule packs with operator-side access control and review every declared
+severity and evidence level.
 
 No result constitutes certification. `no_blockers_found` means only that the
 completed checks found no configured blocker. Read the coverage table and

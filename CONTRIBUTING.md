@@ -34,6 +34,14 @@ rule/engine disable lists, coverage overrides or silent baseline-policy
 migration. Update the public policy/report schemas and positive/negative policy
 tests together.
 
+Declarative rule-pack changes must preserve the non-executable extension
+boundary. Packs are explicit operator-owned files outside the target and may
+only add bounded literal findings and required coverage. Do not add dynamic
+imports, JavaScript/Python/WASM execution, regex, commands, target-side pack
+discovery, suppressions or gate relaxation. Update the public RulePack,
+ScanReport and CI schemas plus path, resource, baseline and installed-package
+tests together.
+
 Report-format changes must validate their public contract before serialization
 and include hostile target-controlled text tests. GitHub annotations must reject
 unsafe paths, escape workflow-command syntax and retain deterministic bounds;

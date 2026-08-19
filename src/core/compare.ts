@@ -17,6 +17,10 @@ export function compareReports(current: ScanReport, baseline: ScanReport): ScanC
       if (signal.engine === "opengrep") return !coverageComplete("sast-general");
       if (signal.engine === "aisec-artifact") return !coverageComplete("mobile-artifact-static");
       if (signal.engine === "aisec-typescript") return !coverageComplete("js-ts-dataflow");
+      if (signal.engine === "aisec-rule-pack") {
+        const packId = typeof signal.metadata?.rulePackId === "string" ? signal.metadata.rulePackId : undefined;
+        return !packId || !coverageComplete(`rule-pack:${packId}`);
+      }
       if (signal.engine === "aisec-native") {
         if (signal.tags.includes("supabase") || signal.tags.includes("firebase") || signal.tags.includes("baas")) return !coverageComplete("baas-authorization");
         if (signal.tags.some((tag) => ["mobile", "android", "ios", "flutter", "react-native"].includes(tag))) return !coverageComplete("mobile-source-config");

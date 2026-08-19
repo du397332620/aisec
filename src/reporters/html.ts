@@ -45,6 +45,9 @@ export function renderHtml(report: ScanReport): string {
     ? `<section class="alert error"><h2>Required coverage gaps</h2><ul>${ci.requiredCoverage.gaps.map((gap) => `<li><strong>${escape(gap.domain)}</strong> (${escape(gap.engine)}): ${escape(gap.status)}${gap.reason ? ` — ${escape(gap.reason)}` : ""}</li>`).join("")}</ul></section>`
     : `<section class="alert success"><strong>Required coverage:</strong> all ${ci.requiredCoverage.total} records complete.</section>`;
   const comparison = report.comparison ? `<section><h2>Baseline comparison</h2><p><code>${escape(report.comparison.baselineScanId)}</code></p><div class="comparison-grid">${comparisonList(report, "New", report.comparison.new)}${comparisonList(report, "Remaining", report.comparison.remaining)}${comparisonList(report, "Resolved", report.comparison.resolved)}${comparisonList(report, "Not rechecked", report.comparison.notRechecked)}</div></section>` : "";
+  const rulePacks = (report.rulePacks ?? []).length > 0
+    ? `<ul>${(report.rulePacks ?? []).map((pack) => `<li><code>${escape(pack.packId)}</code> · SHA-256 <code>${escape(pack.digestSha256)}</code> · ${pack.ruleCount} rule(s)</li>`).join("")}</ul>`
+    : "<p>None.</p>";
   return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src 'none'; form-action 'none'; base-uri 'none'">
 <title>AIsec report ${escape(report.scanId)}</title><style>
@@ -53,6 +56,7 @@ export function renderHtml(report: ScanReport): string {
 <p>${escape(report.disclaimer)}</p><section class="alert"><h2>Decision reasons</h2><ul>${ci.decisionReasons.map((reason) => `<li>${escape(reason)}</li>`).join("")}</ul></section>${coverageAlert}
 <h2>Summary</h2><div class="metrics"><div class="metric"><strong>${ci.counts.critical}</strong>critical</div><div class="metric"><strong>${ci.counts.high}</strong>high</div><div class="metric"><strong>${ci.counts.medium}</strong>medium</div><div class="metric"><strong>${ci.counts.open}</strong>open</div><div class="metric"><strong>${ci.counts.suppressed}</strong>suppressed</div><div class="metric"><strong>${ci.counts.attackPaths}</strong>attack paths</div></div>
 <h2>Policy</h2><p>${policy}</p><ul><li>Gate: ${gate}</li><li>Required engines: ${ci.policy.requiredEngines.length ? escape(ci.policy.requiredEngines.join(", ")) : "none recorded"}</li><li>Target configuration: ${escape(ci.policy.targetConfiguration)}</li><li>Suppressions: ${ci.policy.suppressionCount} (${escape(ci.policy.suppressionApproval)})</li><li>Relaxations: ${ci.policy.relaxations.length ? escape(ci.policy.relaxations.join(", ")) : "none"}</li></ul>
+<h2>Declarative rule packs</h2>${rulePacks}
 ${comparison}${paths ? `<h2>Attack paths</h2>${paths}` : ""}<h2>Findings</h2>${findingRows ? `<table><thead><tr><th>Risk</th><th>Finding</th><th>Status</th><th>Location</th><th>Evidence</th></tr></thead><tbody>${findingRows}</tbody></table>` : "<p>No findings in the executed coverage.</p>"}
 <h2>Coverage</h2><table><thead><tr><th>Domain</th><th>Engine</th><th>Requirement</th><th>Status</th><th>Reason</th></tr></thead><tbody>${coverageRows}</tbody></table></body></html>`;
 }

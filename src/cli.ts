@@ -20,7 +20,7 @@ const HELP = `AIsec ${TOOL_VERSION} — local-first security acceptance for AI-b
 
 Usage:
   aisec inspect [path] [--artifact app.apk]
-  aisec scan [path] [--profile predeploy|native] [--policy trusted-policy.yml] [--native-only] [--artifact app.apk] [--format terminal|json|html|sarif|ci|github|markdown] [--output file]
+  aisec scan [path] [--profile predeploy|native] [--policy trusted-policy.yml] [--rule-pack trusted-rules.yml] [--native-only] [--artifact app.apk] [--format terminal|json|html|sarif|ci|github|markdown] [--output file]
   aisec rescan [path] --baseline <scan-id|report.json> [scan options]
   aisec report <scan-id|report.json> [--format terminal|json|html|sarif|ci|github|markdown] [--output file]
   aisec fix-contract --scan <scan-id|report.json> --finding <id|fingerprint> [--format terminal|json] [--output file]
@@ -44,6 +44,7 @@ Scan safety:
 Scan options:
   --profile predeploy|native  Acceptance scan (default) or source-only first pass
   --policy <file>            Explicit operator-owned release policy outside target
+  --rule-pack <file>         Repeatable operator-owned declarative rule pack outside target
   --confirm-policy-suppressions  Confirm reviewed suppressions in that policy
   --native-only              Disable Gitleaks, Opengrep and Trivy for this scan
   --artifact <apk|ipa>       Repeatable; at most 10 mobile artifacts
@@ -74,6 +75,12 @@ function scanProfile(value: string | undefined): "predeploy" | "native" {
   if (value === undefined || value === "predeploy") return "predeploy";
   if (value === "native") return "native";
   throw new Error(`Unsupported scan profile: ${value}`);
+}
+
+function pathFlags(parsed: ReturnType<typeof parseArgs>, name: string): string[] {
+  const values = flags(parsed, name);
+  if (values.some((value) => value === "true" || !value.trim())) throw new Error(`--${name} requires a file path`);
+  return values;
 }
 
 async function writeOrStdout(value: string, output?: string): Promise<void> {
@@ -113,6 +120,7 @@ async function main(): Promise<void> {
       persist: !booleanFlag(parsed, "no-persist"),
       policyPath: flag(parsed, "policy"),
       confirmPolicySuppressions: booleanFlag(parsed, "confirm-policy-suppressions"),
+      rulePackPaths: pathFlags(parsed, "rule-pack"),
     }, baseline);
     await emitReport(result.report, formatValue(flag(parsed, "format")), flag(parsed, "output"));
     if (result.storedAt && !flag(parsed, "output") && formatValue(flag(parsed, "format")) === "terminal") process.stderr.write(`Stored report: ${result.storedAt}\n`);

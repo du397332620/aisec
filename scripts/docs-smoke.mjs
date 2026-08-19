@@ -54,6 +54,7 @@ try {
     "terminal|json|html|sarif|ci|github|markdown",
     "## Beta capability matrix",
     "--policy ../trusted/security-policy.yml",
+    "--rule-pack ../trusted/rule-pack.yml",
     "--confirm-policy-suppressions",
     "target-owned `.aisec.yml` is ignored",
     "npm run calibrate:baas -- --confirm-download",
@@ -74,6 +75,7 @@ try {
   const help = run(["--help"]).stdout;
   assert.match(help, /--profile predeploy\|native/);
   assert.match(help, /--policy <file>/);
+  assert.match(help, /--rule-pack <file>/);
   assert.match(help, /--confirm-policy-suppressions/);
   assert.match(help, /terminal\|json\|html\|sarif\|ci\|github\|markdown/);
   assert.match(help, /verify-bola --authorization <manifest\.yml> --confirm/);
@@ -84,6 +86,7 @@ try {
 
   const safe = report(run(["scan", "test/fixtures/safe", "--profile", "native", "--no-persist", "--format", "json"]), "safe fixture");
   assert.equal(safe.decision, "no_blockers_found");
+  assert.equal(safe.schemaVersion, "1.2.0");
   assert.equal(safe.profileName, "native");
   assert.equal(safe.coverage.find((item) => item.domain === "project-inventory")?.status, "complete");
 
@@ -92,7 +95,7 @@ try {
   const stored = join(temporary, "data", "scans", `${vulnerable.scanId}.json`);
   await access(stored);
   const ci = report(run(["report", stored, "--format", "ci"]), "CI report");
-  assert.equal(ci.schemaVersion, "1.0.0");
+  assert.equal(ci.schemaVersion, "1.1.0");
   assert.equal(ci.scanId, vulnerable.scanId);
   assert.equal(ci.recommendedExitCode, 1);
   assert.ok(ci.annotations.length <= 71);
@@ -147,6 +150,29 @@ suppressions: []
   assert.equal(policyReport.policy.source, "operator");
   assert.equal(policyReport.policy.policyId, "docs-smoke");
 
+  const trustedRulePack = join(temporary, "trusted-rule-pack.yml");
+  await writeFile(trustedRulePack, `schemaVersion: 1.0.0
+packId: docs.smoke
+description: Documentation smoke rule pack
+rules:
+  - ruleId: custom.docs.smoke.refresh-token-log
+    title: Project token logging invariant failed
+    description: A reviewed local literal identifies token logging.
+    severity: high
+    evidenceLevel: static_confirmed
+    confidence: high
+    cwe: [CWE-532]
+    tags: [logging, custom-policy]
+    remediation: Remove the token from the logging call.
+    files:
+      extensions: [.ts]
+    match:
+      containsAny: [console.log(refreshToken)]
+`);
+  const rulePackReport = report(run(["scan", policyTarget, "--profile", "native", "--rule-pack", trustedRulePack, "--no-persist", "--format", "json"], 1), "declarative rule-pack scan");
+  assert.equal(rulePackReport.rulePacks[0].packId, "docs.smoke");
+  assert.ok(rulePackReport.signals.some((item) => item.ruleId === "custom.docs.smoke.refresh-token-log"));
+
   const mobileWithoutArtifact = report(run(["scan", "test/fixtures/corpus/react-native/near-miss", "--native-only", "--no-persist", "--format", "json"], 2), "predeploy mobile scan without an artifact");
   assert.equal(mobileWithoutArtifact.profileName, "predeploy");
   const artifactCoverage = mobileWithoutArtifact.coverage.find((item) => item.domain === "mobile-artifact-static");
@@ -177,6 +203,7 @@ suppressions: []
   ]);
   assert.equal(mcpResponse.result.tools.find((tool) => tool.name === "run_predeploy_scan").inputSchema.properties.policy.type, "string");
   assert.equal(mcpResponse.result.tools.find((tool) => tool.name === "run_predeploy_scan").inputSchema.properties.confirmPolicySuppressions.type, "boolean");
+  assert.equal(mcpResponse.result.tools.find((tool) => tool.name === "run_predeploy_scan").inputSchema.properties.rulePacks.maxItems, 8);
 
   process.stdout.write(`Documentation smoke passed on ${process.platform}/${process.arch} with ${process.version}.\n`);
 } finally {

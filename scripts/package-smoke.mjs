@@ -60,9 +60,11 @@ try {
   assert.ok(packedPaths.has("RULES.md"), "generated public rule documentation must be packaged");
   assert.ok(packedPaths.has("rules/catalog.json"), "machine-readable rule catalog must be packaged");
   assert.ok(packedPaths.has("schemas/rule-catalog.schema.json"), "rule catalog schema must be packaged");
+  assert.ok(packedPaths.has("schemas/rule-pack.schema.json"), "declarative rule-pack schema must be packaged");
   assert.ok(packedPaths.has("schemas/security-policy.schema.json"), "security policy schema must be packaged");
   assert.ok(packedPaths.has("schemas/ci-report.schema.json"), "CI report schema must be packaged");
   assert.ok(packedPaths.has("examples/security-policy.example.yml"), "trusted policy example must be packaged");
+  assert.ok(packedPaths.has("examples/rule-pack.example.yml"), "declarative rule-pack example must be packaged");
   assert.ok(![...packedPaths].some((path) => path.startsWith("docs/") || path.startsWith(".scratch/")), "local progress documents must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/baas-calibration.mjs"), "BaaS calibration runner must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/calibration/baas-targets.json"), "real BaaS calibration manifest must stay out of the npm package");
@@ -89,6 +91,7 @@ try {
   await access(join(packageRoot, "schemas", "bola-authorization-manifest.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "bola-draft.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "rule-catalog.schema.json"), constants.R_OK);
+  await access(join(packageRoot, "schemas", "rule-pack.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "security-policy.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "ci-report.schema.json"), constants.R_OK);
   await access(join(packageRoot, "RULES.md"), constants.R_OK);
@@ -96,6 +99,7 @@ try {
   assert.equal(ruleCatalog.rules.length, 56);
   await access(join(packageRoot, "examples", "authorization.bola.local.yml"), constants.R_OK);
   await access(join(packageRoot, "examples", "security-policy.example.yml"), constants.R_OK);
+  await access(join(packageRoot, "examples", "rule-pack.example.yml"), constants.R_OK);
   const scanEnvironment = { AISEC_DATA_DIR: join(temporary, "data") };
 
   const catalogApi = parseReport(run(process.execPath, [
@@ -121,8 +125,16 @@ try {
   ], { cwd: consumer, env: scanEnvironment }), "installed security policy API");
   assert.equal(policyApi.policyId, "package-smoke");
 
+  const rulePackApi = parseReport(run(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `import { readFileSync } from "node:fs"; import { parseRulePack, validateRulePack } from ${JSON.stringify(packageMetadata.name)}; const value = validateRulePack(parseRulePack(readFileSync(${JSON.stringify(join(packageRoot, "examples", "rule-pack.example.yml"))}, "utf8"))); process.stdout.write(JSON.stringify({ packId: value.packId, rules: value.rules.length }));`,
+  ], { cwd: consumer, env: scanEnvironment }), "installed rule-pack API");
+  assert.deepEqual(rulePackApi, { packId: "example.local", rules: 1 });
+
   assert.equal(run(executable, ["--version"], { cwd: consumer, env: scanEnvironment }).trim(), packageMetadata.version);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /--policy <file>/);
+  assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /--rule-pack <file>/);
 
   process.stdout.write("Running the installed CLI against safe and vulnerable fixtures...\n");
   const safe = parseReport(run(executable, [
@@ -135,6 +147,23 @@ try {
   ], { cwd: consumer, env: scanEnvironment }), "safe fixture");
   assert.equal(safe.decision, "no_blockers_found");
 
+  const customTarget = join(temporary, "custom-target");
+  await mkdir(join(customTarget, "src"), { recursive: true });
+  await writeFile(join(customTarget, "src", "transport.ts"), "const options = { rejectUnauthorized: false };\n");
+  const custom = parseReport(run(executable, [
+    "scan",
+    customTarget,
+    "--profile",
+    "native",
+    "--rule-pack",
+    join(packageRoot, "examples", "rule-pack.example.yml"),
+    "--no-persist",
+    "--format",
+    "json",
+  ], { cwd: consumer, env: scanEnvironment, expectedStatus: 1 }), "installed declarative rule-pack scan");
+  assert.equal(custom.rulePacks[0].packId, "example.local");
+  assert.ok(custom.signals.some((item) => item.ruleId === "custom.example.local.tls-verification-disabled"));
+
   const vulnerable = parseReport(run(executable, [
     "scan",
     join(packageRoot, "test", "fixtures", "vulnerable"),
@@ -145,7 +174,7 @@ try {
   assert.equal(vulnerable.decision, "block");
   const storedReport = join(temporary, "data", "scans", `${vulnerable.scanId}.json`);
   const ci = parseReport(run(executable, ["report", storedReport, "--format", "ci"], { cwd: consumer, env: scanEnvironment }), "installed CI report");
-  assert.equal(ci.schemaVersion, "1.0.0");
+  assert.equal(ci.schemaVersion, "1.1.0");
   assert.equal(ci.recommendedExitCode, 1);
   assert.ok(ci.annotations.length <= 71);
   const github = run(executable, ["report", storedReport, "--format", "github"], { cwd: consumer, env: scanEnvironment });
@@ -158,7 +187,7 @@ try {
     "--eval",
     `import { readFileSync } from "node:fs"; import { buildCiReport, validateCiReport } from ${JSON.stringify(packageMetadata.name)}; const scan = JSON.parse(readFileSync(${JSON.stringify(storedReport)}, "utf8")); const value = validateCiReport(buildCiReport(scan)); process.stdout.write(JSON.stringify({ schemaVersion: value.schemaVersion, annotations: value.annotations.length }));`,
   ], { cwd: consumer, env: scanEnvironment }), "installed CI report API");
-  assert.equal(ciApi.schemaVersion, "1.0.0");
+  assert.equal(ciApi.schemaVersion, "1.1.0");
   assert.equal(ciApi.annotations, ci.annotations.length);
 
   const bolaDraft = parseReport(run(executable, [

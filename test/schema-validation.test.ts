@@ -36,11 +36,17 @@ test("generated reports and fix contracts satisfy the complete public schemas", 
     const contract = createFixContract(report, report.findings[0]!.id);
     assert.equal(validateFixContract(contract), contract);
 
+    const policyEra = structuredClone(report);
+    policyEra.schemaVersion = "1.1.0";
+    delete policyEra.rulePacks;
+    assert.equal(validateScanReport(policyEra), policyEra, "legacy ScanReport 1.1.0 remains readable without rule-pack records");
+
     const compatible = structuredClone(report);
     compatible.schemaVersion = "1.0.0";
     compatible.toolVersion = "0.1.0-beta.1+build.7";
     delete compatible.comparison;
     delete compatible.policy;
+    delete compatible.rulePacks;
     for (const signal of compatible.signals) {
       delete signal.metadata;
       delete signal.remediation;
@@ -56,6 +62,10 @@ test("public schemas reject unsupported versions, unknown fields and invalid nes
   const missingPolicy = structuredClone(report);
   delete missingPolicy.policy;
   assert.throws(() => validateScanReport(missingPolicy), /ScanReport.*policy/);
+
+  const missingRulePacks = structuredClone(report);
+  delete missingRulePacks.rulePacks;
+  assert.throws(() => validateScanReport(missingRulePacks), /ScanReport.*rulePacks/);
 
   const legacyClaimingPolicy = structuredClone(report);
   legacyClaimingPolicy.schemaVersion = "1.0.0";
@@ -140,7 +150,7 @@ test("serialization and the CLI report command reject malformed reports", async 
   const [exitCode] = await once(child, "close");
   assert.equal(exitCode, 64);
   assert.equal(stdout, "");
-  assert.match(stderr, /aisec: ScanReport does not match schema 1\.1\.0.*decision/);
+  assert.match(stderr, /aisec: ScanReport does not match schema 1\.2\.0.*decision/);
 });
 
 test("authorization manifests use the public schema before semantic authorization checks", () => {
@@ -197,7 +207,7 @@ test("BOLA authorization manifests use a separate strict public schema", () => {
   assert.throws(() => validateBolaAuthorization({ ...manifest, destructiveOverride: true }), /BolaAuthorizationManifest.*additional properties/);
 });
 
-test("target-owned suppressions are ignored and recorded in the 1.1.0 report contract", async () => {
+test("target-owned suppressions are ignored and recorded in the 1.2.0 report contract", async () => {
   const fixture = await materializeFixture(join(fixtures, "vulnerable"), [{
     relativePath: ".env.example",
     placeholder: "__AISEC_SYNTHETIC_STRIPE_LIVE_KEY__",

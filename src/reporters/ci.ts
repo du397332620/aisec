@@ -164,6 +164,7 @@ export function buildCiReport(report: ScanReport): CiReport {
       gaps,
     },
     policy: policySummary(report.policy),
+    rulePacks: (report.rulePacks ?? []).map((pack) => ({ ...pack })),
     ...(report.comparison ? {
       comparison: {
         baselineScanId: report.comparison.baselineScanId,
@@ -234,6 +235,14 @@ export function renderMarkdownSummary(report: CiReport): string {
     lines.push(`- Required engines: ${report.policy.requiredEngines.length > 0 ? report.policy.requiredEngines.map((item) => markdownText(item, 40)).join(", ") : "none"}`);
     lines.push(`- Suppressions: ${report.policy.suppressionCount} \(${markdownText(report.policy.suppressionApproval, 40)}\)`);
     if (report.policy.relaxations.length > 0) lines.push(`- Relaxations: ${report.policy.relaxations.map((item) => markdownText(item, 80)).join(", ")}`);
+  }
+  const rulePacks = report.rulePacks ?? [];
+  lines.push("", "## Declarative rule packs", "");
+  if (rulePacks.length === 0) lines.push("None.");
+  else {
+    for (const pack of rulePacks) {
+      lines.push(`- ${markdownText(pack.packId, 80)} · SHA-256 ${markdownText(pack.digestSha256, 64)} · ${pack.ruleCount} rule(s)`);
+    }
   }
   if (report.comparison) {
     lines.push("", "## Baseline comparison", "", `Baseline ${markdownText(report.comparison.baselineScanId, 100)}: ${report.comparison.new} new · ${report.comparison.remaining} remaining · ${report.comparison.resolved} resolved · ${report.comparison.notRechecked} not rechecked`);

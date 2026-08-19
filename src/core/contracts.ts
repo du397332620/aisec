@@ -20,8 +20,9 @@ export function createFixContract(report: ScanReport, findingReference: string):
     "Run the existing project test suite without weakening or deleting assertions.",
   ];
   const policyArgument = report.policy?.source === "operator" ? ` --policy ${JSON.stringify("<same-trusted-policy.yml>")}` : "";
+  const rulePackArguments = (report.rulePacks ?? []).map((pack) => ` --rule-pack ${JSON.stringify(`<same-trusted-rule-pack-${pack.packId}.yml>`)}`).join("");
   const suppressionConfirmation = report.policy?.source === "operator" && report.policy.suppressionCount > 0 ? " --confirm-policy-suppressions" : "";
-  const rescanCommand = `aisec rescan --baseline ${report.scanId}${policyArgument}${suppressionConfirmation} ${JSON.stringify(report.target)}`;
+  const rescanCommand = `aisec rescan --baseline ${report.scanId}${policyArgument}${rulePackArguments}${suppressionConfirmation} ${JSON.stringify(report.target)}`;
   const constraints = [
     "Do not expose, print, rotate, or fabricate secret values in source code.",
     "Do not disable authentication, authorization, validation, TLS, security headers, or tests to make the finding disappear.",

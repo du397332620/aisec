@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://aisec.dev/schemas/scan-report-1.1.0.json",
-  "title": "AIsec ScanReport 1.1.0",
+  "$id": "https://aisec.dev/schemas/scan-report-1.2.0.json",
+  "title": "AIsec ScanReport 1.2.0",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -24,7 +24,7 @@
     "disclaimer"
   ],
   "properties": {
-    "schemaVersion": { "enum": ["1.0.0", "1.1.0"] },
+    "schemaVersion": { "enum": ["1.0.0", "1.1.0", "1.2.0"] },
     "toolVersion": { "type": "string", "pattern": "^(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?(?:\\+[0-9A-Za-z-]+(?:\\.[0-9A-Za-z-]+)*)?$" },
     "scanId": { "$ref": "#/$defs/scanId" },
     "startedAt": { "$ref": "#/$defs/dateTime" },
@@ -41,13 +41,18 @@
     "decisionReasons": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/nonEmptyString" } },
     "summary": { "$ref": "#/$defs/summary" },
     "policy": { "$ref": "#/$defs/scanPolicy" },
+    "rulePacks": {
+      "type": "array",
+      "maxItems": 8,
+      "items": { "$ref": "#/$defs/rulePackRecord" }
+    },
     "comparison": { "$ref": "#/$defs/comparison" },
     "disclaimer": { "$ref": "#/$defs/nonEmptyString" }
   },
   "allOf": [
     {
       "if": {
-        "properties": { "schemaVersion": { "const": "1.1.0" } },
+        "properties": { "schemaVersion": { "enum": ["1.1.0", "1.2.0"] } },
         "required": ["schemaVersion"]
       },
       "then": {
@@ -57,10 +62,27 @@
     },
     {
       "if": {
+        "properties": { "schemaVersion": { "const": "1.2.0" } },
+        "required": ["schemaVersion"]
+      },
+      "then": {
+        "properties": { "rulePacks": { "type": "array", "maxItems": 8, "items": { "$ref": "#/$defs/rulePackRecord" } } },
+        "required": ["rulePacks"]
+      }
+    },
+    {
+      "if": {
+        "properties": { "schemaVersion": { "const": "1.1.0" } },
+        "required": ["schemaVersion"]
+      },
+      "then": { "properties": { "rulePacks": false } }
+    },
+    {
+      "if": {
         "properties": { "schemaVersion": { "const": "1.0.0" } },
         "required": ["schemaVersion"]
       },
-      "then": { "properties": { "policy": false } }
+      "then": { "properties": { "policy": false, "rulePacks": false } }
     }
   ],
   "$defs": {
@@ -346,6 +368,21 @@
           "uniqueItems": true,
           "items": { "enum": ["source_only_profile", "external_engines_disabled"] }
         }
+      }
+    },
+    "rulePackRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["packId", "digestSha256", "ruleCount"],
+      "properties": {
+        "packId": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 80,
+          "pattern": "^[a-z0-9]+(?:[.-][a-z0-9]+)*$"
+        },
+        "digestSha256": { "$ref": "#/$defs/fingerprint" },
+        "ruleCount": { "type": "integer", "minimum": 1, "maximum": 100 }
       }
     },
     "comparison": {

@@ -15,6 +15,8 @@ import { buildFindings, decide, summarize } from "./findings.js";
 import { compareReports } from "./compare.js";
 import { loadReport, saveReport } from "./store.js";
 import { validateScanReport } from "./schema-validation.js";
+import { loadTrustedRulePacks, MAX_RULE_PACKS, type LoadedRulePack } from "../rules/pack.js";
+import { runRulePacks } from "../detectors/rule-pack.js";
 
 export const DEFAULT_SCAN_OPTIONS: ScanOptions = {
   profile: "predeploy",
@@ -27,6 +29,7 @@ export const DEFAULT_SCAN_OPTIONS: ScanOptions = {
   timeoutMs: 120_000,
   persist: true,
   confirmPolicySuppressions: false,
+  rulePackPaths: [],
 };
 
 const HARD_SCAN_LIMITS = {
@@ -35,6 +38,7 @@ const HARD_SCAN_LIMITS = {
   maxFileBytes: 16 * 1024 * 1024,
   maxTotalBytes: 512 * 1024 * 1024,
   timeoutMs: 30 * 60_000,
+  rulePacks: MAX_RULE_PACKS,
 } as const;
 
 function normalizeOptions(overrides: Partial<ScanOptions>): ScanOptions {
@@ -50,6 +54,8 @@ function normalizeOptions(overrides: Partial<ScanOptions>): ScanOptions {
   }
   if (options.policyPath !== undefined && (typeof options.policyPath !== "string" || !options.policyPath.trim())) throw new Error("policyPath must be a non-empty file path");
   if (typeof options.confirmPolicySuppressions !== "boolean") throw new Error("confirmPolicySuppressions must be a boolean");
+  if (!Array.isArray(options.rulePackPaths) || options.rulePackPaths.some((item) => typeof item !== "string" || !item.trim())) throw new Error("rulePackPaths must contain non-empty file paths");
+  if (options.rulePackPaths.length > HARD_SCAN_LIMITS.rulePacks) throw new Error(`rulePackPaths cannot exceed ${HARD_SCAN_LIMITS.rulePacks}`);
   return options;
 }
 
@@ -78,6 +84,24 @@ function assertBaselinePolicy(current: ScanReport["policy"], baseline: ScanRepor
   }
 }
 
+function rulePackRecords(loaded: readonly LoadedRulePack[]): NonNullable<ScanReport["rulePacks"]> {
+  return loaded.map((item) => ({
+    packId: item.pack.packId,
+    digestSha256: item.digestSha256,
+    ruleCount: item.pack.rules.length,
+  }));
+}
+
+function assertBaselineRulePacks(current: NonNullable<ScanReport["rulePacks"]>, baseline: ScanReport): void {
+  const previous = [...(baseline.rulePacks ?? [])].sort((left, right) => left.packId.localeCompare(right.packId));
+  if (current.length !== previous.length || current.some((item, index) => {
+    const candidate = previous[index];
+    return !candidate || item.packId !== candidate.packId || item.digestSha256 !== candidate.digestSha256 || item.ruleCount !== candidate.ruleCount;
+  })) {
+    throw new Error(`Baseline ${baseline.scanId} used a different operator rule-pack set; rescan requires the same explicit --rule-pack files or a new baseline`);
+  }
+}
+
 function deduplicateSignals(signals: Signal[]): Signal[] {
   const result = new Map<string, Signal>();
   for (const signal of signals) {
@@ -96,6 +120,8 @@ export async function scanProject(
   const options = normalizeOptions(overrides);
   const root = await resolveSafeRoot(inputPath);
   const loadedPolicy = options.policyPath ? await loadTrustedPolicy(options.policyPath, root) : undefined;
+  const loadedRulePacks = await loadTrustedRulePacks(options.rulePackPaths, root);
+  const activeRulePacks = rulePackRecords(loadedRulePacks);
   if (loadedPolicy && (options.profile !== "predeploy" || options.nativeOnly)) {
     throw new Error("Operator security policies require profile predeploy with all external engines enabled; remove --profile native and --native-only");
   }
@@ -105,17 +131,21 @@ export async function scanProject(
   if (!loadedPolicy && options.confirmPolicySuppressions) throw new Error("--confirm-policy-suppressions requires --policy");
   const policy = createScanPolicyRecord(loadedPolicy, options, await targetConfiguration(root));
   const baseline = baselineReference ? await loadReport(baselineReference) : undefined;
-  if (baseline) assertBaselinePolicy(policy, baseline);
+  if (baseline) {
+    assertBaselinePolicy(policy, baseline);
+    assertBaselineRulePacks(activeRulePacks, baseline);
+  }
   const inventory = await collectProjectFiles(root, options);
   const profile = await inspectProject(root, inventory, options.artifacts);
   const assetGraph = buildAssetGraph(profile);
   const context = { root, inventory, profile, assetGraph, options };
-  const [native, external, artifacts] = await Promise.all([
+  const [native, external, artifacts, custom] = await Promise.all([
     runNativeDetectors(context),
     runExternalEngines(context),
     runArtifactDetector(context),
+    runRulePacks(context, loadedRulePacks),
   ]);
-  const coverage = [...native.coverage, ...external.coverage, artifacts.coverage];
+  const coverage = [...native.coverage, ...external.coverage, artifacts.coverage, ...custom.coverage];
   if (inventory.skippedFiles > 0) {
     coverage.push({
       domain: "project-inventory",
@@ -129,7 +159,7 @@ export async function scanProject(
     coverage.push({ domain: "project-inventory", engine: "aisec-native", status: "complete", required: true });
   }
 
-  const signals = deduplicateSignals([...native.signals, ...external.signals, ...artifacts.signals]);
+  const signals = deduplicateSignals([...native.signals, ...external.signals, ...artifacts.signals, ...custom.signals]);
   const attackPaths = correlateAttackPaths(signals, assetGraph);
   const findings = buildFindings(signals, attackPaths, loadedPolicy?.policy.suppressions ?? []);
   const decisionResult = decide(findings, coverage, signals, policy);
@@ -151,6 +181,7 @@ export async function scanProject(
     decisionReasons: decisionResult.reasons,
     summary: summarize(findings, attackPaths),
     policy,
+    rulePacks: activeRulePacks,
     disclaimer: "AIsec reports evidence found within executed coverage. no_blockers_found is not a guarantee, certification, or proof that the application is secure.",
   };
   if (baseline) report.comparison = compareReports(report, baseline);
@@ -161,6 +192,7 @@ export async function scanProject(
 
 export async function inspectOnly(inputPath: string, options: Partial<ScanOptions> = {}) {
   if (options.policyPath !== undefined || options.confirmPolicySuppressions) throw new Error("inspectOnly does not evaluate release policies; use scanProject");
+  if (options.rulePackPaths && options.rulePackPaths.length > 0) throw new Error("inspectOnly does not evaluate rule packs; use scanProject");
   const merged = normalizeOptions(options);
   const root = await resolveSafeRoot(inputPath);
   const inventory = await collectProjectFiles(root, merged);

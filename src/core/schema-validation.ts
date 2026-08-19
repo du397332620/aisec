@@ -2,9 +2,9 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import type { AuthorizationManifest, BolaAuthorizationManifest, BolaDraftPlan, CiReport, FixContract, RuleCatalog, ScanReport, SecurityPolicy } from "../schema.js";
+import type { AuthorizationManifest, BolaAuthorizationManifest, BolaDraftPlan, CiReport, FixContract, RuleCatalog, RulePack, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
 
-type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaDraftPlan" | "RuleCatalog" | "SecurityPolicy";
+type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaDraftPlan" | "RuleCatalog" | "RulePack" | "SecurityPolicy";
 
 function loadSchema(filename: string): object {
   const path = fileURLToPath(new URL(`../../../schemas/${filename}`, import.meta.url));
@@ -22,6 +22,7 @@ const authorizationManifestValidator = ajv.compile(loadSchema("authorization-man
 const bolaAuthorizationManifestValidator = ajv.compile(loadSchema("bola-authorization-manifest.schema.json"));
 const bolaDraftPlanValidator = ajv.compile(loadSchema("bola-draft.schema.json"));
 const ruleCatalogValidator = ajv.compile(loadSchema("rule-catalog.schema.json"));
+const rulePackValidator = ajv.compile(loadSchema("rule-pack.schema.json"));
 const securityPolicyValidator = ajv.compile(loadSchema("security-policy.schema.json"));
 
 function describeError(error: ErrorObject): string {
@@ -40,7 +41,7 @@ function assertSchema<T>(name: PublicSchemaName, validator: ValidateFunction, va
 }
 
 export function validateScanReport(value: unknown): ScanReport {
-  const report = assertSchema<ScanReport>("ScanReport", scanReportValidator, value, "1.1.0");
+  const report = assertSchema<ScanReport>("ScanReport", scanReportValidator, value, "1.2.0");
   if (report.policy?.source === "operator") {
     if (!report.policy.policyId || !report.policy.digestSha256 || !report.policy.expiresAt) {
       throw new Error("ScanReport operator policy record requires policyId, digestSha256 and expiresAt");
@@ -95,7 +96,43 @@ export function validateScanReport(value: unknown): ScanReport {
       }
     }
   }
+  if (report.rulePacks) {
+    validateRulePackRecords(report.rulePacks, "ScanReport");
+    const expectedPacks = new Map(report.rulePacks.map((pack) => [pack.packId, pack]));
+    const expectedDomains = new Set(report.rulePacks.map((pack) => `rule-pack:${pack.packId}`));
+    for (const pack of report.rulePacks) {
+      const matching = report.coverage.filter((item) => item.engine === "aisec-rule-pack" && item.domain === `rule-pack:${pack.packId}`);
+      if (matching.length !== 1 || matching[0]?.required !== true || matching[0]?.version !== pack.digestSha256) {
+        throw new Error(`ScanReport rule pack ${pack.packId} requires exactly one required coverage record`);
+      }
+    }
+    for (const coverage of report.coverage.filter((item) => item.engine === "aisec-rule-pack")) {
+      if (!expectedDomains.has(coverage.domain)) throw new Error(`ScanReport contains rule-pack coverage without a matching record: ${coverage.domain}`);
+    }
+    for (const signal of report.signals.filter((item) => item.engine === "aisec-rule-pack")) {
+      const packId = signal.metadata?.rulePackId;
+      const digest = signal.metadata?.rulePackDigestSha256;
+      const pack = typeof packId === "string" ? expectedPacks.get(packId) : undefined;
+      if (!pack || typeof digest !== "string" || digest !== pack.digestSha256) {
+        throw new Error(`ScanReport custom signal ${signal.id} does not match a declared rule-pack ID and digest`);
+      }
+      if (!signal.ruleId.startsWith(`custom.${packId}.`)) {
+        throw new Error(`ScanReport custom signal ${signal.id} rule ID does not match rule pack ${packId}`);
+      }
+      if (signal.evidenceLevel === "verified") throw new Error(`ScanReport custom signal ${signal.id} cannot claim verified evidence`);
+    }
+  } else if (report.coverage.some((item) => item.engine === "aisec-rule-pack") || report.signals.some((item) => item.engine === "aisec-rule-pack")) {
+    throw new Error("Legacy ScanReport cannot claim rule-pack coverage or signals without versioned rule-pack records");
+  }
   return report;
+}
+
+function validateRulePackRecords(records: RulePackRecord[], contract: "ScanReport" | "CiReport"): void {
+  const ids = new Set<string>();
+  for (const record of records) {
+    if (ids.has(record.packId)) throw new Error(`${contract} contains duplicate rule pack: ${record.packId}`);
+    ids.add(record.packId);
+  }
 }
 
 function ciTextIsSingleLine(value: string): boolean {
@@ -110,7 +147,8 @@ function ciPathIsSafe(path: string): boolean {
 }
 
 export function validateCiReport(value: unknown): CiReport {
-  const report = assertSchema<CiReport>("CiReport", ciReportValidator, value);
+  const report = assertSchema<CiReport>("CiReport", ciReportValidator, value, "1.1.0");
+  if (report.rulePacks) validateRulePackRecords(report.rulePacks, "CiReport");
   const expectedExitCode = report.decision === "block" ? 1 : report.decision === "incomplete" ? 2 : 0;
   if (report.recommendedExitCode !== expectedExitCode) throw new Error(`CiReport decision ${report.decision} requires recommendedExitCode ${expectedExitCode}`);
   const open = report.counts.critical + report.counts.high + report.counts.medium + report.counts.low + report.counts.info;
@@ -242,6 +280,56 @@ export function validateRuleCatalog(value: unknown): RuleCatalog {
     }
   }
   return catalog;
+}
+
+function assertSafeRulePackSelector(value: string, label: string, prefix: boolean): void {
+  if (value !== value.trim() || /[\\\u0000-\u001f\u007f]/u.test(value)) {
+    throw new Error(`RulePack ${label} must be trimmed text without backslashes or control characters`);
+  }
+  if (value.startsWith("/") || value.startsWith("//") || /^[A-Za-z]:/u.test(value) || /^[A-Za-z][A-Za-z0-9+.-]*:/u.test(value)) {
+    throw new Error(`RulePack ${label} must be a safe relative path selector`);
+  }
+  if (prefix !== value.endsWith("/")) {
+    throw new Error(`RulePack ${label} ${prefix ? "must" : "must not"} end with /`);
+  }
+  const path = prefix ? value.slice(0, -1) : value;
+  if (!path || path.includes("//") || path.split("/").some((part) => !part || part === "." || part === ".." || /%(?:2e|2f|5c)/iu.test(part))) {
+    throw new Error(`RulePack ${label} contains an unsafe or ambiguous path segment`);
+  }
+}
+
+export function validateRulePack(value: unknown): RulePack {
+  const pack = assertSchema<RulePack>("RulePack", rulePackValidator, value);
+  const assertSafeText = (text: string, label: string): void => {
+    if (text !== text.trim() || /[\u0000-\u001f\u007f]/u.test(text)) throw new Error(`RulePack ${label} must be trimmed single-line text without control characters`);
+  };
+  assertSafeText(pack.description, `${pack.packId} description`);
+  const ruleIds = new Set<string>();
+  for (const rule of pack.rules) {
+    const expectedPrefix = `custom.${pack.packId}.`;
+    if (!rule.ruleId.startsWith(expectedPrefix)) {
+      throw new Error(`RulePack rule ${rule.ruleId} must start with ${expectedPrefix}`);
+    }
+    if (ruleIds.has(rule.ruleId)) throw new Error(`RulePack contains duplicate rule: ${rule.ruleId}`);
+    ruleIds.add(rule.ruleId);
+    assertSafeText(rule.title, `${rule.ruleId} title`);
+    assertSafeText(rule.description, `${rule.ruleId} description`);
+    assertSafeText(rule.remediation, `${rule.ruleId} remediation`);
+    for (const selector of rule.files.pathPrefixes ?? []) assertSafeRulePackSelector(selector, `${rule.ruleId} pathPrefixes`, true);
+    for (const selector of rule.files.excludePathPrefixes ?? []) assertSafeRulePackSelector(selector, `${rule.ruleId} excludePathPrefixes`, true);
+    for (const selector of rule.files.pathSuffixes ?? []) assertSafeRulePackSelector(selector, `${rule.ruleId} pathSuffixes`, false);
+    const caseSensitive = rule.match.caseSensitive ?? true;
+    const normalize = (literal: string): string => caseSensitive ? literal : literal.toLowerCase();
+    const excludes = new Set((rule.match.excludes ?? []).map(normalize));
+    for (const literal of [...rule.match.containsAny, ...(rule.match.containsAll ?? [])]) {
+      if (!literal.trim()) throw new Error(`RulePack rule ${rule.ruleId} contains a whitespace-only literal`);
+      if (excludes.has(normalize(literal))) throw new Error(`RulePack rule ${rule.ruleId} both requires and excludes the same literal`);
+    }
+    const literalBytes = [...rule.match.containsAny, ...(rule.match.containsAll ?? []), ...(rule.match.excludes ?? [])]
+      .reduce((total, literal) => total + Buffer.byteLength(literal, "utf8"), 0);
+    if (literalBytes > 16 * 1024) throw new Error(`RulePack rule ${rule.ruleId} literals exceed 16 KiB`);
+  }
+  return pack;
 }
 
 let bundledRuleIds: Set<string> | undefined;

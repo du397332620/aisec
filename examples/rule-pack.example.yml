@@ -1,0 +1,34 @@
+schemaVersion: 1.0.0
+packId: example.local
+description: Reviewed local rules for project-specific security invariants
+rules:
+  - ruleId: custom.example.local.tls-verification-disabled
+    title: TLS certificate verification is explicitly disabled
+    description: A project-specific transport option contains a reviewed literal that disables certificate verification.
+    severity: high
+    evidenceLevel: static_confirmed
+    confidence: high
+    cwe:
+      - CWE-295
+    tags:
+      - tls
+      - custom-policy
+    remediation: Remove the bypass and use a trusted development CA for local test environments.
+    files:
+      extensions:
+        - .js
+        - .mjs
+        - .cjs
+        - .ts
+        - .tsx
+      pathPrefixes:
+        - src/
+      excludePathPrefixes:
+        - src/fixtures/
+    match:
+      containsAny:
+        - "rejectUnauthorized: false"
+        - "NODE_TLS_REJECT_UNAUTHORIZED=0"
+      excludes:
+        - aisec-reviewed-near-miss
+      caseSensitive: true

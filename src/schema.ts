@@ -1,6 +1,6 @@
 export const SCHEMA_VERSION = "1.0.0" as const;
-export const SCAN_REPORT_SCHEMA_VERSION = "1.1.0" as const;
-export const CI_REPORT_SCHEMA_VERSION = "1.0.0" as const;
+export const SCAN_REPORT_SCHEMA_VERSION = "1.2.0" as const;
+export const CI_REPORT_SCHEMA_VERSION = "1.1.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type EvidenceLevel = "verified" | "static_confirmed" | "inferred";
@@ -84,6 +84,47 @@ export interface RuleCatalog {
   description: string;
   applicabilityProfiles: RuleApplicabilityProfile[];
   rules: RuleCatalogEntry[];
+}
+
+export interface RulePackFileSelector {
+  extensions: string[];
+  pathPrefixes?: string[];
+  pathSuffixes?: string[];
+  excludePathPrefixes?: string[];
+}
+
+export interface RulePackMatch {
+  containsAny: string[];
+  containsAll?: string[];
+  excludes?: string[];
+  caseSensitive?: boolean;
+}
+
+export interface RulePackRule {
+  ruleId: string;
+  title: string;
+  description: string;
+  severity: Severity;
+  evidenceLevel: "static_confirmed" | "inferred";
+  confidence: "high" | "medium" | "low";
+  cwe: string[];
+  tags: string[];
+  remediation: string;
+  files: RulePackFileSelector;
+  match: RulePackMatch;
+}
+
+export interface RulePack {
+  schemaVersion: "1.0.0";
+  packId: string;
+  description: string;
+  rules: RulePackRule[];
+}
+
+export interface RulePackRecord {
+  packId: string;
+  digestSha256: string;
+  ruleCount: number;
 }
 
 export interface SourceLocation {
@@ -219,7 +260,7 @@ export interface ScanComparison {
 }
 
 export interface ScanReport {
-  schemaVersion: "1.0.0" | typeof SCAN_REPORT_SCHEMA_VERSION;
+  schemaVersion: "1.0.0" | "1.1.0" | typeof SCAN_REPORT_SCHEMA_VERSION;
   toolVersion: string;
   scanId: string;
   startedAt: string;
@@ -236,6 +277,7 @@ export interface ScanReport {
   decisionReasons: string[];
   summary: ScanSummary;
   policy?: ScanPolicyRecord;
+  rulePacks?: RulePackRecord[];
   comparison?: ScanComparison;
   disclaimer: string;
 }
@@ -284,7 +326,7 @@ export interface CiAnnotation {
 }
 
 export interface CiReport {
-  schemaVersion: typeof CI_REPORT_SCHEMA_VERSION;
+  schemaVersion: "1.0.0" | typeof CI_REPORT_SCHEMA_VERSION;
   toolVersion: string;
   scanId: string;
   profileName: ScanReport["profileName"];
@@ -298,6 +340,7 @@ export interface CiReport {
     gaps: CiCoverageGap[];
   };
   policy: CiPolicySummary;
+  rulePacks?: RulePackRecord[];
   comparison?: {
     baselineScanId: string;
     new: number;
@@ -506,4 +549,5 @@ export interface ScanOptions {
   persist: boolean;
   policyPath?: string;
   confirmPolicySuppressions: boolean;
+  rulePackPaths: string[];
 }

@@ -34,6 +34,15 @@ test("CiReport is a strict coverage-aware machine contract", async () => {
   assert.ok(report.annotations.some((item) => item.kind === "finding" && item.blocksRelease && item.level === "error"));
   assert.ok(report.annotations.some((item) => item.kind === "finding" && item.evidenceLevel === "inferred" && item.level === "warning"));
   assert.deepEqual(report.policy.relaxations, ["source_only_profile", "external_engines_disabled"]);
+  assert.deepEqual(report.rulePacks, []);
+
+  const legacy = structuredClone(report);
+  legacy.schemaVersion = "1.0.0";
+  delete legacy.rulePacks;
+  assert.equal(validateCiReport(legacy), legacy, "legacy CiReport 1.0.0 remains readable without rule-pack records");
+  const missingRulePacks = structuredClone(report);
+  delete missingRulePacks.rulePacks;
+  assert.throws(() => validateCiReport(missingRulePacks), /CiReport.*rulePacks/);
 
   const incomplete = structuredClone(source);
   incomplete.decision = "incomplete";
@@ -72,6 +81,7 @@ test("legacy ScanReport renders explicit not-recorded policy evidence", async ()
   const legacy = structuredClone(await vulnerableReport());
   legacy.schemaVersion = "1.0.0";
   delete legacy.policy;
+  delete legacy.rulePacks;
   const report = buildCiReport(legacy);
   assert.deepEqual(report.policy, {
     source: "not_recorded",

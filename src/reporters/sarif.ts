@@ -69,6 +69,7 @@ export function renderSarif(report: ScanReport): object {
         policySuppressionCount: ci.policy.suppressionCount,
         policySuppressionApproval: ci.policy.suppressionApproval,
         policyRelaxations: ci.policy.relaxations,
+        rulePacks: ci.rulePacks ?? [],
         requiredCoverageGaps: ci.requiredCoverage.gaps,
         ...(ci.comparison ? { comparison: ci.comparison } : {}),
       },

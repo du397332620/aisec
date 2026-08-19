@@ -5,7 +5,9 @@ built with coding agents. It treats generated code as untrusted input, maps the
 project's attack surface, correlates related evidence into attack paths, and
 produces constrained repair contracts for an existing coding agent. An
 optional operator-owned release policy can strengthen the acceptance gate
-without trusting configuration from the repository being scanned.
+without trusting configuration from the repository being scanned. Explicit
+operator-owned declarative rule packs can add bounded local checks without
+loading or executing plugin code.
 
 It does **not** try to guess whether code was written by a human or an AI. It
 does **not** certify an application as secure.
@@ -260,8 +262,8 @@ before treating a pre-deploy result as complete.
 
 ```text
 aisec inspect [path]
-aisec scan [path] [--profile predeploy|native] [--policy trusted-policy.yml] [--native-only] [--artifact app.apk]
-aisec rescan [path] --baseline <scan-id|report.json> [--policy trusted-policy.yml]
+aisec scan [path] [--profile predeploy|native] [--policy trusted-policy.yml] [--rule-pack trusted-rules.yml] [--native-only] [--artifact app.apk]
+aisec rescan [path] --baseline <scan-id|report.json> [--policy trusted-policy.yml] [--rule-pack trusted-rules.yml]
 aisec report <scan-id|report.json> --format terminal|json|html|sarif|ci|github|markdown
 aisec fix-contract --scan <scan-id> --finding <id> --format json
 aisec draft-bola --scan <scan-id|report.json> --output bola-draft.json
@@ -275,6 +277,7 @@ aisec mcp
 ```
 
 Scan options include `--profile predeploy|native`, explicit `--policy`,
+repeatable explicit `--rule-pack`,
 `--confirm-policy-suppressions`, repeatable `--artifact`, `--git-history`,
 `--native-only`, `--no-persist`, `--max-files`,
 `--max-file-bytes`, `--max-total-bytes` and `--timeout-ms`. Run `aisec --help`
@@ -318,6 +321,43 @@ a finding. Reports record the applied policy ID, expiry, effective gates and
 SHA-256 digest but not its local path.
 Rescanning an operator-policy baseline requires the same explicit policy
 digest; a deliberate policy change starts a new baseline.
+
+### Declarative operator rule packs
+
+AIsec can add reviewed project-specific checks without executable plugins. A
+rule pack is never discovered from the target; each pack must be passed
+explicitly and resolve outside the target root:
+
+```bash
+mkdir -p ../trusted
+cp examples/rule-pack.example.yml ../trusted/rule-pack.yml
+# Review every literal, severity and evidence level before use.
+aisec scan ../target --profile native \
+  --rule-pack ../trusted/rule-pack.yml
+```
+
+The public [`RulePack 1.0.0` schema](schemas/rule-pack.schema.json) is strict.
+Rule IDs must use `custom.<pack-id>.<rule>`. Version 1 matches printable ASCII
+literals on one source line using `containsAny`, optional `containsAll` and
+`excludes`; file selection uses lowercase extensions and optional normalized
+path prefixes/suffixes. It accepts no regex, JavaScript, Python, WASM, command,
+template, import or callback field. Evidence may be `static_confirmed` or
+`inferred`, never `verified`.
+
+At most 8 packs, 256 total rules and 256 KiB per pack are accepted. Per-rule
+selectors/literals plus shared selector, byte, literal-work and line-evaluation
+budgets are bounded; all packs share the normal 2,000-signal output ceiling. A
+reached work or output bound makes the affected required coverage `partial`. Reports record only pack ID, rule
+count and SHA-256—not the local pack path or its literals—and expose this record
+in JSON, terminal, HTML, SARIF, CI JSON and Markdown. A baseline rescan requires
+the same set of pack IDs, counts and digests; a deliberate pack edit starts a
+new baseline.
+
+Rule packs can add findings and required coverage but cannot disable shipped
+rules or engines, change inventory limits, suppress findings or relax a release
+policy. `SecurityPolicy.rules` remains limited to shipped catalog IDs in this
+contract; custom findings still pass through the effective severity/evidence
+gate.
 
 ### External scanner engines
 
@@ -456,9 +496,10 @@ do not use a branch name as a security-tool pin. A full `predeploy` CI gate must
 also provision the exact three compatible engine versions, authenticate their
 binaries and prepare the Trivy database before scanning.
 
-`--format ci` emits the strict [`CiReport 1.0.0`](schemas/ci-report.schema.json)
+`--format ci` emits the strict [`CiReport 1.1.0`](schemas/ci-report.schema.json)
 JSON contract: decision and recommended exit code, open counts, required
-coverage gaps, effective policy, baseline counts and bounded annotations.
+coverage gaps, effective policy, declarative rule-pack digests, baseline counts
+and bounded annotations.
 `--format github` converts that same contract to workflow commands, while
 `--format markdown` creates a GitHub step summary. Output is deterministic and
 bounded to one decision, 20 required-coverage gaps and 50 prioritized findings;
@@ -479,6 +520,7 @@ finding fingerprints and accepted suppressions for compatible consumers.
 | --- | --- | --- |
 | Public rule catalog | JSON + generated Markdown | 56 shipped deterministic rules: 53 native and 3 bundled Opengrep; strict schema and drift checks tie detector IDs, corpus coverage, CWE/evidence metadata, Opengrep YAML/verified version and `RULES.md` to one catalog; `*` means syntax/config/artifact based without a dependency-semver gate, not complete framework support |
 | Trusted release policy | Explicit operator-owned YAML | Strict public schema; policy must resolve outside the scanned target, retain the full predeploy engine boundary and may only keep or strengthen the default gate; shipped rule IDs are catalog-validated, narrow suppressions expire and require a second explicit confirmation, reports retain digest/gate/approval evidence, and policy baselines require the same digest; target-owned `.aisec.yml` is ignored |
+| Declarative rule packs | Explicit operator-owned YAML/JSON | Strict `RulePack 1.0.0`; outside-target, digest-bound, bounded line-local literal checks only; no code, regex, target discovery, suppression or gate relaxation; ScanReport/CI/reporters retain pack ID, rule count and digest, and baselines require the same pack set |
 | Project inventory and stack map | Native | Local read only; supported text candidates and manifests, no dependency installation or project execution |
 | Secrets in selected source files | Native | Deterministic patterns; working tree only, not Git history |
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
@@ -699,13 +741,14 @@ as resolved, with no new high/critical finding.
 ## Versioned data contracts
 
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, CI
-reports, fix contracts, the rule catalog, trusted security policies, passive-web
+reports, fix contracts, the rule catalog, declarative rule packs, trusted security policies, passive-web
 authorization, BOLA draft plans and BOLA authorization manifests in
-[`schemas/`](schemas/). Version
-`1.0.0` remains current for `CiReport`, the policy and the other listed contracts.
-`ScanReport 1.1.0` adds the required machine-readable policy record; the report
-validator continues to accept legacy `1.0.0` reports only when that newer field
-is absent. Contracts are validated at runtime when a report is generated,
+[`schemas/`](schemas/). `RulePack`, the policy and the other unchanged contracts
+remain at `1.0.0`. `CiReport 1.1.0` adds rule-pack records while accepting legacy
+`1.0.0` input without them. `ScanReport 1.1.0` added the required machine-readable
+policy record, and `ScanReport 1.2.0` adds the required rule-pack record array;
+the validator continues to accept legacy `1.0.0` and `1.1.0` reports only when
+their newer fields are absent. Contracts are validated at runtime when a report is generated,
 serialized, saved or loaded, when a fix contract is generated, and before
 authorization semantics are evaluated. Unknown fields, unsupported schema
 versions and malformed nested values fail closed instead of flowing into CLI
@@ -714,8 +757,9 @@ or MCP output.
 The package also exports `validateScanReport`, `validateCiReport`,
 `buildCiReport`, `renderGithubAnnotations`, `renderMarkdownSummary`,
 `validateFixContract`,
-`validateRuleCatalog`, `validateSecurityPolicy`, `loadRuleCatalog`,
-`renderRuleCatalog`, `parseSecurityPolicy`, `loadTrustedPolicy`,
+`validateRuleCatalog`, `validateRulePack`, `validateSecurityPolicy`, `loadRuleCatalog`,
+`renderRuleCatalog`, `parseRulePack`, `loadTrustedRulePack`,
+`loadTrustedRulePacks`, `parseSecurityPolicy`, `loadTrustedPolicy`,
 `validateAuthorizationManifestSchema`, `validateBolaDraftPlan` and
 `validateBolaAuthorizationManifestSchema` for integrations that consume these
 objects directly. The JSON catalog is also exported at
@@ -735,6 +779,10 @@ boundary.
 - Release policy is accepted only through an explicit path whose real file is
   outside the target. A target `.aisec.yml` is ignored and recorded as such;
   symlinks resolving back into the target are rejected.
+- Declarative rule packs follow the same explicit outside-target path boundary.
+  They are parsed as data and never dynamically imported or executed; regex,
+  command and script fields are rejected. Reports retain their digest but not
+  their local path or literal definitions.
 - External adapters override target-controlled scanner configuration and ignore
   files with AIsec-owned temporary inputs; inline scanner suppressions are also
   disabled where the engine exposes that control. If Trivy inline ignore

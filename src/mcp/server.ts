@@ -28,6 +28,14 @@ function optionalString(args: Record<string, unknown>, name: string): string | u
   return args[name];
 }
 
+function optionalStringArray(args: Record<string, unknown>, name: string, maximum: number): string[] {
+  if (args[name] === undefined) return [];
+  if (!Array.isArray(args[name]) || args[name].length > maximum || args[name].some((item) => typeof item !== "string" || !item.trim())) {
+    throw new Error(`${name} must be an array of at most ${maximum} non-empty strings`);
+  }
+  return [...args[name]] as string[];
+}
+
 function scanId(value: unknown): string {
   const id = String(value ?? "");
   if (!/^scan_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
@@ -39,10 +47,10 @@ function scanId(value: unknown): string {
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const tools = [
   { name: "inspect_project", description: "Inspect a local project stack and attack surface without running external scanners.", annotations, inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false } },
-  { name: "run_predeploy_scan", description: "Run a non-persisting local pre-deploy security scan. This never runs project build or install scripts. An optional policy must be an explicit operator-owned file outside the target; its suppressions need a separate explicit confirmation.", annotations, inputSchema: { type: "object", properties: { path: { type: "string" }, artifacts: { type: "array", maxItems: 10, items: { type: "string" } }, nativeOnly: { type: "boolean" }, policy: { type: "string" }, confirmPolicySuppressions: { type: "boolean" } }, required: ["path"], additionalProperties: false } },
+  { name: "run_predeploy_scan", description: "Run a non-persisting local pre-deploy security scan. This never runs project build, install scripts or rule-pack code. Optional policies and declarative rule packs must be explicit operator-owned files outside the target.", annotations, inputSchema: { type: "object", properties: { path: { type: "string" }, artifacts: { type: "array", maxItems: 10, items: { type: "string" } }, nativeOnly: { type: "boolean" }, policy: { type: "string" }, rulePacks: { type: "array", maxItems: 8, items: { type: "string" } }, confirmPolicySuppressions: { type: "boolean" } }, required: ["path"], additionalProperties: false } },
   { name: "get_report", description: "Read a previously stored scan report by its AIsec scan id.", annotations, inputSchema: { type: "object", properties: { reference: { type: "string", pattern: "^scan_" } }, required: ["reference"], additionalProperties: false } },
   { name: "create_fix_contract", description: "Create a constrained repair contract for one finding in a stored report.", annotations, inputSchema: { type: "object", properties: { scan: { type: "string", pattern: "^scan_" }, finding: { type: "string" } }, required: ["scan", "finding"], additionalProperties: false } },
-  { name: "verify_fix", description: "Rescan a project without persisting output and compare it with a stored baseline scan. Policy baselines require the same explicit operator-owned policy file and separate suppression confirmation when applicable.", annotations, inputSchema: { type: "object", properties: { path: { type: "string" }, baseline: { type: "string", pattern: "^scan_" }, nativeOnly: { type: "boolean" }, policy: { type: "string" }, confirmPolicySuppressions: { type: "boolean" } }, required: ["path", "baseline"], additionalProperties: false } },
+  { name: "verify_fix", description: "Rescan a project without persisting output and compare it with a stored baseline scan. Policy and rule-pack baselines require the same explicit operator-owned inputs.", annotations, inputSchema: { type: "object", properties: { path: { type: "string" }, baseline: { type: "string", pattern: "^scan_" }, nativeOnly: { type: "boolean" }, policy: { type: "string" }, rulePacks: { type: "array", maxItems: 8, items: { type: "string" } }, confirmPolicySuppressions: { type: "boolean" } }, required: ["path", "baseline"], additionalProperties: false } },
 ];
 
 function success(id: JsonRpcId | undefined, result: unknown): object { return { jsonrpc: "2.0", id, result }; }
@@ -75,6 +83,7 @@ async function callTool(name: string, args: Record<string, unknown>, modern: boo
       artifacts: (args.artifacts as string[] | undefined) ?? [],
       nativeOnly: optionalBoolean(args, "nativeOnly"),
       policyPath: optionalString(args, "policy"),
+      rulePackPaths: optionalStringArray(args, "rulePacks", 8),
       confirmPolicySuppressions: optionalBoolean(args, "confirmPolicySuppressions"),
       persist: false,
     })).report, modern);
@@ -84,6 +93,7 @@ async function callTool(name: string, args: Record<string, unknown>, modern: boo
   if (name === "verify_fix") return textContent((await scanProject(requiredString(args, "path"), {
     nativeOnly: optionalBoolean(args, "nativeOnly"),
     policyPath: optionalString(args, "policy"),
+    rulePackPaths: optionalStringArray(args, "rulePacks", 8),
     confirmPolicySuppressions: optionalBoolean(args, "confirmPolicySuppressions"),
     persist: false,
   }, scanId(args.baseline))).report, modern);

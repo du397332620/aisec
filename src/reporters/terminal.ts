@@ -15,6 +15,9 @@ export function renderTerminalReport(report: ScanReport): string {
     ...(report.policy?.suppressionCount ? [`Policy suppressions: ${report.policy.suppressionCount} · ${report.policy.suppressionApproval}`] : []),
     ...(report.policy?.targetConfiguration === "ignored" ? ["Target policy: ignored (target-owned configuration is untrusted)"] : []),
     ...(report.policy?.relaxations.length ? [`Relaxations: ${report.policy.relaxations.join(", ")}`] : []),
+    `Rule packs: ${(report.rulePacks ?? []).length > 0
+      ? (report.rulePacks ?? []).map((pack) => `${pack.packId} sha256:${pack.digestSha256.slice(0, 12)}… (${pack.ruleCount})`).join(", ")
+      : "none"}`,
     `Stack:  ${stack.join(", ") || "unclassified"}`,
     `Risk:   ${report.summary.critical} critical · ${report.summary.high} high · ${report.summary.medium} medium · ${report.summary.low} low`,
     "",
