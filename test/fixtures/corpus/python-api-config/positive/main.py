@@ -26,6 +26,7 @@ async def generate(payload: dict):
     return {"ok": True}
 
 
+@app.put("/projects/{project_id}")
 @app.post("/projects/{project_id}")
 async def project_detail(project_id: int):
     try:

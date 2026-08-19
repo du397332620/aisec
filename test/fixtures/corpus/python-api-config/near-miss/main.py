@@ -41,3 +41,11 @@ async def project_detail(project_id: int):
     except Exception as error:
         record_server_error(error)
         raise HTTPException(status_code=500, detail="internal error")
+
+
+@app.get("/status-only")
+async def status_only():
+    try:
+        return load_status()
+    except Exception as error:
+        raise HTTPException(status_code=int(str(error)), detail="internal error")

@@ -11,6 +11,7 @@ import { validateCiReport } from "../src/core/schema-validation.js";
 import { buildCiReport, renderGithubAnnotations, renderMarkdownSummary } from "../src/reporters/ci.js";
 import { renderHtml } from "../src/reporters/html.js";
 import { renderSarif } from "../src/reporters/sarif.js";
+import { renderTerminalReport } from "../src/reporters/terminal.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "..", "..", "test", "fixtures");
@@ -128,6 +129,52 @@ test("CI, Markdown and HTML renderers neutralize hostile project-controlled text
   assert.doesNotMatch(html, /<script>/iu);
   assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/u);
   assert.match(html, /Content-Security-Policy/u);
+});
+
+test("terminal and HTML group repeated FastAPI exception findings without changing canonical evidence", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "python-api-config", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const findings = report.findings.filter((finding) => finding.signalIds.some((id) => report.signals.some((signal) => signal.id === id
+    && signal.ruleId === "fastapi.config.route-raw-exception-response")));
+  assert.equal(findings.length, 2, "presentation grouping must not merge canonical findings");
+  const projectFinding = findings.find((finding) => finding.signalIds.some((id) => report.signals.find((signal) => signal.id === id)?.metadata?.handler === "project_detail"));
+  assert.ok(projectFinding);
+  const projectSignal = report.signals.find((signal) => projectFinding.signalIds.includes(signal.id));
+  assert.ok(projectSignal);
+  const sameFingerprintOccurrence = structuredClone(projectSignal);
+  sameFingerprintOccurrence.id = "sig_fffffffffffffffe";
+  sameFingerprintOccurrence.locations[0]!.line = (sameFingerprintOccurrence.locations[0]!.line ?? 1) + 1;
+  sameFingerprintOccurrence.metadata = {
+    ...sameFingerprintOccurrence.metadata,
+    route: "DELETE /projects/{project_id}<script>\n::error::owned</script>",
+    routes: ["DELETE /projects/{project_id}<script>\n::error::owned</script>"],
+    handler: "project_archive",
+  };
+  report.signals.push(sameFingerprintOccurrence);
+  projectFinding.signalIds.push(sameFingerprintOccurrence.id);
+
+  const terminal = renderTerminalReport(report);
+  assert.match(terminal, /Grouped findings/u);
+  assert.match(terminal, /main\.py · 3 occurrences · 2 findings · 3 handlers · 4 routes/u);
+  assert.match(terminal, /interpolation → HTTPException\.detail/u);
+  assert.match(terminal, /str → dict\.message/u);
+  assert.match(terminal, /POST \/projects\/\{project_id\}, PUT \/projects\/\{project_id\} · project_detail/u);
+  assert.doesNotMatch(terminal, /\n::error::owned/u);
+  for (const finding of findings) assert.match(terminal, new RegExp(finding.id, "u"));
+
+  const html = renderHtml(report);
+  assert.match(html, /<h2>Grouped findings<\/h2>/u);
+  assert.match(html, /<details class="finding-group finding-open">/u);
+  assert.match(html, /3 occurrences \/ 2 findings/u);
+  assert.match(html, /3 handlers · 4 routes/u);
+  assert.match(html, /POST \/projects\/\{project_id\}, PUT \/projects\/\{project_id\}/u);
+  assert.match(html, /DELETE \/projects\/\{project_id\}/u);
+  assert.doesNotMatch(html, /<script>/u);
+  assert.match(html, /&lt;script&gt; ::error::owned&lt;\/script&gt;/u);
+  for (const finding of findings) assert.match(html, new RegExp(finding.id, "u"));
 });
 
 test("scan and rescan retain decision exits with CI output formats", async () => {

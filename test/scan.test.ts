@@ -6243,10 +6243,18 @@ test("Python API configuration detects CORS, exception, JWT, and published ungua
   assert.ok(rules.has("docker.config.unguarded-service-published"));
   const routeExceptions = report.signals.filter((signal) => signal.ruleId === "fastapi.config.route-raw-exception-response");
   assert.equal(routeExceptions.length, 2);
-  assert.ok(routeExceptions.some((signal) => signal.metadata?.route === "POST /projects/{project_id}"
-    && signal.metadata?.handler === "project_detail"));
-  assert.ok(routeExceptions.some((signal) => signal.metadata?.route === "GET /reports"
-    && signal.metadata?.handler === "report_list"));
+  const projectException = routeExceptions.find((signal) => signal.metadata?.handler === "project_detail");
+  assert.ok(projectException);
+  assert.equal(projectException.metadata?.route, "POST /projects/{project_id}");
+  assert.deepEqual(projectException.metadata?.routes, ["POST /projects/{project_id}", "PUT /projects/{project_id}"]);
+  assert.equal(projectException.metadata?.exceptionSerialization, "interpolation");
+  assert.equal(projectException.metadata?.responseSink, "HTTPException.detail");
+  assert.equal(projectException.metadata?.findingGroup, "fastapi-route-raw-exception-response");
+  const reportException = routeExceptions.find((signal) => signal.metadata?.handler === "report_list");
+  assert.ok(reportException);
+  assert.deepEqual(reportException.metadata?.routes, ["GET /reports"]);
+  assert.equal(reportException.metadata?.exceptionSerialization, "str");
+  assert.equal(reportException.metadata?.responseSink, "dict.message");
   assert.doesNotMatch(serializeReport(report, "json"), /aisec-benchmark-signing-secret-value/);
 });
 

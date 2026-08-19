@@ -20,6 +20,13 @@ interface NamedExceptionBlock extends Block {
   variable: string;
 }
 
+type ExceptionSerialization = "str" | "repr" | "args" | "interpolation";
+
+interface RawExceptionDisclosure extends Block {
+  responseSink: string;
+  exceptionSerialization: ExceptionSerialization;
+}
+
 function findClosing(text: string, opening: number, openCharacter = "(", closeCharacter = ")"): number {
   let depth = 0;
   let quote = "";
@@ -86,14 +93,67 @@ function escapedRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function rawExceptionResponse(block: NamedExceptionBlock): Block | undefined {
-  const variable = escapedRegExp(block.variable);
-  const rawException = new RegExp(
-    `(?:\\b(?:repr|str)\\s*\\(\\s*${variable}\\s*\\)|\\b${variable}\\s*\\.\\s*args\\b|\\{\\s*${variable}\\s*(?:![ars])?(?:\\s*:[^}]*)?\\})`,
-    "i",
-  );
-  const responseField = /(?:\b(?:content|detail|message|msg)\b|["'](?:content|detail|message|msg)["'])\s*(?:=|:)/i;
-  const responseCall = /\b(?:[A-Za-z_]\w*\.)*(?:HTTPException|[A-Za-z_]*JSONResponse|PlainTextResponse|Response)\s*\(/g;
+function exceptionSerialization(text: string, variable: string): ExceptionSerialization | undefined {
+  const escaped = escapedRegExp(variable);
+  if (new RegExp(`\\brepr\\s*\\(\\s*${escaped}\\s*\\)`, "i").test(text)) return "repr";
+  if (new RegExp(`\\bstr\\s*\\(\\s*${escaped}\\s*\\)`, "i").test(text)) return "str";
+  if (new RegExp(`\\b${escaped}\\s*\\.\\s*args\\b`, "i").test(text)) return "args";
+  if (new RegExp(`\\{\\s*${escaped}\\s*(?:![ars])?(?:\\s*:[^}]*)?\\}`, "i").test(text)) return "interpolation";
+  return undefined;
+}
+
+function topLevelValues(text: string): string[] {
+  const result: string[] = [];
+  let roundDepth = 0;
+  let squareDepth = 0;
+  let curlyDepth = 0;
+  let quote = "";
+  let escaped = false;
+  let start = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const character = text[index]!;
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = "";
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "(") roundDepth += 1;
+    else if (character === "[") squareDepth += 1;
+    else if (character === "{") curlyDepth += 1;
+    else if (character === ")") roundDepth = Math.max(0, roundDepth - 1);
+    else if (character === "]") squareDepth = Math.max(0, squareDepth - 1);
+    else if (character === "}") curlyDepth = Math.max(0, curlyDepth - 1);
+    else if (character === "," && roundDepth === 0 && squareDepth === 0 && curlyDepth === 0) {
+      result.push(text.slice(start, index));
+      start = index + 1;
+    }
+  }
+  result.push(text.slice(start));
+  return result;
+}
+
+function responseField(text: string, variable: string, openingCharacter: "(" | "{"): { field: string; serialization: ExceptionSerialization } | undefined {
+  const opening = text.indexOf(openingCharacter);
+  if (opening === -1) return undefined;
+  const body = text.slice(opening + 1, -1);
+  const pattern = /^\s*(?:\b(content|detail|message|msg)\b|["'](content|detail|message|msg)["'])\s*(?:=|:)\s*([\s\S]*)$/i;
+  for (const value of topLevelValues(body)) {
+    const match = pattern.exec(value);
+    if (!match) continue;
+    const field = (match[1] ?? match[2])?.toLowerCase();
+    const serialization = exceptionSerialization(match[3] ?? "", variable);
+    if (field && serialization) return { field, serialization };
+  }
+  return undefined;
+}
+
+function rawExceptionResponse(block: NamedExceptionBlock): RawExceptionDisclosure | undefined {
+  const responseCall = /\b((?:[A-Za-z_]\w*\.)*(?:HTTPException|[A-Za-z_]*JSONResponse|PlainTextResponse|Response))\s*\(/g;
   for (const match of block.text.matchAll(responseCall)) {
     const start = match.index ?? 0;
     const before = block.text.slice(Math.max(0, start - 80), start);
@@ -102,7 +162,16 @@ function rawExceptionResponse(block: NamedExceptionBlock): Block | undefined {
     const closing = opening === -1 ? -1 : findClosing(block.text, opening);
     if (closing === -1) continue;
     const text = block.text.slice(start, closing + 1);
-    if (responseField.test(text) && rawException.test(text)) return { offset: block.offset + start, text };
+    const response = responseField(text, block.variable, "(");
+    if (response) {
+      const constructor = (match[1] ?? "Response").split(".").at(-1) ?? "Response";
+      return {
+        offset: block.offset + start,
+        text,
+        responseSink: `${constructor}.${response.field}`,
+        exceptionSerialization: response.serialization,
+      };
+    }
   }
 
   for (const match of block.text.matchAll(/\breturn\s*\{/g)) {
@@ -111,7 +180,15 @@ function rawExceptionResponse(block: NamedExceptionBlock): Block | undefined {
     const closing = opening === -1 ? -1 : findClosing(block.text, opening, "{", "}");
     if (closing === -1) continue;
     const text = block.text.slice(start, closing + 1);
-    if (responseField.test(text) && rawException.test(text)) return { offset: block.offset + start, text };
+    const response = responseField(text, block.variable, "{");
+    if (response) {
+      return {
+        offset: block.offset + start,
+        text,
+        responseSink: `dict.${response.field}`,
+        exceptionSerialization: response.serialization,
+      };
+    }
   }
   return undefined;
 }
@@ -266,27 +343,55 @@ export async function runPythonApiConfig(context: ScanContext): Promise<Detector
   }
 
   const pythonFilesByPath = new Map(pythonFiles.map((file) => [file.relativePath, file]));
+  const routeHandlers = new Map<string, {
+    file: ProjectFile;
+    handlerName: string;
+    handlerSource: string;
+    handlerOffset: number;
+    routes: Set<string>;
+  }>();
   for (const route of analysis.routes) {
     const file = pythonFilesByPath.get(route.sourcePath);
     if (!file) continue;
     const handlerOffset = file.content.indexOf(route.handlerSource);
     if (handlerOffset === -1) continue;
-    for (const caught of broadExceptionBlocks({ offset: handlerOffset, text: route.handlerSource })) {
+    const handlerKey = `${file.relativePath}\u0000${route.handlerName}\u0000${handlerOffset}`;
+    const existing = routeHandlers.get(handlerKey);
+    if (existing) existing.routes.add(`${route.method} ${route.path}`);
+    else routeHandlers.set(handlerKey, {
+      file,
+      handlerName: route.handlerName,
+      handlerSource: route.handlerSource,
+      handlerOffset,
+      routes: new Set([`${route.method} ${route.path}`]),
+    });
+  }
+
+  for (const handler of routeHandlers.values()) {
+    const routes = [...handler.routes].sort();
+    for (const caught of broadExceptionBlocks({ offset: handler.handlerOffset, text: handler.handlerSource })) {
       const disclosure = rawExceptionResponse(caught);
       if (!disclosure) continue;
       add(configSignal({
         ruleId: "fastapi.config.route-raw-exception-response",
         title: "FastAPI route returns raw catch-all exception text",
-        description: `${route.method} ${route.path} catches a broad Exception and serializes its text into a client response. Runtime failures may disclose database details, filesystem paths, internal hosts, query text or implementation state.`,
+        description: `${routes.length === 1 ? routes[0] : `${routes.length} routes handled by ${handler.handlerName}`} ${routes.length === 1 ? "catches" : "catch"} a broad Exception and ${routes.length === 1 ? "serializes" : "serialize"} its text into a client response. Runtime failures may disclose database details, filesystem paths, internal hosts, query text or implementation state.`,
         severity: "medium",
         evidenceLevel: "static_confirmed",
-        locations: [makeLocation(file.relativePath, file.content, disclosure.offset, disclosure.text)],
+        locations: [makeLocation(handler.file.relativePath, handler.file.content, disclosure.offset, disclosure.text)],
         cwe: ["CWE-209"],
         owasp: ["A05:2021", "API8:2023"],
         tags: ["fastapi", "api", "error-handling", "information-disclosure", "route"],
         remediation: "Log a correlation ID and the full exception only on the server. Return a fixed client-safe message from broad exception handlers.",
-        metadata: { route: `${route.method} ${route.path}`, handler: route.handlerName },
-      }), `${file.relativePath}:${route.handlerName}:${disclosure.offset}:route-exception`);
+        metadata: {
+          route: routes[0]!,
+          routes,
+          handler: handler.handlerName,
+          responseSink: disclosure.responseSink,
+          exceptionSerialization: disclosure.exceptionSerialization,
+          findingGroup: "fastapi-route-raw-exception-response",
+        },
+      }), `${handler.file.relativePath}:${handler.handlerName}:${disclosure.offset}:route-exception`);
       if (truncated) break;
     }
     if (truncated) break;

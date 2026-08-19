@@ -1,6 +1,10 @@
 import type { FixContract, ScanReport } from "../schema.js";
+import { partitionFindingGroups } from "./finding-groups.js";
+import { safeRelativePath, singleLine } from "./safety.js";
 
 const ICON = { critical: "CRITICAL", high: "HIGH", medium: "MEDIUM", low: "LOW", info: "INFO" } as const;
+const MAX_GROUPS = 20;
+const MAX_GROUP_MEMBERS = 3;
 
 export function renderTerminalReport(report: ScanReport): string {
   const stack = [...new Set([...report.profile.frameworks, ...report.profile.baas, ...report.profile.mobilePlatforms])];
@@ -31,17 +35,38 @@ export function renderTerminalReport(report: ScanReport): string {
     lines.push("");
   }
   const open = report.findings.filter((finding) => finding.status === "open");
-  if (open.length > 0) {
+  const { groups, ungrouped } = partitionFindingGroups(report, open);
+  if (groups.length > 0) {
+    lines.push("Grouped findings");
+    for (const group of groups.slice(0, MAX_GROUPS)) {
+      const path = safeRelativePath(group.path) ?? "path not recorded";
+      const findingLabel = group.findingCount === 1 ? "finding" : "findings";
+      lines.push(`  [${ICON[group.severity]}] ${singleLine(group.title, 200)}`);
+      lines.push(`    ${path} · ${group.members.length} occurrences · ${group.findingCount} ${findingLabel} · ${group.handlers.length} handlers · ${group.routes.length} routes`);
+      if (group.patterns.length > 0) lines.push(`    Patterns: ${singleLine(group.patterns.join(", "), 240)}`);
+      for (const member of group.members.slice(0, MAX_GROUP_MEMBERS)) {
+        const route = member.routes.length > 0 ? member.routes.join(", ") : "route not recorded";
+        const detail = [route, member.handler, member.location.line ? `line ${member.location.line}` : undefined, member.finding.id].filter(Boolean).join(" · ");
+        lines.push(`    - ${singleLine(detail, 420)}`);
+      }
+      if (group.members.length > MAX_GROUP_MEMBERS) {
+        lines.push(`    … ${group.members.length - MAX_GROUP_MEMBERS} additional grouped occurrences are available in JSON/HTML output.`);
+      }
+    }
+    if (groups.length > MAX_GROUPS) lines.push(`  … ${groups.length - MAX_GROUPS} additional groups are available in JSON/HTML output.`);
+    lines.push("");
+  }
+  if (ungrouped.length > 0) {
     lines.push("Findings");
-    for (const finding of open.slice(0, 50)) {
+    for (const finding of ungrouped.slice(0, 50)) {
       const firstSignal = report.signals.find((signal) => signal.id === finding.signalIds[0]);
       const location = firstSignal?.locations[0];
       lines.push(`  [${ICON[finding.severity]}] ${finding.id} ${finding.title}`);
       if (location) lines.push(`    ${location.path}${location.line ? `:${location.line}` : ""} · ${finding.evidenceLevel}`);
     }
-    if (open.length > 50) lines.push(`  … ${open.length - 50} additional findings are available in JSON/HTML output.`);
+    if (ungrouped.length > 50) lines.push(`  … ${ungrouped.length - 50} additional findings are available in JSON/HTML output.`);
     lines.push("");
-  } else {
+  } else if (groups.length === 0) {
     lines.push("No open findings in the executed coverage.", "");
   }
   lines.push("Coverage");

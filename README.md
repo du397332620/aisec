@@ -42,8 +42,10 @@ constraint; request-derived URL, file-path and dynamic-SQL flows; and the
 specific case where a caller-selected model base URL can receive a server API
 key. CORS, raw exception responses, committed JWT signing keys, long-lived
 access tokens and production Compose publication of unguarded services are
-covered by focused configuration rules. These are lexical, bounded checks—not
-a complete Python semantic analysis or proof of exploitability.
+covered by focused configuration rules. Route-local broad-exception signals
+retain every statically resolved route alias and classify the handler, raw
+exception serialization form and response sink. These are lexical, bounded
+checks—not a complete Python semantic analysis or proof of exploitability.
 
 Express coverage resolves common ESM and CommonJS relative imports, nested and
 chained `Router` mounts, route registrars that receive an app/router parameter,
@@ -568,7 +570,7 @@ finding fingerprints and accepted suppressions for compatible consumers.
 | Static-to-active BOLA planning | `draft-bola` | Converts open static BOLA/IDOR signals into a non-executable review worksheet; mutation routes are excluded and object IDs/markers remain placeholders |
 | Two-account BOLA verification | `verify-bola` | Exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
 | Agent integration | stdio MCP | Local read-oriented inspection, bounded rule-pack selector previews, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
-| Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
+| Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; terminal/HTML can group opted-in repeated evidence by file while retaining canonical findings and full expandable occurrence detail; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
 
 `--profile native` is the deterministic source-only first pass: external and
 artifact domains are non-required. The default `predeploy` profile is the
@@ -738,6 +740,13 @@ Evidence is classified as:
 - `static_confirmed`: a deterministic source/artifact fact or data-flow trace;
 - `inferred`: context suggests risk but middleware or business semantics may
   change the conclusion.
+
+Canonical findings, fingerprints and signal IDs remain independent of report
+layout so baselines, suppressions, JSON and SARIF stay stable. When a detector
+marks repeated evidence as presentation-groupable, terminal output summarizes
+it by file and shows representative route/handler entries; HTML uses expandable
+groups containing every occurrence, finding ID, route, location and classified
+pattern. Single occurrences and all other rules keep the normal flat view.
 
 Without an operator policy, only evidence-backed high/critical findings block.
 Inferred findings require review and cannot be promoted merely by an LLM. A
