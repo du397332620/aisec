@@ -1,5 +1,11 @@
 import { spawn } from "node:child_process";
 
+const SENSITIVE_ENVIRONMENT_NAME = /(?:^|_)(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_?KEY|ACCESS_?KEY|CREDENTIALS?|AUTH)(?:_|$)/i;
+
+export function sanitizedProcessEnv(environment: NodeJS.ProcessEnv = process.env): NodeJS.ProcessEnv {
+  return Object.fromEntries(Object.entries(environment).filter(([name]) => !SENSITIVE_ENVIRONMENT_NAME.test(name)));
+}
+
 export interface ProcessResult {
   command: string;
   args: string[];
@@ -11,11 +17,16 @@ export interface ProcessResult {
   durationMs: number;
 }
 
-export async function runProcess(
+export interface ProcessBufferResult extends Omit<ProcessResult, "stdout" | "stderr"> {
+  stdout: Buffer;
+  stderr: Buffer;
+}
+
+export async function runProcessBuffer(
   command: string,
   args: string[],
   options: { cwd?: string; timeoutMs: number; maxOutputBytes?: number; env?: NodeJS.ProcessEnv },
-): Promise<ProcessResult> {
+): Promise<ProcessBufferResult> {
   const started = Date.now();
   const limit = options.maxOutputBytes ?? 20 * 1024 * 1024;
   return new Promise((resolve, reject) => {
@@ -24,7 +35,7 @@ export async function runProcess(
       shell: false,
       windowsHide: true,
       stdio: ["ignore", "pipe", "pipe"],
-      env: options.env ?? process.env,
+      env: options.env ?? sanitizedProcessEnv(),
     });
     const stdoutChunks: Buffer<ArrayBufferLike>[] = [];
     const stderrChunks: Buffer<ArrayBufferLike>[] = [];
@@ -70,14 +81,27 @@ export async function runProcess(
         command,
         args,
         exitCode,
-        stdout: Buffer.concat(stdoutChunks, stdoutBytes).toString("utf8"),
-        stderr: Buffer.concat(stderrChunks, stderrBytes).toString("utf8"),
+        stdout: Buffer.concat(stdoutChunks, stdoutBytes),
+        stderr: Buffer.concat(stderrChunks, stderrBytes),
         timedOut,
         truncated,
         durationMs: Date.now() - started,
       });
     });
   });
+}
+
+export async function runProcess(
+  command: string,
+  args: string[],
+  options: { cwd?: string; timeoutMs: number; maxOutputBytes?: number; env?: NodeJS.ProcessEnv },
+): Promise<ProcessResult> {
+  const result = await runProcessBuffer(command, args, options);
+  return {
+    ...result,
+    stdout: result.stdout.toString("utf8"),
+    stderr: result.stderr.toString("utf8"),
+  };
 }
 
 export async function commandVersion(command: string, args: string[] = ["--version"]): Promise<string | undefined> {

@@ -9,13 +9,13 @@ function crc32(value: Buffer): number {
   return (crc ^ 0xffffffff) >>> 0;
 }
 
-export async function writeStoredZip(path: string, entries: Record<string, string>): Promise<void> {
+export async function writeStoredZip(path: string, entries: Record<string, string | Buffer>): Promise<void> {
   const locals: Buffer[] = [];
   const centrals: Buffer[] = [];
   let offset = 0;
-  for (const [name, text] of Object.entries(entries)) {
+  for (const [name, value] of Object.entries(entries)) {
     const filename = Buffer.from(name, "utf8");
-    const data = Buffer.from(text, "utf8");
+    const data = typeof value === "string" ? Buffer.from(value, "utf8") : value;
     const checksum = crc32(data);
     const local = Buffer.alloc(30);
     local.writeUInt32LE(0x04034b50, 0);

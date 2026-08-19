@@ -8,12 +8,13 @@ import test from "node:test";
 
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
 const calibrationScript = join(repositoryRoot, "scripts", "node-api-calibration.mjs");
+const sensitiveEnvironmentName = /(?:^|_)(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_?KEY|ACCESS_?KEY|CREDENTIALS?|AUTH)(?:_|$)/i;
 
 function runCalibration(args: string[]) {
   return spawnSync(process.execPath, [calibrationScript, ...args], {
     cwd: repositoryRoot,
     encoding: "utf8",
-    env: { ...process.env, NO_UPDATE_NOTIFIER: "1" },
+    env: { ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !sensitiveEnvironmentName.test(name))), NO_UPDATE_NOTIFIER: "1" },
     maxBuffer: 2 * 1024 * 1024,
     timeout: 30_000,
     windowsHide: true,
@@ -30,6 +31,7 @@ function runGit(root: string, args: string[]): string {
   ], {
     cwd: root,
     encoding: "utf8",
+    env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !sensitiveEnvironmentName.test(name))),
     maxBuffer: 1024 * 1024,
     timeout: 10_000,
     windowsHide: true,

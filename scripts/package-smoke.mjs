@@ -9,12 +9,18 @@ import { spawnSync } from "node:child_process";
 const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const packageMetadata = JSON.parse(await readFile(join(repositoryRoot, "package.json"), "utf8"));
+const sensitiveEnvironmentName = /(?:^|_)(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_?KEY|ACCESS_?KEY|CREDENTIALS?|AUTH)(?:_|$)/i;
+
+function childEnvironment(overrides = {}) {
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !sensitiveEnvironmentName.test(name)));
+  return { ...environment, ...overrides };
+}
 
 function run(command, args, options = {}) {
   const result = spawnSync(command, args, {
     cwd: options.cwd ?? repositoryRoot,
     encoding: "utf8",
-    env: { ...process.env, ...options.env },
+    env: childEnvironment(options.env),
     maxBuffer: 10 * 1024 * 1024,
     timeout: options.timeout ?? 60_000,
   });
@@ -60,6 +66,9 @@ try {
   assert.ok(![...packedPaths].some((path) => path.startsWith("docs/") || path.startsWith(".scratch/")), "local progress documents must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/node-api-calibration.mjs"), "networked calibration runner must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/calibration/node-api-targets.json"), "real-project calibration manifest must stay out of the npm package");
+  assert.ok(!packedPaths.has("scripts/mobile-artifact-calibration.mjs"), "mobile artifact calibration runner must stay out of the npm package");
+  assert.ok(!packedPaths.has("scripts/calibration/mobile-artifact-targets.json"), "real mobile artifact manifest must stay out of the npm package");
+  assert.ok(![...packedPaths].some((path) => /\.(?:apk|ipa)$/i.test(path)), "third-party mobile binaries must stay out of the npm package");
   const tarball = join(tarballs, packed[0].filename);
   await access(tarball, constants.R_OK);
 

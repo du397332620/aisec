@@ -26,7 +26,7 @@ Depth is intentionally concentrated in:
 - Express/NestJS route, authentication-boundary, object-authorization and privileged-operation analysis
 - Supabase and Firebase authorization configuration
 - React Native and common Android/iOS source configuration
-- APK/IPA recovery of embedded secrets, cleartext URLs and selected metadata
+- APK/IPA recovery of embedded secrets, cleartext URLs and selected metadata from prioritized text and bounded binary resources
 - LLM output flowing into command, code or database execution
 - GitHub Actions expression injection and common application misconfiguration
 
@@ -490,7 +490,7 @@ finding fingerprints and accepted suppressions for compatible consumers.
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |
 | General SAST | Opengrep `1.26.0` | Required in pre-deploy mode; uses AIsec-owned rules and suppression controls |
 | Dependency, IaC and secondary secret checks | Trivy `0.73.0` | Required in pre-deploy mode; requires an explicitly prepared, fresh schema-v2 database and scans offline |
-| APK/IPA static resources | Native archive adapter | Optional input; required for pre-deploy mobile artifact coverage when a mobile project/artifact is expected; no extraction or runtime instrumentation |
+| APK/IPA static resources | Native archive adapter | Optional input; required for pre-deploy mobile artifact coverage when a mobile project/artifact is expected; prioritizes app manifests/plists, DEX/resource tables, JS bundles and the iOS main executable, semantically decodes bounded binary plists, recovers bounded ASCII/UTF-16 strings in memory, and performs no installation, on-disk member extraction or runtime instrumentation |
 | Passive test/staging Web checks | `verify-web` | Explicit authorization plus `--confirm`; bounded GET/header/cookie checks only, no auth/IDOR/injection testing |
 | Static-to-active BOLA planning | `draft-bola` | Converts open static BOLA/IDOR signals into a non-executable review worksheet; mutation routes are excluded and object IDs/markers remain placeholders |
 | Two-account BOLA verification | `verify-bola` | Exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
@@ -714,8 +714,9 @@ boundary.
   files with AIsec-owned temporary inputs; inline scanner suppressions are also
   disabled where the engine exposes that control. If Trivy inline ignore
   directives are present, its coverage is conservatively reported as `partial`.
-- Engine-specific environment variables are removed from scanner child
-  processes so ambient Trivy/Gitleaks/Opengrep policy cannot weaken acceptance.
+- Credential-shaped ambient variables are removed from every scanner child
+  process. Engine-specific variables are also removed so ambient
+  Trivy/Gitleaks/Opengrep policy cannot weaken acceptance.
 - Child processes use argument arrays with no shell, bounded time and bounded
   combined output. Managed engine binaries are hash-pinned.
 - Default inventory limits are 20,000 selected text files, 2 MiB per file and
@@ -733,8 +734,12 @@ boundary.
   no-egress guarantee around third-party binaries, enforce it with an OS sandbox
   or CI network policy. AIsec's own network paths are explicit engine setup and
   `verify-web --confirm` or the more restrictive `verify-bola --confirm`.
-- APK/IPA inspection validates entry names and reads a bounded set of resources;
-  it never extracts an archive onto disk.
+- APK/IPA inspection validates every listed path, prioritizes at most 25 supported
+  members, and streams each selected member through `unzip` without extracting it
+  onto disk. Binary recovery is capped at 8 MiB per member and 16 MiB aggregate
+  input, with at most 8 MiB of recovered text; reaching any bound makes coverage
+  `partial` rather than clean. A binary plist that cannot be decoded within its
+  semantic limits also makes coverage `partial`.
 
 See [SECURITY.md](SECURITY.md) for the threat model and reporting process.
 
@@ -805,6 +810,47 @@ execute target code, start services, send target HTTP requests, or retain raw
 reports. A passing result confirms the recorded route/finding expectations for
 those commits; it is neither proof of exploitability nor proof that a project is
 secure.
+
+### Fixed-asset mobile artifact calibration
+
+Maintainers can repeat rule-specific static checks against immutable open-source
+APK/IPA assets from PIVAA, OWASP MASTG Hacking Playground and Fossify Calculator.
+The assets are GPL-3.0 and remain on their upstream projects; AIsec records exact
+versions, byte sizes, SHA-256 values and license links but does not redistribute
+the binaries. The runner and manifest are excluded from the npm package.
+
+```bash
+# Explicitly downloads all pinned assets, verifies them, scans, then deletes them
+npm run calibrate:mobile-artifacts -- --confirm-download
+
+# Download and check one asset
+npm run calibrate:mobile-artifacts -- \
+  --confirm-download \
+  --target mastg-jwt-ios-positive
+
+# Reuse a local file only when its size and SHA-256 match the manifest
+npm run calibrate:mobile-artifacts -- \
+  --target pivaa-android-positive \
+  --local pivaa-android-positive=/absolute/path/to/pivaa.apk
+```
+
+Without `--confirm-download`, any selected target without `--local` fails before
+network access. Downloads accept only fixed GitHub release assets or raw files at
+a 40-character commit. Release assets use GitHub CLI when it is available and a
+bounded HTTPS stream otherwise; raw assets use the bounded stream, whose redirects
+are restricted to approved GitHub asset hosts. Every path is accepted only after
+exact byte-size and SHA-256 verification, lives in a temporary directory and is
+deleted after scanning. The harness does not install, launch, sign, build or
+decompile an app; send requests to an app endpoint; extract archive members onto
+disk; or persist raw reports.
+
+The fixed expectations are exact artifact-rule counts: a PIVAA APK and the MASTG
+JWT IPA are positives for recoverable cleartext endpoints, while an MASTG Android
+APK and Fossify Calculator are near misses for the currently supported artifact
+rules. “Near miss” is rule-specific and is not a statement that either app is
+secure. This iteration has one real iOS positive; the iOS near-miss remains in the
+synthetic public corpus, so the calibration makes no real cross-app iOS specificity
+claim.
 
 ## Project status
 

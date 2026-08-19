@@ -77,6 +77,23 @@ test("child stdout and stderr share one output budget", async () => {
   assert.ok(Buffer.byteLength(result.stdout) + Buffer.byteLength(result.stderr) <= limit);
 });
 
+test("scanner child processes do not inherit ambient credential variables", async () => {
+  const variable = "AISEC_PROCESS_FIXTURE_API_KEY";
+  const previous = process.env[variable];
+  process.env[variable] = "synthetic-child-secret";
+  try {
+    const result = await runProcess(process.execPath, ["-e", `process.stdout.write(process.env.${variable} ?? "missing")`], {
+      timeoutMs: 5_000,
+      maxOutputBytes: 1_024,
+    });
+    assert.equal(result.exitCode, 0);
+    assert.equal(result.stdout, "missing");
+  } finally {
+    if (previous === undefined) delete process.env[variable];
+    else process.env[variable] = previous;
+  }
+});
+
 test("unsafe and oversized archive resources fail coverage closed", async (t) => {
   if (!(await executableExists("unzip"))) {
     t.skip("unzip is not installed");
@@ -93,7 +110,7 @@ test("unsafe and oversized archive resources fail coverage closed", async (t) =>
     assert.equal(unsafeResult.report.decision, "incomplete");
 
     const oversized = join(temporary, "oversized.ipa");
-    await writeStoredZip(oversized, { "Payload/Fixture.app/assets/config.json": "a".repeat(600 * 1024) });
+    await writeStoredZip(oversized, { "Payload/Fixture.app/assets/config.json": "a".repeat(9 * 1024 * 1024) });
     const oversizedResult = await scanProject(temporary, { profile: "predeploy", nativeOnly: true, artifacts: [oversized], persist: false });
     const oversizedCoverage = oversizedResult.report.coverage.find((item) => item.domain === "mobile-artifact-static");
     assert.equal(oversizedCoverage?.status, "partial");

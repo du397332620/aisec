@@ -9,8 +9,9 @@ const repositoryRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const cli = join(repositoryRoot, "dist", "src", "cli.js");
 const npmCommand = process.platform === "win32" ? "npm.cmd" : "npm";
 const temporary = await mkdtemp(join(tmpdir(), "aisec-docs-smoke-"));
+const sensitiveEnvironmentName = /(?:^|_)(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_?KEY|ACCESS_?KEY|CREDENTIALS?|AUTH)(?:_|$)/i;
 const environment = {
-  ...process.env,
+  ...Object.fromEntries(Object.entries(process.env).filter(([name]) => !sensitiveEnvironmentName.test(name))),
   AISEC_DATA_DIR: join(temporary, "data"),
   // Make the documented full-scan failure deterministic even on a contributor
   // machine that happens to have every optional engine installed.
@@ -55,6 +56,7 @@ try {
     "--policy ../trusted/security-policy.yml",
     "--confirm-policy-suppressions",
     "target-owned `.aisec.yml` is ignored",
+    "npm run calibrate:mobile-artifacts -- --confirm-download",
     "0.1.0` is not published to npm",
     "npm registry\npublication is intentionally not planned",
   ]) assert.ok(readme.includes(required), `README is missing documented first-run contract: ${required}`);

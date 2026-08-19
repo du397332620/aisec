@@ -1,0 +1,84 @@
+{
+  "schemaVersion": 1,
+  "description": "Fixed-version, static-only mobile artifact calibration. Passing checks demonstrates expected rule-specific scanner behavior on these assets; it does not prove exploitability or that a near-miss application is secure.",
+  "targets": [
+    {
+      "id": "pivaa-android-positive",
+      "platform": "android",
+      "classification": "positive",
+      "project": "https://github.com/HTBridge/pivaa",
+      "license": "GPL-3.0",
+      "licenseUrl": "https://github.com/HTBridge/pivaa/blob/7fde8956083ec4c6023c75f013f72023d60eda12/LICENSE",
+      "revision": "7fde8956083ec4c6023c75f013f72023d60eda12",
+      "filename": "pivaa.apk",
+      "sourceUrl": "https://raw.githubusercontent.com/HTBridge/pivaa/7fde8956083ec4c6023c75f013f72023d60eda12/apks/pivaa.apk",
+      "byteSize": 3166140,
+      "sha256": "57887e1d1e119939eec0e929801b049f8037cf90d2accab479a48f0d4dd2c19a",
+      "expected": {
+        "coverageStatus": "complete",
+        "artifactFindings": [
+          {
+            "ruleId": "artifact.cleartext-endpoint",
+            "count": 1
+          }
+        ]
+      }
+    },
+    {
+      "id": "mastg-android-near-miss",
+      "platform": "android",
+      "classification": "near-miss",
+      "project": "https://github.com/OWASP/MASTG-Hacking-Playground",
+      "license": "GPL-3.0",
+      "licenseUrl": "https://github.com/OWASP/MASTG-Hacking-Playground/blob/1.0/LICENSE.md",
+      "revision": "1.0",
+      "filename": "MSTG-Android-Java.apk",
+      "sourceUrl": "https://github.com/OWASP/MASTG-Hacking-Playground/releases/download/1.0/MSTG-Android-Java.apk",
+      "byteSize": 5875691,
+      "sha256": "6efbd23d6425d0688a2667e371c2e409a8eee2cabc97b1f2eaf2ffdccf3f555f",
+      "expected": {
+        "coverageStatus": "complete",
+        "artifactFindings": []
+      }
+    },
+    {
+      "id": "mastg-jwt-ios-positive",
+      "platform": "ios",
+      "classification": "positive",
+      "project": "https://github.com/OWASP/MASTG-Hacking-Playground",
+      "license": "GPL-3.0",
+      "licenseUrl": "https://github.com/OWASP/MASTG-Hacking-Playground/blob/1.0/LICENSE.md",
+      "revision": "1.0",
+      "filename": "MSTG-JWT.ipa",
+      "sourceUrl": "https://github.com/OWASP/MASTG-Hacking-Playground/releases/download/1.0/MSTG-JWT.ipa",
+      "byteSize": 5853214,
+      "sha256": "d25df71640dc4f5af3ae48c58f7cad1c7f6ba53a28334b5407f9a0a11291934c",
+      "expected": {
+        "coverageStatus": "complete",
+        "artifactFindings": [
+          {
+            "ruleId": "artifact.cleartext-endpoint",
+            "count": 4
+          }
+        ]
+      }
+    },
+    {
+      "id": "fossify-calculator-android-near-miss",
+      "platform": "android",
+      "classification": "near-miss",
+      "project": "https://github.com/FossifyOrg/Calculator",
+      "license": "GPL-3.0",
+      "licenseUrl": "https://github.com/FossifyOrg/Calculator/blob/1.4.0/LICENSE",
+      "revision": "1.4.0",
+      "filename": "calculator-10-foss-release.apk",
+      "sourceUrl": "https://github.com/FossifyOrg/Calculator/releases/download/1.4.0/calculator-10-foss-release.apk",
+      "byteSize": 7047681,
+      "sha256": "7c5443c22d6d62c67dfe80df33ea9161ff0fa440f92590bcb45d7008b57613ed",
+      "expected": {
+        "coverageStatus": "complete",
+        "artifactFindings": []
+      }
+    }
+  ]
+}

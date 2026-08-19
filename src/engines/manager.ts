@@ -2,7 +2,7 @@ import { chmod, copyFile, readFile, rename, rm, stat } from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import { basename, join, resolve } from "node:path";
 import type { Stats } from "node:fs";
-import { commandVersion } from "./process.js";
+import { commandVersion, sanitizedProcessEnv } from "./process.js";
 import { dataDir, ensureDir, executableExists, fileExists, readJson, sha256, writeJson } from "../core/utils.js";
 import { engineCompatibility } from "./compatibility.js";
 
@@ -53,7 +53,7 @@ export async function resolveEngineCommand(name: EngineName): Promise<string | u
 export function sanitizedEngineEnv(name: EngineName): NodeJS.ProcessEnv {
   const prefixes = name === "trivy" ? ["TRIVY_"] : name === "gitleaks" ? ["GITLEAKS_"] : ["SEMGREP_", "OPENGREP_"];
   const env: NodeJS.ProcessEnv = {};
-  for (const [key, value] of Object.entries(process.env)) {
+  for (const [key, value] of Object.entries(sanitizedProcessEnv())) {
     if (prefixes.some((prefix) => key.toUpperCase().startsWith(prefix))) continue;
     env[key] = value;
   }

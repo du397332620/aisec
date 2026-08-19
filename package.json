@@ -34,6 +34,7 @@
     "benchmark": "npm run build && node dist/src/benchmark.js",
     "benchmark:resources": "npm run build && node scripts/resource-benchmark.mjs",
     "calibrate:node-api": "npm run build && node scripts/node-api-calibration.mjs",
+    "calibrate:mobile-artifacts": "npm run build && node scripts/mobile-artifact-calibration.mjs",
     "release:build": "npm run build && node scripts/build-release.mjs",
     "release:verify": "node scripts/verify-release.mjs",
     "prepublishOnly": "npm test && npm run benchmark && npm run benchmark:resources && npm run test:docs && npm run test:package && npm run test:release"

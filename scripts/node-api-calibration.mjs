@@ -15,6 +15,7 @@ const RULE_ID_PATTERN = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/;
 const NODE_RULE_PATTERN = /^(?:express|nestjs)\.(?:auth|authorization)\./;
 const MOBILE_RULE_PATTERN = /^(?:mobile|android|ios|react-native|flutter)\./;
 const REPOSITORY_PATTERN = /^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})\/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})\.git$/;
+const SENSITIVE_ENVIRONMENT_NAME = /(?:^|_)(?:API_?KEY|TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_?KEY|ACCESS_?KEY|CREDENTIALS?|AUTH)(?:_|$)/i;
 
 function fail(message) {
   throw new Error(message);
@@ -216,7 +217,7 @@ async function loadManifest(path) {
 }
 
 function gitEnvironment() {
-  const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_") && name !== "SSH_ASKPASS"));
+  const environment = Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("GIT_") && name !== "SSH_ASKPASS" && !SENSITIVE_ENVIRONMENT_NAME.test(name)));
   return {
     ...environment,
     GIT_CONFIG_GLOBAL: nullDevice,

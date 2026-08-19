@@ -54,11 +54,16 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   configuration is not promoted into this boundary.
 - PATH executables are trusted by the invoking user; managed executables have a
   pinned SHA-256 checked before every run.
+- Scanner child processes receive no ambient variable whose name indicates an
+  API key, token, secret, password, private/access key, credential or auth value.
 - A configured SHA-256 proves that a managed file has not changed after
   installation; users must still authenticate the original release and digest.
 - Only the engine versions listed in the verified Beta compatibility matrix are
   executed. Unknown or unparsable versions fail coverage closed.
 - Third-party scanner output is untrusted and normalized/redacted before use.
+- APK/IPA filenames, archive paths and member bytes are untrusted. AIsec rejects
+  unsafe paths before reading members, invokes `unzip` without a shell, keeps
+  member output in bounded memory and never extracts archive members onto disk.
 - Report titles, descriptions and source locations remain untrusted when they
   enter CI output. GitHub workflow-command data and properties are escaped,
   annotations accept only normalized relative paths, and CI/Markdown output is
@@ -102,6 +107,16 @@ CLI overrides have hard ceilings; reaching a limit is reported as partial or
 failed coverage rather than a clean result. The synthetic resource benchmark
 checks broad time/RSS budgets, but repository shape and third-party parser
 behavior can still vary.
+
+Mobile archive inspection selects at most 25 supported members after validating
+up to 200,000 listed paths. It accepts at most 8 MiB from one member, 16 MiB of
+aggregate uncompressed member input and 8 MiB of recovered text. It semantically
+decodes binary plists with separate object, collection, string and depth limits,
+and recovers printable ASCII/UTF-16 evidence from other selected binary resources;
+it is not a DEX, Android binary-XML, resource-table or Mach-O decompiler.
+Obfuscation, encryption, unsupported encodings and evidence beyond a bound can be
+missed. A reached bound or failed binary-plist decode is reported as partial
+coverage.
 
 AIsec passes local rule/configuration paths and disables supported update checks;
 Trivy is invoked in explicit offline mode. These application flags are not a
