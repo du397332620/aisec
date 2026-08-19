@@ -390,6 +390,24 @@ function boundedContext(content: string): ScanContext {
   };
 }
 
+test("RulePack coverage inherits unsafe inventory gaps but not expected exclusions", async () => {
+  const expectedExclusion = boundedContext("const dangerFlag = true;\n");
+  expectedExclusion.inventory.skippedFiles = 1;
+  expectedExclusion.inventory.skippedReasons = { excluded_directory: 1 };
+  const excludedResult = await runRulePacks(expectedExclusion, [{ pack: rulePack(), digestSha256: "0".repeat(64) }]);
+  assert.equal(excludedResult.coverage[0]?.status, "complete");
+  assert.equal(excludedResult.coverage[0]?.reason, undefined);
+  assert.equal(excludedResult.signals.length, 1);
+
+  const partialInventory = boundedContext("const dangerFlag = true;\n");
+  partialInventory.inventory.skippedFiles = 2;
+  partialInventory.inventory.skippedReasons = { oversized_file: 1, symbolic_link: 1 };
+  const partialResult = await runRulePacks(partialInventory, [{ pack: rulePack(), digestSha256: "1".repeat(64) }]);
+  assert.equal(partialResult.coverage[0]?.status, "partial");
+  assert.match(partialResult.coverage[0]?.reason ?? "", /project inventory is partial: oversized_file: 1, symbolic_link: 1/);
+  assert.equal(partialResult.signals.length, excludedResult.signals.length, "inventory coverage must not fabricate or suppress findings");
+});
+
 test("custom literal and line evaluation work is bounded before it can amplify scan cost", async () => {
   const manyLiterals = rulePack();
   manyLiterals.rules[0]!.match.containsAny = Array.from({ length: 32 }, (_, index) => `not-present-${index}`);

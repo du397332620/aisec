@@ -1,4 +1,5 @@
 import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
+import { inventoryCoverage } from "../core/files.js";
 import { createSignal, makeLocation } from "../core/utils.js";
 import type { ScanContext } from "../core/context.js";
 import type { CoverageRecord, RulePackRule, Signal, SourceLocation } from "../schema.js";
@@ -55,6 +56,10 @@ export async function runRulePacks(
   let literalWorkBytes = 0;
   let lineEvaluations = 0;
   let selectorEvaluations = 0;
+  const inventoryResult = inventoryCoverage(context.inventory);
+  const inventoryReason = inventoryResult.status === "partial"
+    ? `project inventory is partial${inventoryResult.reason ? `: ${inventoryResult.reason}` : ""}`
+    : undefined;
 
   for (const loaded of loadedPacks) {
     const started = Date.now();
@@ -139,7 +144,7 @@ export async function runRulePacks(
     const missingSelectionReason = missingSelectionCount > 0
       ? `custom absent rule ${firstMissingSelectionRule} selected no files${missingSelectionCount > 1 ? `; ${missingSelectionCount - 1} additional absent rule(s) also selected no files` : ""}`
       : undefined;
-    const reasons = [missingSelectionReason, packTruncated ? limitReason : undefined].filter((reason): reason is string => Boolean(reason));
+    const reasons = [inventoryReason, missingSelectionReason, packTruncated ? limitReason : undefined].filter((reason): reason is string => Boolean(reason));
     coverage.push({
       domain: `rule-pack:${loaded.pack.packId}`,
       engine: "aisec-rule-pack",

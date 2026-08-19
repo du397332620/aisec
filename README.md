@@ -372,11 +372,15 @@ selectors/literals plus shared selector, byte, literal-work and line-evaluation
 budgets are bounded; all packs share the normal 2,000-signal output ceiling. A
 preview lists at most 100 selected paths per rule and 2,000 total, and shares
 the 1,000,000 rule-file selector-work limit with scanning. A reached scan work
-or output bound makes the affected required coverage `partial`. Reports record only pack ID, rule
-count and SHA-256—not the local pack path or its literals—and expose this record
-in JSON, terminal, HTML, SARIF, CI JSON and Markdown. A baseline rescan requires
-the same set of pack IDs, counts and digests; a deliberate pack edit starts a
-new baseline.
+or output bound makes the affected required coverage `partial`. Incomplete
+project inventory—such as an oversized, unreadable, binary or symlinked
+candidate—also makes every active pack's required scan coverage `partial`,
+because full selector reach cannot be established. Expected excluded
+directories alone do not weaken coverage. Valid findings from inspected files
+are retained. Reports record only pack ID, rule count and SHA-256—not the local
+pack path or its literals—and expose this record in JSON, terminal, HTML,
+SARIF, CI JSON and Markdown. A baseline rescan requires the same set of pack
+IDs, counts and digests; a deliberate pack edit starts a new baseline.
 
 Rule packs can add findings and required coverage but cannot disable shipped
 rules or engines, change inventory limits, suppress findings or relax a release

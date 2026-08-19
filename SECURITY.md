@@ -87,7 +87,10 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   existing file. No selected file or an interrupted evaluation produces partial
   required coverage rather than an absence finding. Reports record its ID, rule
   count and SHA-256 without recording its local path or literal definitions.
-  Baselines require the same pack set and digest.
+  Baselines require the same pack set and digest. A partial project inventory
+  also makes every active pack's scan coverage partial, while retaining valid
+  findings from files that were safely inspected; expected directory
+  exclusions alone do not cause that downgrade.
 - Rule-pack preview uses the same outside-target loader, safe source inventory
   and selector predicate. It evaluates no rule literals and produces no
   findings. Its strict output omits pack paths and literal definitions, lists

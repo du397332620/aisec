@@ -45,7 +45,9 @@ path-only: selecting no file or reaching a bound is partial coverage, never a
 fabricated vulnerability finding. Selector-preview changes must reuse the scan
 predicate, retain strict output validation and deterministic path/work bounds,
 and must not expose local pack paths, literal definitions or vulnerability
-claims.
+claims. Scan and preview coverage must reuse the shared project-inventory
+decision: unsafe inventory gaps make active packs partial, while expected
+directory exclusions alone remain complete.
 
 Report-format changes must validate their public contract before serialization
 and include hostile target-controlled text tests. GitHub annotations must reject

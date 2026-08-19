@@ -58,6 +58,7 @@ try {
     "aisec rule-pack check ../target",
     "RulePack 1.1.0",
     "RulePackPreview 1.0.0",
+    "also makes every active pack's required scan coverage `partial`",
     "emitWhen: absent",
     "--confirm-policy-suppressions",
     "target-owned `.aisec.yml` is ignored",

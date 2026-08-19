@@ -191,6 +191,23 @@ try {
   assert.ok(!custom.signals.some((item) => item.ruleId === "custom.example.local.security-middleware-required"));
   assert.equal(custom.coverage.find((item) => item.domain === "rule-pack:example.local")?.status, "complete");
 
+  await writeFile(join(customTarget, "src", "oversized.ts"), "x".repeat(2 * 1024 * 1024 + 1));
+  const partialCustom = parseReport(run(executable, [
+    "scan",
+    customTarget,
+    "--profile",
+    "native",
+    "--rule-pack",
+    join(packageRoot, "examples", "rule-pack.example.yml"),
+    "--no-persist",
+    "--format",
+    "json",
+  ], { cwd: consumer, env: scanEnvironment, expectedStatus: 1 }), "installed partial-inventory rule-pack scan");
+  const partialPackCoverage = partialCustom.coverage.find((item) => item.domain === "rule-pack:example.local");
+  assert.equal(partialPackCoverage?.status, "partial");
+  assert.match(partialPackCoverage?.reason ?? "", /project inventory is partial: oversized_file: 1/);
+  assert.ok(partialCustom.signals.some((item) => item.ruleId === "custom.example.local.tls-verification-disabled"));
+
   const vulnerable = parseReport(run(executable, [
     "scan",
     join(packageRoot, "test", "fixtures", "vulnerable"),
