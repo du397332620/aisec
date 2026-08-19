@@ -49,7 +49,9 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
 
 - Project source, Git metadata, configuration, archives and dependency names are
   untrusted.
-- AIsec's own shipped rules and explicit user configuration are trusted inputs.
+- AIsec's own shipped rules and an explicitly selected operator-owned security
+  policy outside the scanned target are trusted inputs. Target repository
+  configuration is not promoted into this boundary.
 - PATH executables are trusted by the invoking user; managed executables have a
   pinned SHA-256 checked before every run.
 - A configured SHA-256 proves that a managed file has not changed after
@@ -61,6 +63,12 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   not trusted by the adapters and cannot silently suppress acceptance findings.
   This includes Gitleaks allow comments, Opengrep `nosemgrep`/ignore files and
   Trivy general, ignore and secret-scanner configuration.
+- A release policy is never discovered from the target. AIsec resolves its real
+  path, rejects files or symlinks inside the scan root, validates a strict
+  versioned schema and expiry, and records the applied SHA-256 digest. A target
+  `.aisec.yml` is ignored and cannot suppress native findings. Policy baselines
+  require the same explicitly supplied digest. Non-empty policy suppressions
+  also require a separate explicit confirmation and record that approval.
 - Trivy scans use an AIsec-owned offline cache. Missing, invalid or stale
   database metadata fails coverage; database download happens only through the
   explicit `engines prepare trivy` setup command.
@@ -100,6 +108,11 @@ The Trivy cache freshness decision relies on Trivy's database metadata and the
 upstream OCI distribution path. It does not independently attest each database
 record. Keep setup egress restricted and use an authenticated registry mirror
 when stronger organizational provenance controls are required.
+
+Policy SHA-256 records exact policy bytes for reproducibility; it is not a
+signature and does not prove who authored or approved the file. Protect the
+operator policy with normal repository/CI access controls and use a new
+baseline for an intentional policy change.
 
 No result constitutes certification. `no_blockers_found` means only that the
 completed checks found no configured blocker. Read the coverage table and

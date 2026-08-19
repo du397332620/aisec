@@ -1,0 +1,88 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/security-policy-1.0.0.json",
+  "title": "AIsec SecurityPolicy 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "policyId",
+    "expiresAt",
+    "profile",
+    "requiredEngines",
+    "gate",
+    "rules",
+    "suppressions"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "policyId": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 128,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]*$"
+    },
+    "expiresAt": { "type": "string", "format": "date-time" },
+    "profile": { "const": "predeploy" },
+    "requiredEngines": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 3,
+      "uniqueItems": true,
+      "items": { "enum": ["gitleaks", "opengrep", "trivy"] }
+    },
+    "gate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["minimumSeverity", "includeInferred", "requireNoSuppressions"],
+      "properties": {
+        "minimumSeverity": { "enum": ["high", "medium", "low", "info"] },
+        "includeInferred": { "type": "boolean" },
+        "requireNoSuppressions": { "type": "boolean" }
+      }
+    },
+    "rules": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["required", "block"],
+      "properties": {
+        "required": { "$ref": "#/$defs/ruleIds" },
+        "block": { "$ref": "#/$defs/ruleIds" }
+      }
+    },
+    "suppressions": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/suppression" }
+    }
+  },
+  "$defs": {
+    "ruleIds": {
+      "type": "array",
+      "maxItems": 52,
+      "uniqueItems": true,
+      "items": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 160,
+        "pattern": "^[a-z0-9][a-z0-9._-]*$"
+      }
+    },
+    "suppression": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["fingerprint", "reason", "expires"],
+      "properties": {
+        "fingerprint": { "type": "string", "pattern": "^[0-9a-fA-F]{64}$" },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+        "expires": {
+          "type": "string",
+          "oneOf": [
+            { "format": "date" },
+            { "format": "date-time" }
+          ]
+        }
+      }
+    }
+  }
+}

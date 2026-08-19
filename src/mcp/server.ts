@@ -22,6 +22,12 @@ function optionalBoolean(args: Record<string, unknown>, name: string): boolean {
   return args[name];
 }
 
+function optionalString(args: Record<string, unknown>, name: string): string | undefined {
+  if (args[name] === undefined) return undefined;
+  if (typeof args[name] !== "string" || !args[name].trim()) throw new Error(`${name} must be a non-empty string`);
+  return args[name];
+}
+
 function scanId(value: unknown): string {
   const id = String(value ?? "");
   if (!/^scan_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id)) {
@@ -33,10 +39,10 @@ function scanId(value: unknown): string {
 const annotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
 const tools = [
   { name: "inspect_project", description: "Inspect a local project stack and attack surface without running external scanners.", annotations, inputSchema: { type: "object", properties: { path: { type: "string" } }, required: ["path"], additionalProperties: false } },
-  { name: "run_predeploy_scan", description: "Run a non-persisting local pre-deploy security scan. This never runs project build or install scripts.", annotations, inputSchema: { type: "object", properties: { path: { type: "string" }, artifacts: { type: "array", maxItems: 10, items: { type: "string" } }, nativeOnly: { type: "boolean" } }, required: ["path"], additionalProperties: false } },
+  { name: "run_predeploy_scan", description: "Run a non-persisting local pre-deploy security scan. This never runs project build or install scripts. An optional policy must be an explicit operator-owned file outside the target; its suppressions need a separate explicit confirmation.", annotations, inputSchema: { type: "object", properties: { path: { type: "string" }, artifacts: { type: "array", maxItems: 10, items: { type: "string" } }, nativeOnly: { type: "boolean" }, policy: { type: "string" }, confirmPolicySuppressions: { type: "boolean" } }, required: ["path"], additionalProperties: false } },
   { name: "get_report", description: "Read a previously stored scan report by its AIsec scan id.", annotations, inputSchema: { type: "object", properties: { reference: { type: "string", pattern: "^scan_" } }, required: ["reference"], additionalProperties: false } },
   { name: "create_fix_contract", description: "Create a constrained repair contract for one finding in a stored report.", annotations, inputSchema: { type: "object", properties: { scan: { type: "string", pattern: "^scan_" }, finding: { type: "string" } }, required: ["scan", "finding"], additionalProperties: false } },
-  { name: "verify_fix", description: "Rescan a project without persisting output and compare it with a stored baseline scan.", annotations, inputSchema: { type: "object", properties: { path: { type: "string" }, baseline: { type: "string", pattern: "^scan_" }, nativeOnly: { type: "boolean" } }, required: ["path", "baseline"], additionalProperties: false } },
+  { name: "verify_fix", description: "Rescan a project without persisting output and compare it with a stored baseline scan. Policy baselines require the same explicit operator-owned policy file and separate suppression confirmation when applicable.", annotations, inputSchema: { type: "object", properties: { path: { type: "string" }, baseline: { type: "string", pattern: "^scan_" }, nativeOnly: { type: "boolean" }, policy: { type: "string" }, confirmPolicySuppressions: { type: "boolean" } }, required: ["path", "baseline"], additionalProperties: false } },
 ];
 
 function success(id: JsonRpcId | undefined, result: unknown): object { return { jsonrpc: "2.0", id, result }; }
@@ -68,6 +74,8 @@ async function callTool(name: string, args: Record<string, unknown>, modern: boo
     return textContent((await scanProject(requiredString(args, "path"), {
       artifacts: (args.artifacts as string[] | undefined) ?? [],
       nativeOnly: optionalBoolean(args, "nativeOnly"),
+      policyPath: optionalString(args, "policy"),
+      confirmPolicySuppressions: optionalBoolean(args, "confirmPolicySuppressions"),
       persist: false,
     })).report, modern);
   }
@@ -75,6 +83,8 @@ async function callTool(name: string, args: Record<string, unknown>, modern: boo
   if (name === "create_fix_contract") return textContent(createFixContract(await loadReport(scanId(args.scan)), requiredString(args, "finding")), modern);
   if (name === "verify_fix") return textContent((await scanProject(requiredString(args, "path"), {
     nativeOnly: optionalBoolean(args, "nativeOnly"),
+    policyPath: optionalString(args, "policy"),
+    confirmPolicySuppressions: optionalBoolean(args, "confirmPolicySuppressions"),
     persist: false,
   }, scanId(args.baseline))).report, modern);
   throw new Error(`Unknown tool: ${name}`);

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { access, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -51,6 +51,9 @@ try {
     "ref: <40-character-reviewed-aisec-commit>",
     "npm exec --no -- aisec scan ../target --profile native",
     "## Beta capability matrix",
+    "--policy ../trusted/security-policy.yml",
+    "--confirm-policy-suppressions",
+    "target-owned `.aisec.yml` is ignored",
     "0.1.0` is not published to npm",
     "npm registry\npublication is intentionally not planned",
   ]) assert.ok(readme.includes(required), `README is missing documented first-run contract: ${required}`);
@@ -66,6 +69,8 @@ try {
   assert.equal(run(["--version"]).stdout.trim(), "0.1.0");
   const help = run(["--help"]).stdout;
   assert.match(help, /--profile predeploy\|native/);
+  assert.match(help, /--policy <file>/);
+  assert.match(help, /--confirm-policy-suppressions/);
   assert.match(help, /verify-bola --authorization <manifest\.yml> --confirm/);
   assert.match(help, /draft-bola --scan <scan-id\|report\.json>/);
   const doctor = report(run(["doctor", "--json"]), "doctor");
@@ -98,6 +103,29 @@ try {
   const explicitNativeOnly = report(run(["scan", "test/fixtures/safe", "--native-only", "--no-persist", "--format", "json"]), "predeploy profile with external engines disabled");
   assert.equal(explicitNativeOnly.profileName, "predeploy");
   assert.ok(explicitNativeOnly.coverage.filter((item) => ["gitleaks", "opengrep", "trivy"].includes(item.engine)).every((item) => item.status === "not_run" && !item.required));
+  assert.deepEqual(explicitNativeOnly.policy.relaxations, ["external_engines_disabled"]);
+
+  const policyTarget = join(temporary, "policy-target");
+  const trustedPolicy = join(temporary, "trusted-policy.yml");
+  await mkdir(policyTarget);
+  await writeFile(join(policyTarget, "index.ts"), "console.log(refreshToken);\n");
+  await writeFile(trustedPolicy, `schemaVersion: 1.0.0
+policyId: docs-smoke
+expiresAt: 2099-12-31T23:59:59Z
+profile: predeploy
+requiredEngines: [gitleaks, opengrep, trivy]
+gate:
+  minimumSeverity: high
+  includeInferred: false
+  requireNoSuppressions: false
+rules:
+  required: [privacy.sensitive-logging]
+  block: [privacy.sensitive-logging]
+suppressions: []
+`);
+  const policyReport = report(run(["scan", policyTarget, "--policy", trustedPolicy, "--no-persist", "--format", "json"], 1), "trusted policy scan");
+  assert.equal(policyReport.policy.source, "operator");
+  assert.equal(policyReport.policy.policyId, "docs-smoke");
 
   const mobileWithoutArtifact = report(run(["scan", "test/fixtures/corpus/react-native/near-miss", "--native-only", "--no-persist", "--format", "json"], 2), "predeploy mobile scan without an artifact");
   assert.equal(mobileWithoutArtifact.profileName, "predeploy");
@@ -127,6 +155,8 @@ try {
     "create_fix_contract",
     "verify_fix",
   ]);
+  assert.equal(mcpResponse.result.tools.find((tool) => tool.name === "run_predeploy_scan").inputSchema.properties.policy.type, "string");
+  assert.equal(mcpResponse.result.tools.find((tool) => tool.name === "run_predeploy_scan").inputSchema.properties.confirmPolicySuppressions.type, "boolean");
 
   process.stdout.write(`Documentation smoke passed on ${process.platform}/${process.arch} with ${process.version}.\n`);
 } finally {

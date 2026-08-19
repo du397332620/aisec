@@ -3,7 +3,9 @@
 AIsec is a local-first security acceptance CLI and MCP server for applications
 built with coding agents. It treats generated code as untrusted input, maps the
 project's attack surface, correlates related evidence into attack paths, and
-produces constrained repair contracts for an existing coding agent.
+produces constrained repair contracts for an existing coding agent. An
+optional operator-owned release policy can strengthen the acceptance gate
+without trusting configuration from the repository being scanned.
 
 It does **not** try to guess whether code was written by a human or an AI. It
 does **not** certify an application as secure.
@@ -258,8 +260,8 @@ before treating a pre-deploy result as complete.
 
 ```text
 aisec inspect [path]
-aisec scan [path] [--profile predeploy|native] [--native-only] [--artifact app.apk]
-aisec rescan [path] --baseline <scan-id|report.json>
+aisec scan [path] [--profile predeploy|native] [--policy trusted-policy.yml] [--native-only] [--artifact app.apk]
+aisec rescan [path] --baseline <scan-id|report.json> [--policy trusted-policy.yml]
 aisec report <scan-id|report.json> --format terminal|json|html|sarif
 aisec fix-contract --scan <scan-id> --finding <id> --format json
 aisec draft-bola --scan <scan-id|report.json> --output bola-draft.json
@@ -272,8 +274,9 @@ aisec engines install <name> --from <binary> --sha256 <digest>
 aisec mcp
 ```
 
-Scan options include `--profile predeploy|native`, repeatable `--artifact`,
-`--git-history`, `--native-only`, `--no-persist`, `--max-files`,
+Scan options include `--profile predeploy|native`, explicit `--policy`,
+`--confirm-policy-suppressions`, repeatable `--artifact`, `--git-history`,
+`--native-only`, `--no-persist`, `--max-files`,
 `--max-file-bytes`, `--max-total-bytes` and `--timeout-ms`. Run `aisec --help`
 for defaults and hard-bound behavior.
 
@@ -281,6 +284,39 @@ Reports are stored outside the scanned project. By default this is
 `~/Library/Application Support/aisec` on macOS and
 `$XDG_DATA_HOME/aisec` (or `~/.local/share/aisec`) on Linux. Override it with
 `AISEC_DATA_DIR` in tests or automation.
+
+### Trusted release policy
+
+AIsec never discovers a release policy from the scanned repository. The
+operator must pass a policy explicitly, and its resolved file path must be
+outside the target root:
+
+```bash
+mkdir -p ../trusted
+cp examples/security-policy.example.yml ../trusted/security-policy.yml
+# Review the rule lists and replace the demonstration expiry first.
+aisec scan ../target --policy ../trusted/security-policy.yml
+```
+
+The public [`SecurityPolicy 1.0.0` schema](schemas/security-policy.schema.json)
+is strict. Version 1 fixes the profile to `predeploy`, requires Gitleaks,
+Opengrep and Trivy, and has no fields for disabling engines, rules or coverage.
+`gate.minimumSeverity` may retain `high` or strengthen it to `medium`, `low` or
+`info`; `includeInferred: true` is an additional strengthening. IDs in
+`rules.required` must exist in the shipped [rule catalog](rules/catalog.json),
+and `rules.block` is a subset that elevates matching findings to blockers.
+Narrow fingerprint suppressions require both a reason and expiry. The policy
+itself also expires. A policy containing suppressions is rejected unless the
+operator separately passes `--confirm-policy-suppressions` after reviewing the
+exact file; the report records this approval.
+
+A policy cannot be combined with `--profile native` or `--native-only`. Missing,
+partial or failed predeploy coverage remains `incomplete`. A target-owned
+`.aisec.yml` is ignored and this disposition is recorded in JSON, terminal,
+HTML and SARIF output; it cannot suppress a finding. Reports record the applied
+policy ID, expiry, effective gates and SHA-256 digest but not its local path.
+Rescanning an operator-policy baseline requires the same explicit policy
+digest; a deliberate policy change starts a new baseline.
 
 ### External scanner engines
 
@@ -355,6 +391,9 @@ The MCP surface contains only local, read-oriented tools:
 `inspect_project`, `run_predeploy_scan`, `get_report`,
 `create_fix_contract`, and `verify_fix`. Web verification is intentionally not
 available over MCP, so an agent cannot autonomously send probes to a target.
+`run_predeploy_scan` and `verify_fix` accept an optional explicit `policy` path
+and a separate `confirmPolicySuppressions` boolean; the same outside-target and
+baseline-digest checks used by the CLI apply.
 The stdio server supports the current stateless MCP `2026-07-28` discovery
 envelope and legacy `initialize` negotiation through `2025-11-25`.
 
@@ -412,6 +451,7 @@ binaries and prepare the Trivy database before scanning.
 | Capability | Mode / engine | Beta behavior and boundary |
 | --- | --- | --- |
 | Public rule catalog | JSON + generated Markdown | 52 shipped deterministic rules: 49 native and 3 bundled Opengrep; strict schema and drift checks tie detector IDs, corpus coverage, CWE/evidence metadata, Opengrep YAML/verified version and `RULES.md` to one catalog; `*` means syntax/config/artifact based without a dependency-semver gate, not complete framework support |
+| Trusted release policy | Explicit operator-owned YAML | Strict public schema; policy must resolve outside the scanned target, retain the full predeploy engine boundary and may only keep or strengthen the default gate; shipped rule IDs are catalog-validated, narrow suppressions expire and require a second explicit confirmation, reports retain digest/gate/approval evidence, and policy baselines require the same digest; target-owned `.aisec.yml` is ignored |
 | Project inventory and stack map | Native | Local read only; supported text candidates and manifests, no dependency installation or project execution |
 | Secrets in selected source files | Native | Deterministic patterns; working tree only, not Git history |
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
@@ -435,6 +475,9 @@ artifact domains are non-required. The default `predeploy` profile is the
 acceptance path: Gitleaks, Opengrep and Trivy are required, and APK/IPA coverage
 is required when a mobile project is detected. `--native-only` explicitly
 disables the three external engines without changing that artifact policy.
+Reports record these default-mode relaxations. An operator policy permits
+neither relaxation and therefore rejects both `--profile native` and
+`--native-only`.
 Missing, partial or failed required coverage prevents a clean result. APK/IPA
 analysis examines selected static resources only; mobile runtime behavior
 remains out of scope.
@@ -571,18 +614,31 @@ Evidence is classified as:
 - `inferred`: context suggests risk but middleware or business semantics may
   change the conclusion.
 
-Only evidence-backed high/critical findings block. Inferred findings require
-review and cannot be promoted merely by an LLM.
+Without an operator policy, only evidence-backed high/critical findings block.
+Inferred findings require review and cannot be promoted merely by an LLM. A
+trusted policy can deterministically strengthen the severity/evidence gate or
+elevate catalogued rule IDs.
 
-Suppress a proven false positive in `.aisec.yml`; reason and expiry are required:
+Suppress a proven false positive only in the explicit operator-owned policy;
+reason and expiry are required:
 
 ```yaml
-version: 1
+schemaVersion: 1.0.0
+# ...required policy identity, engines, gate and rules...
 suppressions:
   - fingerprint: <stable-fingerprint-from-report>
     reason: Synthetic credential in a non-shipping parser fixture
     expires: 2026-12-31
 ```
+
+The complete shape is in
+[`examples/security-policy.example.yml`](examples/security-policy.example.yml).
+The target repository cannot opt into, edit or discover this policy on AIsec's
+behalf. A matched suppression is visible in the finding and report summary;
+`requireNoSuppressions: true` turns any applied suppression into a blocker.
+Run a policy that intentionally contains reviewed exceptions with both
+`--policy <file>` and `--confirm-policy-suppressions`; the confirmation flag is
+invalid without a policy and is never inferred from target content.
 
 `fix-contract` supplies evidence, constraints, required regression tests and a
 baseline rescan command. A finding closes only when it is rechecked and listed
@@ -591,22 +647,30 @@ as resolved, with no new high/critical finding.
 ## Versioned data contracts
 
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, fix
-contracts, the rule catalog, passive-web authorization, BOLA draft plans and
-BOLA authorization manifests in
+contracts, the rule catalog, trusted security policies, passive-web
+authorization, BOLA draft plans and BOLA authorization manifests in
 [`schemas/`](schemas/). Version
-`1.0.0` is validated at runtime when a report is generated, serialized, saved
-or loaded, when a fix contract is generated, and before authorization semantics
-are evaluated. Unknown fields, unsupported schema versions and malformed nested
-values fail closed instead of flowing into CLI or MCP output.
+`1.0.0` remains current for the policy and the other listed contracts.
+`ScanReport 1.1.0` adds the required machine-readable policy record; the report
+validator continues to accept legacy `1.0.0` reports only when that newer field
+is absent. Contracts are validated at runtime when a report is generated,
+serialized, saved or loaded, when a fix contract is generated, and before
+authorization semantics are evaluated. Unknown fields, unsupported schema
+versions and malformed nested values fail closed instead of flowing into CLI
+or MCP output.
 
 The package also exports `validateScanReport`, `validateFixContract`,
-`validateRuleCatalog`, `loadRuleCatalog`, `renderRuleCatalog`,
+`validateRuleCatalog`, `validateSecurityPolicy`, `loadRuleCatalog`,
+`renderRuleCatalog`, `parseSecurityPolicy`, `loadTrustedPolicy`,
 `validateAuthorizationManifestSchema`, `validateBolaDraftPlan` and
 `validateBolaAuthorizationManifestSchema` for integrations that consume these
 objects directly. The JSON catalog is also exported at
 `@aisec/cli/rules/catalog.json`. Fields declared optional may be omitted by
-`1.0.0` producers; new fields or other contract changes require a new schema
-version.
+their declared producers; new fields or other contract changes require a new
+schema version. `validateSecurityPolicy` checks schema and catalog
+relationships; `parseSecurityPolicy` and `loadTrustedPolicy` additionally
+enforce policy/suppression expiry, and loading enforces the outside-target path
+boundary.
 
 ## Scanner safety model
 
@@ -614,6 +678,9 @@ version.
   directories are excluded.
 - AIsec never runs `npm install`, Gradle, CocoaPods, build scripts, repository
   binaries, or scanner configuration supplied by the target repository.
+- Release policy is accepted only through an explicit path whose real file is
+  outside the target. A target `.aisec.yml` is ignored and recorded as such;
+  symlinks resolving back into the target are rejected.
 - External adapters override target-controlled scanner configuration and ignore
   files with AIsec-owned temporary inputs; inline scanner suppressions are also
   disabled where the engine exposes that control. If Trivy inline ignore

@@ -54,6 +54,8 @@ try {
   assert.ok(packedPaths.has("RULES.md"), "generated public rule documentation must be packaged");
   assert.ok(packedPaths.has("rules/catalog.json"), "machine-readable rule catalog must be packaged");
   assert.ok(packedPaths.has("schemas/rule-catalog.schema.json"), "rule catalog schema must be packaged");
+  assert.ok(packedPaths.has("schemas/security-policy.schema.json"), "security policy schema must be packaged");
+  assert.ok(packedPaths.has("examples/security-policy.example.yml"), "trusted policy example must be packaged");
   assert.ok(![...packedPaths].some((path) => path.startsWith("docs/") || path.startsWith(".scratch/")), "local progress documents must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/node-api-calibration.mjs"), "networked calibration runner must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/calibration/node-api-targets.json"), "real-project calibration manifest must stay out of the npm package");
@@ -75,10 +77,12 @@ try {
   await access(join(packageRoot, "schemas", "bola-authorization-manifest.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "bola-draft.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "rule-catalog.schema.json"), constants.R_OK);
+  await access(join(packageRoot, "schemas", "security-policy.schema.json"), constants.R_OK);
   await access(join(packageRoot, "RULES.md"), constants.R_OK);
   const ruleCatalog = JSON.parse(await readFile(join(packageRoot, "rules", "catalog.json"), "utf8"));
   assert.equal(ruleCatalog.rules.length, 52);
   await access(join(packageRoot, "examples", "authorization.bola.local.yml"), constants.R_OK);
+  await access(join(packageRoot, "examples", "security-policy.example.yml"), constants.R_OK);
   const scanEnvironment = { AISEC_DATA_DIR: join(temporary, "data") };
 
   const catalogApi = parseReport(run(process.execPath, [
@@ -88,7 +92,24 @@ try {
   ], { cwd: consumer, env: scanEnvironment }), "installed rule catalog API");
   assert.equal(catalogApi.rules.length, 52);
 
+  const policyApi = parseReport(run(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `import { validateSecurityPolicy } from ${JSON.stringify(packageMetadata.name)}; const value = validateSecurityPolicy(${JSON.stringify({
+      schemaVersion: "1.0.0",
+      policyId: "package-smoke",
+      expiresAt: "2099-12-31T23:59:59Z",
+      profile: "predeploy",
+      requiredEngines: ["gitleaks", "opengrep", "trivy"],
+      gate: { minimumSeverity: "high", includeInferred: false, requireNoSuppressions: false },
+      rules: { required: ["secret.openai"], block: [] },
+      suppressions: [],
+    })}); process.stdout.write(JSON.stringify(value));`,
+  ], { cwd: consumer, env: scanEnvironment }), "installed security policy API");
+  assert.equal(policyApi.policyId, "package-smoke");
+
   assert.equal(run(executable, ["--version"], { cwd: consumer, env: scanEnvironment }).trim(), packageMetadata.version);
+  assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /--policy <file>/);
 
   process.stdout.write("Running the installed CLI against safe and vulnerable fixtures...\n");
   const safe = parseReport(run(executable, [

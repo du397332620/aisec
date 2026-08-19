@@ -15,6 +15,16 @@ export function renderSarif(report: ScanReport): object {
     version: "2.1.0",
     runs: [{
       tool: { driver: { name: "AIsec", semanticVersion: report.toolVersion, informationUri: "https://github.com/aisec/aisec", rules: [...rules.values()] } },
+      properties: {
+        decision: report.decision,
+        policySource: report.policy?.source ?? "not_recorded",
+        policyId: report.policy?.policyId,
+        policyDigestSha256: report.policy?.digestSha256,
+        targetConfiguration: report.policy?.targetConfiguration,
+        policySuppressionCount: report.policy?.suppressionCount ?? 0,
+        policySuppressionApproval: report.policy?.suppressionApproval ?? "not_recorded",
+        policyRelaxations: report.policy?.relaxations ?? [],
+      },
       results: report.signals.map((signal) => ({
         ruleId: signal.ruleId,
         level: signal.severity === "critical" || signal.severity === "high" ? "error" : signal.severity === "medium" ? "warning" : "note",

@@ -1,9 +1,54 @@
 export const SCHEMA_VERSION = "1.0.0" as const;
+export const SCAN_REPORT_SCHEMA_VERSION = "1.1.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type EvidenceLevel = "verified" | "static_confirmed" | "inferred";
 export type CoverageStatus = "complete" | "partial" | "not_run" | "failed";
 export type Decision = "block" | "incomplete" | "review" | "no_blockers_found";
+export type SecurityPolicyEngine = "gitleaks" | "opengrep" | "trivy";
+export type PolicyMinimumSeverity = "high" | "medium" | "low" | "info";
+export type PolicyRelaxation = "source_only_profile" | "external_engines_disabled";
+
+export interface PolicySuppression {
+  fingerprint: string;
+  reason: string;
+  expires: string;
+}
+
+export interface SecurityPolicyGate {
+  minimumSeverity: PolicyMinimumSeverity;
+  includeInferred: boolean;
+  requireNoSuppressions: boolean;
+}
+
+export interface SecurityPolicy {
+  schemaVersion: "1.0.0";
+  policyId: string;
+  expiresAt: string;
+  profile: "predeploy";
+  requiredEngines: SecurityPolicyEngine[];
+  gate: SecurityPolicyGate;
+  rules: {
+    required: string[];
+    block: string[];
+  };
+  suppressions: PolicySuppression[];
+}
+
+export interface ScanPolicyRecord {
+  source: "defaults" | "operator";
+  targetConfiguration: "absent" | "ignored";
+  policyId?: string;
+  digestSha256?: string;
+  expiresAt?: string;
+  gate: SecurityPolicyGate;
+  requiredEngines: SecurityPolicyEngine[];
+  requiredRuleIds: string[];
+  blockingRuleIds: string[];
+  suppressionCount: number;
+  suppressionApproval: "not_applicable" | "explicit";
+  relaxations: PolicyRelaxation[];
+}
 
 export type RuleCatalogSource = "native" | "bundled_opengrep";
 export type RuleApplicabilityBasis = "syntax" | "configuration" | "artifact" | "engine";
@@ -173,7 +218,7 @@ export interface ScanComparison {
 }
 
 export interface ScanReport {
-  schemaVersion: typeof SCHEMA_VERSION;
+  schemaVersion: "1.0.0" | typeof SCAN_REPORT_SCHEMA_VERSION;
   toolVersion: string;
   scanId: string;
   startedAt: string;
@@ -189,6 +234,7 @@ export interface ScanReport {
   decision: Decision;
   decisionReasons: string[];
   summary: ScanSummary;
+  policy?: ScanPolicyRecord;
   comparison?: ScanComparison;
   disclaimer: string;
 }
@@ -384,4 +430,6 @@ export interface ScanOptions {
   maxTotalBytes: number;
   timeoutMs: number;
   persist: boolean;
+  policyPath?: string;
+  confirmPolicySuppressions: boolean;
 }

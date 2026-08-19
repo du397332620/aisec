@@ -1,7 +1,8 @@
 export * from "./schema.js";
 export { DEFAULT_SCAN_OPTIONS, inspectOnly, scanProject } from "./core/scan.js";
 export { createFixContract } from "./core/contracts.js";
-export { validateAuthorizationManifestSchema, validateBolaAuthorizationManifestSchema, validateBolaDraftPlan, validateFixContract, validateRuleCatalog, validateScanReport } from "./core/schema-validation.js";
+export { validateAuthorizationManifestSchema, validateBolaAuthorizationManifestSchema, validateBolaDraftPlan, validateFixContract, validateRuleCatalog, validateScanReport, validateSecurityPolicy } from "./core/schema-validation.js";
+export { loadTrustedPolicy, parseSecurityPolicy } from "./core/config.js";
 export { loadRuleCatalog, renderRuleCatalog } from "./rules/catalog.js";
 export { compareReports } from "./core/compare.js";
 export { loadReport } from "./core/store.js";

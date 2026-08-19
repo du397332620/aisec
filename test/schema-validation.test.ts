@@ -37,13 +37,15 @@ test("generated reports and fix contracts satisfy the complete public schemas", 
     assert.equal(validateFixContract(contract), contract);
 
     const compatible = structuredClone(report);
+    compatible.schemaVersion = "1.0.0";
     compatible.toolVersion = "0.1.0-beta.1+build.7";
     delete compatible.comparison;
+    delete compatible.policy;
     for (const signal of compatible.signals) {
       delete signal.metadata;
       delete signal.remediation;
     }
-    assert.equal(validateScanReport(compatible), compatible, "optional 1.0.0 fields remain backward compatible");
+    assert.equal(validateScanReport(compatible), compatible, "legacy ScanReport 1.0.0 remains readable without a policy record");
   } finally {
     await fixture.cleanup();
   }
@@ -51,6 +53,22 @@ test("generated reports and fix contracts satisfy the complete public schemas", 
 
 test("public schemas reject unsupported versions, unknown fields and invalid nested values", async () => {
   const { report } = await scanProject(join(fixtures, "safe"), { nativeOnly: true, persist: false });
+  const missingPolicy = structuredClone(report);
+  delete missingPolicy.policy;
+  assert.throws(() => validateScanReport(missingPolicy), /ScanReport.*policy/);
+
+  const legacyClaimingPolicy = structuredClone(report);
+  legacyClaimingPolicy.schemaVersion = "1.0.0";
+  assert.throws(() => validateScanReport(legacyClaimingPolicy), /ScanReport.*policy/);
+
+  const concealedRelaxation = structuredClone(report);
+  concealedRelaxation.policy!.relaxations = [];
+  assert.throws(() => validateScanReport(concealedRelaxation), /inconsistent default policy relaxations/);
+
+  const forgedDefaultGate = structuredClone(report);
+  forgedDefaultGate.policy!.gate.minimumSeverity = "medium";
+  assert.throws(() => validateScanReport(forgedDefaultGate), /must retain the built-in gate/);
+
   const unsupported = { ...report, schemaVersion: "2.0.0" };
   assert.throws(() => validateScanReport(unsupported), /ScanReport.*schemaVersion/);
 
@@ -122,7 +140,7 @@ test("serialization and the CLI report command reject malformed reports", async 
   const [exitCode] = await once(child, "close");
   assert.equal(exitCode, 64);
   assert.equal(stdout, "");
-  assert.match(stderr, /aisec: ScanReport does not match schema 1\.0\.0.*decision/);
+  assert.match(stderr, /aisec: ScanReport does not match schema 1\.1\.0.*decision/);
 });
 
 test("authorization manifests use the public schema before semantic authorization checks", () => {
@@ -179,7 +197,7 @@ test("BOLA authorization manifests use a separate strict public schema", () => {
   assert.throws(() => validateBolaAuthorization({ ...manifest, destructiveOverride: true }), /BolaAuthorizationManifest.*additional properties/);
 });
 
-test("date-only suppressions remain valid in the 1.0.0 report contract", async () => {
+test("target-owned suppressions are ignored and recorded in the 1.1.0 report contract", async () => {
   const fixture = await materializeFixture(join(fixtures, "vulnerable"), [{
     relativePath: ".env.example",
     placeholder: "__AISEC_SYNTHETIC_STRIPE_LIVE_KEY__",
@@ -190,9 +208,11 @@ test("date-only suppressions remain valid in the 1.0.0 report contract", async (
     const fingerprint = initial.findings[0]!.fingerprint;
     await writeFile(join(fixture.path, ".aisec.yml"), `version: 1\nsuppressions:\n  - fingerprint: ${fingerprint}\n    reason: temporary verified exception\n    expires: 2099-12-31\n`);
     const rescanned = (await scanProject(fixture.path, { nativeOnly: true, persist: false })).report;
-    const suppressed = rescanned.findings.find((finding) => finding.fingerprint === fingerprint);
-    assert.equal(suppressed?.status, "suppressed");
-    assert.equal(suppressed.suppression?.expires, "2099-12-31");
+    const finding = rescanned.findings.find((item) => item.fingerprint === fingerprint);
+    assert.equal(finding?.status, "open");
+    assert.equal(finding?.suppression, undefined);
+    assert.equal(rescanned.policy?.source, "defaults");
+    assert.equal(rescanned.policy?.targetConfiguration, "ignored");
     assert.equal(validateScanReport(rescanned), rescanned);
   } finally {
     await fixture.cleanup();

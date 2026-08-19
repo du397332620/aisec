@@ -6418,7 +6418,7 @@ test("authorization manifests reject production, host drift and excessive reques
   assert.throws(() => validateAuthorization({ ...valid, targetBaseUrl: "https://metadata.google.internal", allowedHosts: ["metadata.google.internal"] }));
 });
 
-test("expired suppressions do not hide findings", async () => {
+test("target-owned suppressions do not hide findings", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-fixture-"));
   try {
     await writeFile(join(temporary, "index.ts"), `const key = "${SYNTHETIC_STRIPE_LIVE_KEY}";\n`);

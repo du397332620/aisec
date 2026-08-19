@@ -4,10 +4,17 @@ const ICON = { critical: "CRITICAL", high: "HIGH", medium: "MEDIUM", low: "LOW",
 
 export function renderTerminalReport(report: ScanReport): string {
   const stack = [...new Set([...report.profile.frameworks, ...report.profile.baas, ...report.profile.mobilePlatforms])];
+  const policy = report.policy?.source === "operator"
+    ? `${report.policy.policyId} · sha256:${report.policy.digestSha256?.slice(0, 12)}… · expires ${report.policy.expiresAt}`
+    : report.policy ? "trusted defaults" : "not recorded by this report producer";
   const lines = [
     `AIsec ${report.toolVersion} — ${report.decision.toUpperCase()}`,
     `Target: ${report.target}`,
     `Scan:   ${report.scanId}`,
+    `Policy: ${policy}`,
+    ...(report.policy?.suppressionCount ? [`Policy suppressions: ${report.policy.suppressionCount} · ${report.policy.suppressionApproval}`] : []),
+    ...(report.policy?.targetConfiguration === "ignored" ? ["Target policy: ignored (target-owned configuration is untrusted)"] : []),
+    ...(report.policy?.relaxations.length ? [`Relaxations: ${report.policy.relaxations.join(", ")}`] : []),
     `Stack:  ${stack.join(", ") || "unclassified"}`,
     `Risk:   ${report.summary.critical} critical · ${report.summary.high} high · ${report.summary.medium} medium · ${report.summary.low} low`,
     "",

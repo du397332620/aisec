@@ -26,3 +26,10 @@ additional deterministic evidence.
 
 Do not add install scripts, curl-to-shell flows, automatic project builds, or
 network access to the default scan path.
+
+Security-policy changes must preserve the monotonic trust boundary: policies
+are explicit operator-owned files outside the target and may only retain or
+strengthen default predeploy requirements. Do not add target policy discovery,
+rule/engine disable lists, coverage overrides or silent baseline-policy
+migration. Update the public policy/report schemas and positive/negative policy
+tests together.

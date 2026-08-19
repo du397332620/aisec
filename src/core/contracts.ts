@@ -19,12 +19,14 @@ export function createFixContract(report: ScanReport, findingReference: string):
       : "Test malicious input and the expected legitimate path.",
     "Run the existing project test suite without weakening or deleting assertions.",
   ];
-  const rescanCommand = `aisec rescan --baseline ${report.scanId} ${JSON.stringify(report.target)}`;
+  const policyArgument = report.policy?.source === "operator" ? ` --policy ${JSON.stringify("<same-trusted-policy.yml>")}` : "";
+  const suppressionConfirmation = report.policy?.source === "operator" && report.policy.suppressionCount > 0 ? " --confirm-policy-suppressions" : "";
+  const rescanCommand = `aisec rescan --baseline ${report.scanId}${policyArgument}${suppressionConfirmation} ${JSON.stringify(report.target)}`;
   const constraints = [
     "Do not expose, print, rotate, or fabricate secret values in source code.",
     "Do not disable authentication, authorization, validation, TLS, security headers, or tests to make the finding disappear.",
     "Preserve the documented product behavior and public API unless the insecure behavior is itself the API.",
-    "Do not add blanket suppressions. If a false positive is proven, record a narrow suppression with a reason and expiry.",
+    "Do not add blanket or target-owned suppressions. If a false positive is proven, record a narrow suppression with a reason and expiry in the operator-owned policy.",
     "The fix must not introduce new high or critical findings.",
   ];
   return validateFixContract({
