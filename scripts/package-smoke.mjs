@@ -128,9 +128,9 @@ try {
   const rulePackApi = parseReport(run(process.execPath, [
     "--input-type=module",
     "--eval",
-    `import { readFileSync } from "node:fs"; import { parseRulePack, validateRulePack } from ${JSON.stringify(packageMetadata.name)}; const value = validateRulePack(parseRulePack(readFileSync(${JSON.stringify(join(packageRoot, "examples", "rule-pack.example.yml"))}, "utf8"))); process.stdout.write(JSON.stringify({ packId: value.packId, rules: value.rules.length }));`,
+    `import { readFileSync } from "node:fs"; import { parseRulePack, validateRulePack } from ${JSON.stringify(packageMetadata.name)}; const value = validateRulePack(parseRulePack(readFileSync(${JSON.stringify(join(packageRoot, "examples", "rule-pack.example.yml"))}, "utf8"))); process.stdout.write(JSON.stringify({ schemaVersion: value.schemaVersion, packId: value.packId, rules: value.rules.length, absent: value.rules.some((rule) => rule.match.emitWhen === "absent") }));`,
   ], { cwd: consumer, env: scanEnvironment }), "installed rule-pack API");
-  assert.deepEqual(rulePackApi, { packId: "example.local", rules: 1 });
+  assert.deepEqual(rulePackApi, { schemaVersion: "1.1.0", packId: "example.local", rules: 2, absent: true });
 
   assert.equal(run(executable, ["--version"], { cwd: consumer, env: scanEnvironment }).trim(), packageMetadata.version);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /--policy <file>/);
@@ -150,6 +150,7 @@ try {
   const customTarget = join(temporary, "custom-target");
   await mkdir(join(customTarget, "src"), { recursive: true });
   await writeFile(join(customTarget, "src", "transport.ts"), "const options = { rejectUnauthorized: false };\n");
+  await writeFile(join(customTarget, "src", "security.ts"), "app.use(helmet());\n");
   const custom = parseReport(run(executable, [
     "scan",
     customTarget,
@@ -163,6 +164,8 @@ try {
   ], { cwd: consumer, env: scanEnvironment, expectedStatus: 1 }), "installed declarative rule-pack scan");
   assert.equal(custom.rulePacks[0].packId, "example.local");
   assert.ok(custom.signals.some((item) => item.ruleId === "custom.example.local.tls-verification-disabled"));
+  assert.ok(!custom.signals.some((item) => item.ruleId === "custom.example.local.security-middleware-required"));
+  assert.equal(custom.coverage.find((item) => item.domain === "rule-pack:example.local")?.status, "complete");
 
   const vulnerable = parseReport(run(executable, [
     "scan",

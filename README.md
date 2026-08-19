@@ -336,13 +336,22 @@ aisec scan ../target --profile native \
   --rule-pack ../trusted/rule-pack.yml
 ```
 
-The public [`RulePack 1.0.0` schema](schemas/rule-pack.schema.json) is strict.
-Rule IDs must use `custom.<pack-id>.<rule>`. Version 1 matches printable ASCII
-literals on one source line using `containsAny`, optional `containsAll` and
-`excludes`; file selection uses lowercase extensions and optional normalized
-path prefixes/suffixes. It accepts no regex, JavaScript, Python, WASM, command,
-template, import or callback field. Evidence may be `static_confirmed` or
-`inferred`, never `verified`.
+The public [`RulePack 1.1.0` schema](schemas/rule-pack.schema.json) is strict and
+continues to accept unchanged `1.0.0` packs. Rule IDs must use
+`custom.<pack-id>.<rule>`. Rules match printable ASCII literals on one source
+line using `containsAny`, optional `containsAll` and `excludes`; file selection
+uses lowercase extensions and optional normalized path prefixes/suffixes. It
+accepts no regex, JavaScript, Python, WASM, command, template, import or callback
+field. Evidence may be `static_confirmed` or `inferred`, never `verified`.
+
+RulePack 1.1 adds optional `match.emitWhen`. Omitting it, or setting it to
+`present`, preserves 1.0 behavior and emits for each matching line. Setting
+`emitWhen: absent` emits one `inferred`, path-only finding for each selected
+existing file only after its complete bounded scan finds no matching line. If
+an absent rule selects no files, or a work/output limit is reached before
+absence can be established, AIsec emits no invented absence finding and marks
+that pack's required coverage `partial`. This is a narrow source invariant—not
+proof that middleware or another control is absent at runtime.
 
 At most 8 packs, 256 total rules and 256 KiB per pack are accepted. Per-rule
 selectors/literals plus shared selector, byte, literal-work and line-evaluation
@@ -520,7 +529,7 @@ finding fingerprints and accepted suppressions for compatible consumers.
 | --- | --- | --- |
 | Public rule catalog | JSON + generated Markdown | 56 shipped deterministic rules: 53 native and 3 bundled Opengrep; strict schema and drift checks tie detector IDs, corpus coverage, CWE/evidence metadata, Opengrep YAML/verified version and `RULES.md` to one catalog; `*` means syntax/config/artifact based without a dependency-semver gate, not complete framework support |
 | Trusted release policy | Explicit operator-owned YAML | Strict public schema; policy must resolve outside the scanned target, retain the full predeploy engine boundary and may only keep or strengthen the default gate; shipped rule IDs are catalog-validated, narrow suppressions expire and require a second explicit confirmation, reports retain digest/gate/approval evidence, and policy baselines require the same digest; target-owned `.aisec.yml` is ignored |
-| Declarative rule packs | Explicit operator-owned YAML/JSON | Strict `RulePack 1.0.0`; outside-target, digest-bound, bounded line-local literal checks only; no code, regex, target discovery, suppression or gate relaxation; ScanReport/CI/reporters retain pack ID, rule count and digest, and baselines require the same pack set |
+| Declarative rule packs | Explicit operator-owned YAML/JSON | Strict `RulePack 1.1.0` with unchanged 1.0 compatibility; outside-target, digest-bound, bounded line-local present or required-literal-absent checks only; absence findings are inferred and path-only, while an empty selection or reached bound makes coverage partial; no code, regex, target discovery, suppression or gate relaxation; ScanReport/CI/reporters retain pack ID, rule count and digest, and baselines require the same pack set |
 | Project inventory and stack map | Native | Local read only; supported text candidates and manifests, no dependency installation or project execution |
 | Secrets in selected source files | Native | Deterministic patterns; working tree only, not Git history |
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
@@ -743,8 +752,10 @@ as resolved, with no new high/critical finding.
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, CI
 reports, fix contracts, the rule catalog, declarative rule packs, trusted security policies, passive-web
 authorization, BOLA draft plans and BOLA authorization manifests in
-[`schemas/`](schemas/). `RulePack`, the policy and the other unchanged contracts
-remain at `1.0.0`. `CiReport 1.1.0` adds rule-pack records while accepting legacy
+[`schemas/`](schemas/). `RulePack 1.1.0` adds bounded required-literal absence
+assertions and continues to accept legacy `1.0.0` packs only when the new field
+is absent. The policy and other unchanged contracts remain at `1.0.0`.
+`CiReport 1.1.0` adds rule-pack records while accepting legacy
 `1.0.0` input without them. `ScanReport 1.1.0` added the required machine-readable
 policy record, and `ScanReport 1.2.0` adds the required rule-pack record array;
 the validator continues to accept legacy `1.0.0` and `1.1.0` reports only when
@@ -781,8 +792,11 @@ boundary.
   symlinks resolving back into the target are rejected.
 - Declarative rule packs follow the same explicit outside-target path boundary.
   They are parsed as data and never dynamically imported or executed; regex,
-  command and script fields are rejected. Reports retain their digest but not
-  their local path or literal definitions.
+  command and script fields are rejected. Required-literal absence rules only
+  inspect selected existing files, emit inferred path-only evidence, and make
+  coverage partial instead of claiming a vulnerability when no file is
+  selected or a safety bound interrupts evaluation. Reports retain their digest
+  but not their local path or literal definitions.
 - External adapters override target-controlled scanner configuration and ignore
   files with AIsec-owned temporary inputs; inline scanner suppressions are also
   disabled where the engine exposes that control. If Trivy inline ignore

@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://aisec.dev/schemas/rule-pack-1.0.0.json",
-  "title": "AIsec RulePack 1.0.0",
+  "$id": "https://aisec.dev/schemas/rule-pack-1.1.0.json",
+  "title": "AIsec RulePack 1.1.0",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "packId", "description", "rules"],
   "properties": {
-    "schemaVersion": { "const": "1.0.0" },
+    "schemaVersion": { "enum": ["1.0.0", "1.1.0"] },
     "packId": {
       "type": "string",
       "minLength": 1,
@@ -21,6 +21,30 @@
       "items": { "$ref": "#/$defs/rule" }
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schemaVersion": { "const": "1.0.0" } },
+        "required": ["schemaVersion"]
+      },
+      "then": {
+        "properties": {
+          "rules": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "match": {
+                  "type": "object",
+                  "properties": { "emitWhen": false }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "shortText": {
       "type": "string",
@@ -96,7 +120,8 @@
         "containsAny": { "$ref": "#/$defs/literalList" },
         "containsAll": { "$ref": "#/$defs/optionalLiteralList" },
         "excludes": { "$ref": "#/$defs/optionalLiteralList" },
-        "caseSensitive": { "type": "boolean" }
+        "caseSensitive": { "type": "boolean" },
+        "emitWhen": { "enum": ["present", "absent"] }
       }
     },
     "rule": {

@@ -120,6 +120,22 @@ export function validateScanReport(value: unknown): ScanReport {
         throw new Error(`ScanReport custom signal ${signal.id} rule ID does not match rule pack ${packId}`);
       }
       if (signal.evidenceLevel === "verified") throw new Error(`ScanReport custom signal ${signal.id} cannot claim verified evidence`);
+      const rulePackMatch = signal.metadata?.rulePackMatch;
+      if (rulePackMatch !== undefined && rulePackMatch !== "present" && rulePackMatch !== "absent") {
+        throw new Error(`ScanReport custom signal ${signal.id} has an unsupported rule-pack match mode`);
+      }
+      if (rulePackMatch === "absent") {
+        if (signal.evidenceLevel !== "inferred") {
+          throw new Error(`ScanReport absent custom signal ${signal.id} must use inferred evidence`);
+        }
+        const pathOnly = signal.locations.length === 1 && signal.locations.every((location) => (
+          location.line === undefined
+          && location.column === undefined
+          && location.endLine === undefined
+          && location.snippet === undefined
+        ));
+        if (!pathOnly) throw new Error(`ScanReport absent custom signal ${signal.id} must use one path-only location`);
+      }
     }
   } else if (report.coverage.some((item) => item.engine === "aisec-rule-pack") || report.signals.some((item) => item.engine === "aisec-rule-pack")) {
     throw new Error("Legacy ScanReport cannot claim rule-pack coverage or signals without versioned rule-pack records");
@@ -299,7 +315,7 @@ function assertSafeRulePackSelector(value: string, label: string, prefix: boolea
 }
 
 export function validateRulePack(value: unknown): RulePack {
-  const pack = assertSchema<RulePack>("RulePack", rulePackValidator, value);
+  const pack = assertSchema<RulePack>("RulePack", rulePackValidator, value, "1.1.0");
   const assertSafeText = (text: string, label: string): void => {
     if (text !== text.trim() || /[\u0000-\u001f\u007f]/u.test(text)) throw new Error(`RulePack ${label} must be trimmed single-line text without control characters`);
   };
@@ -315,6 +331,9 @@ export function validateRulePack(value: unknown): RulePack {
     assertSafeText(rule.title, `${rule.ruleId} title`);
     assertSafeText(rule.description, `${rule.ruleId} description`);
     assertSafeText(rule.remediation, `${rule.ruleId} remediation`);
+    if (rule.match.emitWhen === "absent" && rule.evidenceLevel !== "inferred") {
+      throw new Error(`RulePack absent rule ${rule.ruleId} must use inferred evidence`);
+    }
     for (const selector of rule.files.pathPrefixes ?? []) assertSafeRulePackSelector(selector, `${rule.ruleId} pathPrefixes`, true);
     for (const selector of rule.files.excludePathPrefixes ?? []) assertSafeRulePackSelector(selector, `${rule.ruleId} excludePathPrefixes`, true);
     for (const selector of rule.files.pathSuffixes ?? []) assertSafeRulePackSelector(selector, `${rule.ruleId} pathSuffixes`, false);

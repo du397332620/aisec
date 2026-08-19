@@ -2,7 +2,7 @@ import { extname } from "node:path";
 import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
 import { createSignal, makeLocation } from "../core/utils.js";
 import type { ScanContext } from "../core/context.js";
-import type { CoverageRecord, Signal } from "../schema.js";
+import type { CoverageRecord, RulePackRule, Signal, SourceLocation } from "../schema.js";
 import type { LoadedRulePack } from "../rules/pack.js";
 
 export const MAX_RULE_PACK_EVALUATED_BYTES = 256 * 1024 * 1024;
@@ -24,6 +24,32 @@ function lineMatches(line: string, any: readonly string[], all: readonly string[
   return all.every((literal) => candidate.includes(literal));
 }
 
+function rulePackSignal(
+  loaded: LoadedRulePack,
+  rule: RulePackRule,
+  emitWhen: "present" | "absent",
+  locations: SourceLocation[],
+): Signal {
+  return createSignal({
+    engine: "aisec-rule-pack",
+    ruleId: rule.ruleId,
+    title: rule.title,
+    description: rule.description,
+    severity: rule.severity,
+    evidenceLevel: rule.evidenceLevel,
+    confidence: rule.confidence,
+    locations,
+    cwe: [...rule.cwe],
+    tags: [...new Set([...rule.tags, "custom-rule"])],
+    remediation: rule.remediation,
+    metadata: {
+      rulePackId: loaded.pack.packId,
+      rulePackDigestSha256: loaded.digestSha256,
+      rulePackMatch: emitWhen,
+    },
+  });
+}
+
 export async function runRulePacks(
   context: ScanContext,
   loadedPacks: readonly LoadedRulePack[],
@@ -39,6 +65,8 @@ export async function runRulePacks(
   for (const loaded of loadedPacks) {
     const started = Date.now();
     let packTruncated = limitReason !== undefined;
+    let missingSelectionCount = 0;
+    let firstMissingSelectionRule: string | undefined;
     if (!limitReason) {
       for (const rule of [...loaded.pack.rules].sort((left, right) => left.ruleId.localeCompare(right.ruleId))) {
         const prefixes = rule.files.pathPrefixes ?? [];
@@ -49,6 +77,8 @@ export async function runRulePacks(
         const any = rule.match.containsAny.map(normalize);
         const all = (rule.match.containsAll ?? []).map(normalize);
         const excluded = (rule.match.excludes ?? []).map(normalize);
+        const emitWhen = rule.match.emitWhen ?? "present";
+        let selectedFiles = 0;
         for (const file of context.inventory.files) {
           selectorEvaluations += 1;
           if (selectorEvaluations > MAX_RULE_PACK_SELECTOR_EVALUATIONS) {
@@ -57,6 +87,7 @@ export async function runRulePacks(
             break;
           }
           if (!fileSelected(file.relativePath, rule.files.extensions, prefixes, suffixes, excludedPrefixes)) continue;
+          selectedFiles += 1;
           if (evaluatedBytes + file.size > MAX_RULE_PACK_EVALUATED_BYTES) {
             limitReason = `custom rule evaluation reached the ${MAX_RULE_PACK_EVALUATED_BYTES} byte shared work limit`;
             packTruncated = true;
@@ -71,6 +102,7 @@ export async function runRulePacks(
           evaluatedBytes += file.size;
           literalWorkBytes += fileLiteralWork;
           let offset = 0;
+          let matched = false;
           while (offset <= file.content.length) {
             const newline = file.content.indexOf("\n", offset);
             const end = newline === -1 ? file.content.length : newline;
@@ -82,41 +114,48 @@ export async function runRulePacks(
               break;
             }
             if (lineMatches(line, any, all, excluded, caseSensitive)) {
-              if (signals.length >= MAX_SIGNALS_PER_DETECTOR) {
+              matched = true;
+              if (emitWhen === "absent") break;
+              if (signals.length < MAX_SIGNALS_PER_DETECTOR) {
+                signals.push(rulePackSignal(loaded, rule, emitWhen, [makeLocation(file.relativePath, file.content, offset, line)]));
+              } else {
                 limitReason = `custom rule output reached the ${MAX_SIGNALS_PER_DETECTOR} shared signal safety limit`;
                 packTruncated = true;
                 break;
               }
-              signals.push(createSignal({
-                engine: "aisec-rule-pack",
-                ruleId: rule.ruleId,
-                title: rule.title,
-                description: rule.description,
-                severity: rule.severity,
-                evidenceLevel: rule.evidenceLevel,
-                confidence: rule.confidence,
-                locations: [makeLocation(file.relativePath, file.content, offset, line)],
-                cwe: [...rule.cwe],
-                tags: [...new Set([...rule.tags, "custom-rule"])],
-                remediation: rule.remediation,
-                metadata: { rulePackId: loaded.pack.packId, rulePackDigestSha256: loaded.digestSha256 },
-              }));
             }
             if (limitReason || newline === -1) break;
             offset = newline + 1;
           }
           if (limitReason) break;
+          if (emitWhen === "absent" && !matched) {
+            if (signals.length < MAX_SIGNALS_PER_DETECTOR) {
+              signals.push(rulePackSignal(loaded, rule, emitWhen, [{ path: file.relativePath }]));
+            } else {
+              limitReason = `custom rule output reached the ${MAX_SIGNALS_PER_DETECTOR} shared signal safety limit`;
+              packTruncated = true;
+              break;
+            }
+          }
         }
         if (limitReason) break;
+        if (emitWhen === "absent" && selectedFiles === 0) {
+          missingSelectionCount += 1;
+          firstMissingSelectionRule ??= rule.ruleId;
+        }
       }
     }
+    const missingSelectionReason = missingSelectionCount > 0
+      ? `custom absent rule ${firstMissingSelectionRule} selected no files${missingSelectionCount > 1 ? `; ${missingSelectionCount - 1} additional absent rule(s) also selected no files` : ""}`
+      : undefined;
+    const reasons = [missingSelectionReason, packTruncated ? limitReason : undefined].filter((reason): reason is string => Boolean(reason));
     coverage.push({
       domain: `rule-pack:${loaded.pack.packId}`,
       engine: "aisec-rule-pack",
-      status: packTruncated ? "partial" : "complete",
+      status: reasons.length > 0 ? "partial" : "complete",
       required: true,
       version: loaded.digestSha256,
-      reason: packTruncated ? limitReason : undefined,
+      reason: reasons.length > 0 ? reasons.join("; ") : undefined,
       durationMs: Date.now() - started,
     });
   }

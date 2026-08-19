@@ -55,6 +55,8 @@ try {
     "## Beta capability matrix",
     "--policy ../trusted/security-policy.yml",
     "--rule-pack ../trusted/rule-pack.yml",
+    "RulePack 1.1.0",
+    "emitWhen: absent",
     "--confirm-policy-suppressions",
     "target-owned `.aisec.yml` is ignored",
     "npm run calibrate:baas -- --confirm-download",

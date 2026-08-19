@@ -1,4 +1,4 @@
-schemaVersion: 1.0.0
+schemaVersion: 1.1.0
 packId: example.local
 description: Reviewed local rules for project-specific security invariants
 rules:
@@ -32,3 +32,37 @@ rules:
       excludes:
         - aisec-reviewed-near-miss
       caseSensitive: true
+  - ruleId: custom.example.local.security-middleware-required
+    title: Required HTTP security middleware is not visible
+    description: The selected application security file lacks the reviewed middleware literal on any single line.
+    severity: high
+    evidenceLevel: inferred
+    confidence: medium
+    cwe:
+      - CWE-693
+    tags:
+      - security-headers
+      - custom-policy
+    remediation: Enable the reviewed middleware in every selected application security file and add a regression test.
+    files:
+      extensions:
+        - .js
+        - .mjs
+        - .cjs
+        - .ts
+        - .tsx
+      pathPrefixes:
+        - src/
+      pathSuffixes:
+        - security.ts
+      excludePathPrefixes:
+        - src/fixtures/
+    match:
+      containsAny:
+        - "helmet("
+      containsAll:
+        - "app.use("
+      excludes:
+        - aisec-reviewed-near-miss
+      caseSensitive: false
+      emitWhen: absent

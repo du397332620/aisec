@@ -46,6 +46,7 @@ export function parseRulePack(text: string): RulePack {
         ...(rule.match.containsAll ? { containsAll: [...rule.match.containsAll] } : {}),
         ...(rule.match.excludes ? { excludes: [...rule.match.excludes] } : {}),
         caseSensitive: rule.match.caseSensitive ?? true,
+        ...(rule.match.emitWhen ? { emitWhen: rule.match.emitWhen } : {}),
       },
     })),
   };

@@ -40,7 +40,9 @@ only add bounded literal findings and required coverage. Do not add dynamic
 imports, JavaScript/Python/WASM execution, regex, commands, target-side pack
 discovery, suppressions or gate relaxation. Update the public RulePack,
 ScanReport and CI schemas plus path, resource, baseline and installed-package
-tests together.
+tests together. Required-literal absence rules must remain inferred and
+path-only: selecting no file or reaching a bound is partial coverage, never a
+fabricated vulnerability finding.
 
 Report-format changes must validate their public contract before serialization
 and include hostile target-controlled text tests. GitHub annotations must reject

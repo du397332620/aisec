@@ -98,6 +98,7 @@ export interface RulePackMatch {
   containsAll?: string[];
   excludes?: string[];
   caseSensitive?: boolean;
+  emitWhen?: "present" | "absent";
 }
 
 export interface RulePackRule {
@@ -115,7 +116,7 @@ export interface RulePackRule {
 }
 
 export interface RulePack {
-  schemaVersion: "1.0.0";
+  schemaVersion: "1.0.0" | "1.1.0";
   packId: string;
   description: string;
   rules: RulePackRule[];

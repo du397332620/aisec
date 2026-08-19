@@ -82,9 +82,12 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
 - A declarative rule pack is also never discovered from the target. Its real
   path must be outside the scan root, its strict schema has no regex, script,
   command, import or callback fields, and matching is bounded to line-local
-  literals over the existing inventory. Reports record its ID, rule count and
-  SHA-256 without recording its local path or literal definitions. Baselines
-  require the same pack set and digest.
+  literals over the existing inventory. Required-literal absence rules emit
+  only inferred, path-only evidence after a complete bounded scan of a selected
+  existing file. No selected file or an interrupted evaluation produces partial
+  required coverage rather than an absence finding. Reports record its ID, rule
+  count and SHA-256 without recording its local path or literal definitions.
+  Baselines require the same pack set and digest.
 - Trivy scans use an AIsec-owned offline cache. Missing, invalid or stale
   database metadata fails coverage; database download happens only through the
   explicit `engines prepare trivy` setup command.
@@ -119,7 +122,9 @@ At most 8 operator rule packs, 100 rules per pack and 256 total custom rules are
 accepted; each pack is at most 256 KiB. Literal/selector counts, aggregate
 rule-file selection work, inspected bytes, literal-byte work and evaluated lines
 are separately bounded. Reaching a custom-rule work or output limit makes its
-required coverage `partial`.
+required coverage `partial`. A RulePack absence result proves only that its
+reviewed line-local literal was not found in a selected inspected source file;
+it does not prove that a runtime security control is missing.
 
 Mobile archive inspection selects at most 25 supported members after validating
 up to 200,000 listed paths. It accepts at most 8 MiB from one member, 16 MiB of

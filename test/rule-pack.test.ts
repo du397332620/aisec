@@ -51,10 +51,56 @@ async function writePack(path: string, pack = rulePack()): Promise<void> {
   await writeFile(path, YAML.stringify(pack));
 }
 
+function absentRulePack(): RulePack {
+  return {
+    schemaVersion: "1.1.0",
+    packId: "team.security",
+    description: "Reviewed project-specific required security invariants",
+    rules: [{
+      ruleId: "custom.team.security.helmet-required",
+      title: "Required HTTP security middleware is not visible",
+      description: "The selected application security file lacks the reviewed middleware literal on any single line.",
+      severity: "high",
+      evidenceLevel: "inferred",
+      confidence: "medium",
+      cwe: ["CWE-693"],
+      tags: ["configuration", "project-specific", "security-headers"],
+      remediation: "Enable the reviewed middleware in every selected application security file and add a regression test.",
+      files: {
+        extensions: [".ts"],
+        pathPrefixes: ["src/"],
+        pathSuffixes: ["security.ts"],
+        excludePathPrefixes: ["src/fixtures/"],
+      },
+      match: {
+        containsAny: ["helmet("],
+        containsAll: ["app.use("],
+        excludes: ["aisec-reviewed-near-miss"],
+        caseSensitive: false,
+        emitWhen: "absent",
+      },
+    }],
+  };
+}
+
 test("RulePack schema and semantics reject executable, ambiguous and unsafe declarations", () => {
   const valid = rulePack();
   assert.equal(validateRulePack(valid), valid);
   assert.equal(parseRulePack(YAML.stringify(valid)).rules[0]?.match.caseSensitive, true);
+  assert.equal(parseRulePack(YAML.stringify(valid)).rules[0]?.match.emitWhen, undefined, "RulePack 1.0 remains unchanged");
+
+  const absent = absentRulePack();
+  assert.equal(validateRulePack(absent), absent);
+  assert.equal(parseRulePack(YAML.stringify(absent)).rules[0]?.match.emitWhen, "absent");
+  const legacyWithAbsent = structuredClone(absent);
+  legacyWithAbsent.schemaVersion = "1.0.0";
+  assert.throws(() => validateRulePack(legacyWithAbsent), /RulePack.*emitWhen/);
+  const confirmedAbsent = structuredClone(absent);
+  confirmedAbsent.rules[0]!.evidenceLevel = "static_confirmed";
+  assert.throws(() => validateRulePack(confirmedAbsent), /absent rule.*must use inferred evidence/);
+  const invalidEmit = structuredClone(absent) as unknown as { rules: Array<{ match: { emitWhen: string } }> };
+  invalidEmit.rules[0]!.match.emitWhen = "sometimes";
+  assert.throws(() => validateRulePack(invalidEmit), /RulePack.*emitWhen/);
 
   assert.throws(() => validateRulePack({ ...valid, script: "process.exit()" }), /RulePack.*additional properties.*script/);
   const regex = structuredClone(valid) as RulePack & { rules: Array<RulePack["rules"][number] & { match: RulePack["rules"][number]["match"] & { regex?: string } }> };
@@ -243,6 +289,62 @@ test("baseline rescans require the same declarative rule-pack ID and digest set"
   }
 });
 
+test("RulePack 1.1 reports missing required literals without fabricating evidence", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "aisec-rule-pack-absent-"));
+  try {
+    const target = join(parent, "target");
+    await mkdir(join(target, "src", "fixtures"), { recursive: true });
+    await writeFile(join(target, "src", "security.ts"), "const app = createApplication();\n");
+    await writeFile(join(target, "src", "secure-security.ts"), "APP.USE(HELMET());\n");
+    await writeFile(join(target, "src", "fixtures", "fixture-security.ts"), "const app = createApplication();\n");
+    const trusted = join(parent, "trusted-rules.yml");
+    await writePack(trusted, absentRulePack());
+
+    const missing = (await scanProject(target, {
+      profile: "native", nativeOnly: true, persist: false, rulePackPaths: [trusted],
+    })).report;
+    const signals = missing.signals.filter((signal) => signal.ruleId === "custom.team.security.helmet-required");
+    assert.equal(signals.length, 1);
+    assert.equal(signals[0]?.evidenceLevel, "inferred");
+    assert.equal(signals[0]?.metadata?.rulePackMatch, "absent");
+    assert.deepEqual(signals[0]?.locations, [{ path: "src/security.ts" }]);
+    assert.equal(missing.coverage.find((item) => item.domain === "rule-pack:team.security")?.status, "complete");
+    assert.equal(missing.decision, "review");
+    assert.equal(validateScanReport(missing), missing);
+    const forged = structuredClone(missing);
+    forged.signals.find((signal) => signal.ruleId === "custom.team.security.helmet-required")!.evidenceLevel = "static_confirmed";
+    assert.throws(() => validateScanReport(forged), /absent custom signal.*must use inferred evidence/);
+    const forgedLocation = structuredClone(missing);
+    forgedLocation.signals.find((signal) => signal.ruleId === "custom.team.security.helmet-required")!.locations[0]!.line = 1;
+    assert.throws(() => validateScanReport(forgedLocation), /absent custom signal.*path-only location/);
+    const forgedMode = structuredClone(missing);
+    forgedMode.signals.find((signal) => signal.ruleId === "custom.team.security.helmet-required")!.metadata!.rulePackMatch = "sometimes";
+    assert.throws(() => validateScanReport(forgedMode), /unsupported rule-pack match mode/);
+
+    await writeFile(join(target, "src", "security.ts"), "app.use(helmet());\n");
+    const satisfied = (await scanProject(target, {
+      profile: "native", nativeOnly: true, persist: false, rulePackPaths: [trusted],
+    })).report;
+    assert.equal(satisfied.signals.filter((signal) => signal.ruleId === "custom.team.security.helmet-required").length, 0);
+    assert.equal(satisfied.coverage.find((item) => item.domain === "rule-pack:team.security")?.status, "complete");
+    assert.equal(satisfied.decision, "no_blockers_found");
+
+    const driftedSelector = absentRulePack();
+    driftedSelector.rules[0]!.files.pathSuffixes = ["missing-security.ts"];
+    await writePack(trusted, driftedSelector);
+    const unselected = (await scanProject(target, {
+      profile: "native", nativeOnly: true, persist: false, rulePackPaths: [trusted],
+    })).report;
+    assert.equal(unselected.signals.filter((signal) => signal.ruleId === "custom.team.security.helmet-required").length, 0);
+    const coverage = unselected.coverage.find((item) => item.domain === "rule-pack:team.security");
+    assert.equal(coverage?.status, "partial");
+    assert.match(coverage?.reason ?? "", /absent rule.*selected no files/);
+    assert.equal(unselected.decision, "incomplete");
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
 test("custom finding floods are capped and make rule-pack coverage partial", async () => {
   const parent = await mkdtemp(join(tmpdir(), "aisec-rule-pack-limit-"));
   try {
@@ -298,8 +400,25 @@ test("custom literal and line evaluation work is bounded before it can amplify s
   assert.match(workResult.coverage[0]?.reason ?? "", /literal-byte shared work limit/);
 
   const lineContent = "x\n".repeat(MAX_RULE_PACK_LINE_EVALUATIONS + 1);
-  const lineResult = await runRulePacks(boundedContext(lineContent), [{ pack: rulePack(), digestSha256: "2".repeat(64) }]);
+  const linePack = absentRulePack();
+  delete linePack.rules[0]!.files.pathSuffixes;
+  const lineResult = await runRulePacks(boundedContext(lineContent), [{ pack: linePack, digestSha256: "2".repeat(64) }]);
   assert.equal(lineResult.signals.length, 0);
   assert.equal(lineResult.coverage[0]?.status, "partial");
   assert.match(lineResult.coverage[0]?.reason ?? "", /shared line evaluation limit/);
+
+  const floodContext = boundedContext("");
+  floodContext.inventory.files = Array.from({ length: 2001 }, (_, index) => ({
+    absolutePath: `/operator-test-target/src/input-${index}.ts`,
+    relativePath: `src/input-${index}.ts`,
+    size: 1,
+    content: "x",
+  }));
+  floodContext.inventory.totalBytes = 2001;
+  const floodPack = absentRulePack();
+  delete floodPack.rules[0]!.files.pathSuffixes;
+  const floodResult = await runRulePacks(floodContext, [{ pack: floodPack, digestSha256: "3".repeat(64) }]);
+  assert.equal(floodResult.signals.length, 2000);
+  assert.equal(floodResult.coverage[0]?.status, "partial");
+  assert.match(floodResult.coverage[0]?.reason ?? "", /2000.*signal safety limit/);
 });
