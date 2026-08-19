@@ -51,6 +51,10 @@ try {
   assert.equal(packed[0].version, packageMetadata.version);
   assert.match(packed[0].filename, /^[A-Za-z0-9._-]+\.tgz$/);
   const packedPaths = new Set(packed[0].files.map((file) => file.path));
+  assert.ok(packedPaths.has("RULES.md"), "generated public rule documentation must be packaged");
+  assert.ok(packedPaths.has("rules/catalog.json"), "machine-readable rule catalog must be packaged");
+  assert.ok(packedPaths.has("schemas/rule-catalog.schema.json"), "rule catalog schema must be packaged");
+  assert.ok(![...packedPaths].some((path) => path.startsWith("docs/") || path.startsWith(".scratch/")), "local progress documents must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/node-api-calibration.mjs"), "networked calibration runner must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/calibration/node-api-targets.json"), "real-project calibration manifest must stay out of the npm package");
   const tarball = join(tarballs, packed[0].filename);
@@ -70,8 +74,19 @@ try {
   await access(executable, process.platform === "win32" ? constants.R_OK : constants.X_OK);
   await access(join(packageRoot, "schemas", "bola-authorization-manifest.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "bola-draft.schema.json"), constants.R_OK);
+  await access(join(packageRoot, "schemas", "rule-catalog.schema.json"), constants.R_OK);
+  await access(join(packageRoot, "RULES.md"), constants.R_OK);
+  const ruleCatalog = JSON.parse(await readFile(join(packageRoot, "rules", "catalog.json"), "utf8"));
+  assert.equal(ruleCatalog.rules.length, 52);
   await access(join(packageRoot, "examples", "authorization.bola.local.yml"), constants.R_OK);
   const scanEnvironment = { AISEC_DATA_DIR: join(temporary, "data") };
+
+  const catalogApi = parseReport(run(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `import { loadRuleCatalog } from ${JSON.stringify(packageMetadata.name)}; process.stdout.write(JSON.stringify(loadRuleCatalog()));`,
+  ], { cwd: consumer, env: scanEnvironment }), "installed rule catalog API");
+  assert.equal(catalogApi.rules.length, 52);
 
   assert.equal(run(executable, ["--version"], { cwd: consumer, env: scanEnvironment }).trim(), packageMetadata.version);
 
@@ -115,6 +130,7 @@ try {
   assert.equal(benchmark.totals.falsePositive, 0);
   assert.equal(benchmark.totals.falseNegative, 0);
   assert.equal(benchmark.totals.evidenceMismatches, 0);
+  assert.equal(benchmark.totals.cweMismatches, 0);
 
   process.stdout.write(`Package smoke passed on ${process.platform}/${process.arch} with ${process.version}.\n`);
 } finally {

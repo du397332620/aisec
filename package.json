@@ -14,6 +14,7 @@
     "examples",
     "test/fixtures",
     "README.md",
+    "RULES.md",
     "SECURITY.md",
     "CONTRIBUTING.md",
     "LICENSE",
@@ -26,6 +27,8 @@
     "test:docs": "npm run build && node scripts/docs-smoke.mjs",
     "test:package": "npm run build && node scripts/package-smoke.mjs",
     "test:release": "npm run build && node scripts/release-smoke.mjs",
+    "rules:render": "npm run build && node scripts/rule-catalog.mjs --write",
+    "rules:check": "npm run build && node scripts/rule-catalog.mjs --check",
     "check": "tsc -p tsconfig.json --noEmit",
     "start": "node dist/src/cli.js",
     "benchmark": "npm run build && node dist/src/benchmark.js",
@@ -42,7 +45,8 @@
       "types": "./dist/src/index.d.ts",
       "import": "./dist/src/index.js"
     },
-    "./schemas/*": "./schemas/*"
+    "./schemas/*": "./schemas/*",
+    "./rules/catalog.json": "./rules/catalog.json"
   },
   "engines": {
     "node": "^22.0.0 || ^24.0.0"

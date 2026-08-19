@@ -1,0 +1,725 @@
+{
+  "schemaVersion": "1.0.0",
+  "description": "Public catalog of deterministic rules shipped with AIsec. Evidence levels describe the default static signal, while applicability and review fields document bounded coverage rather than exploitability or certification.",
+  "applicabilityProfiles": [
+    {
+      "id": "generic-source",
+      "languages": ["Selected text source and configuration files"],
+      "technologies": [{ "name": "Generic source files", "versionRange": "*", "basis": "syntax" }],
+      "versionStatement": "No package-version gate is applied; only the documented credential or source-code syntax is recognized."
+    },
+    {
+      "id": "javascript-typescript",
+      "languages": ["JavaScript", "JSX", "TypeScript", "TSX"],
+      "technologies": [{ "name": "JavaScript/TypeScript syntax", "versionRange": "*", "basis": "syntax" }],
+      "versionStatement": "No runtime or framework semver is inferred; the bounded TypeScript parser and recognized local syntax determine coverage."
+    },
+    {
+      "id": "nextjs-app-router",
+      "languages": ["JavaScript", "TypeScript"],
+      "technologies": [{ "name": "Next.js App Router", "versionRange": "*", "basis": "syntax" }],
+      "versionStatement": "Applies to recognized app/api/**/route source layout and exported HTTP handlers without checking the installed Next.js version."
+    },
+    {
+      "id": "github-actions",
+      "languages": ["GitHub Actions YAML"],
+      "technologies": [{ "name": "GitHub Actions workflow syntax", "versionRange": "*", "basis": "configuration" }],
+      "versionStatement": "GitHub Actions is not package-versioned; coverage is limited to recognized workflow run-step expression syntax."
+    },
+    {
+      "id": "fastapi",
+      "languages": ["Python"],
+      "technologies": [{ "name": "FastAPI", "versionRange": "*", "basis": "syntax" }],
+      "versionStatement": "No FastAPI dependency range is asserted; only statically resolved decorators, routers, dependencies and middleware patterns are covered."
+    },
+    {
+      "id": "express",
+      "languages": ["JavaScript", "TypeScript"],
+      "technologies": [{ "name": "Express", "versionRange": "*", "basis": "syntax" }],
+      "versionStatement": "No Express dependency range is asserted; only bounded static router, middleware, controller and local-call patterns are covered."
+    },
+    {
+      "id": "nestjs",
+      "languages": ["TypeScript", "JavaScript"],
+      "technologies": [{ "name": "NestJS", "versionRange": "*", "basis": "syntax" }],
+      "versionStatement": "No NestJS dependency range is asserted; only bounded official decorators, module graphs, bootstrap calls, RouterModule trees and local-call patterns are covered."
+    },
+    {
+      "id": "python-source",
+      "languages": ["Python"],
+      "technologies": [{ "name": "Python source syntax", "versionRange": "*", "basis": "syntax" }],
+      "versionStatement": "No Python runtime version is inferred; coverage depends on the bounded recognized source syntax and local call graph."
+    },
+    {
+      "id": "jwt-configuration",
+      "languages": ["YAML", "JSON", "TOML", "environment-style configuration"],
+      "technologies": [{ "name": "JWT application configuration", "versionRange": "*", "basis": "configuration" }],
+      "versionStatement": "No JWT library version is inferred; only recognized production-named configuration keys and literal values are evaluated."
+    },
+    {
+      "id": "docker-compose-fastapi",
+      "languages": ["Docker Compose YAML", "Python"],
+      "technologies": [
+        { "name": "Docker Compose", "versionRange": "*", "basis": "configuration" },
+        { "name": "FastAPI", "versionRange": "*", "basis": "syntax" }
+      ],
+      "versionStatement": "Coverage correlates recognized Compose port publication with statically visible FastAPI routes; neither dependency nor Compose schema semver is used as a gate."
+    },
+    {
+      "id": "supabase-postgres",
+      "languages": ["PostgreSQL SQL"],
+      "technologies": [{ "name": "Supabase/PostgreSQL RLS migrations", "versionRange": "*", "basis": "configuration" }],
+      "versionStatement": "No Supabase or PostgreSQL version is inferred; only scanned migration statements and recognized RLS policy syntax are evaluated."
+    },
+    {
+      "id": "firebase-rules",
+      "languages": ["Firebase Security Rules"],
+      "technologies": [{ "name": "Cloud Firestore/Storage Security Rules", "versionRange": "*", "basis": "configuration" }],
+      "versionStatement": "Rules-version declarations are not used as a gate; coverage is limited to recognized unconditional allow syntax in scanned rule files."
+    },
+    {
+      "id": "android-manifest",
+      "languages": ["AndroidManifest XML"],
+      "technologies": [{ "name": "Android manifest", "versionRange": "*", "basis": "configuration" }],
+      "versionStatement": "Android API level is not inferred; the rule reports recognized effective-looking manifest attributes and requires build-variant review."
+    },
+    {
+      "id": "ios-plist",
+      "languages": ["Apple property-list XML"],
+      "technologies": [{ "name": "iOS Info.plist", "versionRange": "*", "basis": "configuration" }],
+      "versionStatement": "iOS deployment target is not inferred; coverage is limited to recognized App Transport Security keys in scanned property lists."
+    },
+    {
+      "id": "mobile-webview-source",
+      "languages": ["Java", "Kotlin", "JavaScript", "TypeScript"],
+      "technologies": [{ "name": "Android/React Native WebView source", "versionRange": "*", "basis": "syntax" }],
+      "versionStatement": "Framework and platform versions are not inferred; only recognized JavaScript/bridge enablement syntax is reported."
+    },
+    {
+      "id": "mobile-source",
+      "languages": ["Java", "Kotlin", "JavaScript", "TypeScript", "Dart"],
+      "technologies": [{ "name": "Mobile application source", "versionRange": "*", "basis": "syntax" }],
+      "versionStatement": "Platform and framework versions are not inferred; only recognized production-looking cleartext URL literals are reported."
+    },
+    {
+      "id": "react-native",
+      "languages": ["JavaScript", "TypeScript"],
+      "technologies": [{ "name": "React Native AsyncStorage", "versionRange": "*", "basis": "syntax" }],
+      "versionStatement": "No React Native or AsyncStorage version is inferred; coverage is limited to recognized sensitive-key setItem calls."
+    },
+    {
+      "id": "flutter",
+      "languages": ["Dart"],
+      "technologies": [{ "name": "Flutter/Dart mobile source", "versionRange": "*", "basis": "syntax" }],
+      "versionStatement": "No Flutter or package version is inferred; coverage is limited to recognized SharedPreferences, WebView and TLS callback syntax."
+    },
+    {
+      "id": "mobile-artifact",
+      "languages": ["APK/IPA bounded printable resources"],
+      "technologies": [
+        { "name": "Android APK", "versionRange": "*", "basis": "artifact" },
+        { "name": "iOS IPA", "versionRange": "*", "basis": "artifact" }
+      ],
+      "versionStatement": "Platform versions are not inferred; only bounded selected resources and printable strings from validated archives are inspected."
+    },
+    {
+      "id": "opengrep-javascript",
+      "languages": ["JavaScript", "TypeScript"],
+      "technologies": [{ "name": "Bundled Opengrep rule syntax", "versionRange": "1.26.0", "basis": "engine" }],
+      "versionStatement": "The bundled rule is integration-tested with the single verified Opengrep version declared by AIsec."
+    },
+    {
+      "id": "opengrep-python",
+      "languages": ["Python"],
+      "technologies": [{ "name": "Bundled Opengrep rule syntax", "versionRange": "1.26.0", "basis": "engine" }],
+      "versionStatement": "The bundled rule is integration-tested with the single verified Opengrep version declared by AIsec."
+    },
+    {
+      "id": "opengrep-multilang",
+      "languages": ["JavaScript", "TypeScript", "Python", "Java", "Go"],
+      "technologies": [{ "name": "Bundled Opengrep rule syntax", "versionRange": "1.26.0", "basis": "engine" }],
+      "versionStatement": "The bundled rule is integration-tested with the single verified Opengrep version declared by AIsec."
+    }
+  ],
+  "rules": [
+    {
+      "ruleId": "secret.stripe-live",
+      "source": "native",
+      "category": "secrets",
+      "summary": "Stripe live secret key in source",
+      "cwe": ["CWE-798"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["generic-source"],
+      "falsePositiveModes": ["A credential-shaped value may be synthetic, revoked or isolated to a fixture."],
+      "reviewGuidance": "Confirm provenance without sending the key, revoke any real credential, and inspect source history and built client assets."
+    },
+    {
+      "ruleId": "secret.openai",
+      "source": "native",
+      "category": "secrets",
+      "summary": "OpenAI API key in source",
+      "cwe": ["CWE-798"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["generic-source"],
+      "falsePositiveModes": ["A credential-shaped value may be synthetic, revoked or isolated to a fixture."],
+      "reviewGuidance": "Confirm provenance without sending the key, revoke any real credential, and inspect source history and distributed bundles."
+    },
+    {
+      "ruleId": "secret.aws-access-key",
+      "source": "native",
+      "category": "secrets",
+      "summary": "AWS access key in source",
+      "cwe": ["CWE-798"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["generic-source"],
+      "falsePositiveModes": ["The identifier may be synthetic, revoked or a non-authentic documentation example."],
+      "reviewGuidance": "Verify through account inventory rather than authentication attempts, rotate if real, and check paired secrets and Git history."
+    },
+    {
+      "ruleId": "secret.github-token",
+      "source": "native",
+      "category": "secrets",
+      "summary": "GitHub token in source",
+      "cwe": ["CWE-798"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["generic-source"],
+      "falsePositiveModes": ["The token-shaped value may be synthetic, revoked or fixture-only."],
+      "reviewGuidance": "Use repository/account audit records to establish validity, revoke any real token, and inspect workflow and history exposure."
+    },
+    {
+      "ruleId": "secret.private-key",
+      "source": "native",
+      "category": "secrets",
+      "summary": "Private key material committed to the project",
+      "cwe": ["CWE-798"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["generic-source"],
+      "falsePositiveModes": ["The block may be an intentionally invalid fixture or documentation placeholder."],
+      "reviewGuidance": "Confirm whether usable private material is present, replace the key pair if real, and remove it from repository and release history."
+    },
+    {
+      "ruleId": "secret.client-public-privileged-variable",
+      "source": "native",
+      "category": "secrets",
+      "summary": "Privileged value exposed through a client-public environment variable",
+      "cwe": ["CWE-200", "CWE-798"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["javascript-typescript"],
+      "falsePositiveModes": ["A variable name may imply privilege while the actual value is intentionally public and least-privileged."],
+      "reviewGuidance": "Inspect the provider-side privileges and final client bundle; move any privileged capability behind an authenticated server operation."
+    },
+    {
+      "ruleId": "secret.client-public-privileged-reference",
+      "source": "native",
+      "category": "secrets",
+      "summary": "Client code references a public-prefixed privileged variable",
+      "cwe": ["CWE-200", "CWE-798"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["javascript-typescript"],
+      "falsePositiveModes": ["The referenced value may be intentionally public despite a privileged-looking variable name."],
+      "reviewGuidance": "Trace the build-time value and provider permissions, then inspect compiled assets to confirm the effective exposure."
+    },
+
+    {
+      "ruleId": "dataflow.sql-injection",
+      "source": "native",
+      "category": "dataflow",
+      "summary": "Request data reaches a database query without a visible parameter boundary",
+      "cwe": ["CWE-89"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["javascript-typescript"],
+      "falsePositiveModes": ["Validation or parameterization may occur in an unsupported wrapper outside the bounded local flow."],
+      "reviewGuidance": "Trace the complete source-to-sink path and confirm values use bound parameters while identifiers use strict allowlists."
+    },
+    {
+      "ruleId": "dataflow.command-injection",
+      "source": "native",
+      "category": "dataflow",
+      "summary": "Request data reaches code or command execution",
+      "cwe": ["CWE-78"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["javascript-typescript"],
+      "falsePositiveModes": ["The value may be reduced to a fixed allowlisted token by an unsupported helper before execution."],
+      "reviewGuidance": "Confirm whether any attacker-controlled bytes reach a shell, executable selection, eval or code constructor; prefer fixed argument vectors."
+    },
+    {
+      "ruleId": "dataflow.ssrf",
+      "source": "native",
+      "category": "dataflow",
+      "summary": "Request-controlled URL reaches a server-side network client",
+      "cwe": ["CWE-918"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["javascript-typescript"],
+      "falsePositiveModes": ["A supported public-host allowlist may be enforced in an external wrapper not visible to the local flow."],
+      "reviewGuidance": "Verify scheme, host, port, DNS/IP range and every redirect target are server-controlled and reject private or metadata addresses."
+    },
+    {
+      "ruleId": "ai.model-output-dangerous-sink",
+      "source": "native",
+      "category": "dataflow",
+      "summary": "Model output reaches a privileged execution sink",
+      "cwe": ["CWE-94"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["javascript-typescript"],
+      "falsePositiveModes": ["A typed allowlist or human confirmation boundary may exist in an unsupported helper between model output and the sink."],
+      "reviewGuidance": "Require a typed tool schema, fixed operations, bounded arguments, least privilege and confirmation for consequential actions."
+    },
+    {
+      "ruleId": "dataflow.dom-xss",
+      "source": "native",
+      "category": "dataflow",
+      "summary": "Untrusted data is assigned to an HTML execution sink",
+      "cwe": ["CWE-79"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["javascript-typescript"],
+      "falsePositiveModes": ["A sanitizer may be applied through an unsupported alias or wrapper before assignment."],
+      "reviewGuidance": "Confirm the value is rendered as text or passed through a maintained context-appropriate sanitizer with a strict allowlist."
+    },
+    {
+      "ruleId": "dataflow.react-xss",
+      "source": "native",
+      "category": "dataflow",
+      "summary": "Untrusted data reaches dangerouslySetInnerHTML",
+      "cwe": ["CWE-79"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["javascript-typescript"],
+      "falsePositiveModes": ["The raw HTML may be sanitized in an unsupported wrapper or come from an administrator-only trusted source."],
+      "reviewGuidance": "Avoid raw HTML where possible; otherwise verify provenance and strict sanitization immediately before the __html value is created."
+    },
+
+    {
+      "ruleId": "auth.sensitive-route-without-visible-guard",
+      "source": "native",
+      "category": "application",
+      "summary": "Sensitive Next.js API route has no visible authentication guard",
+      "cwe": ["CWE-306"],
+      "defaultEvidenceLevel": "inferred",
+      "applicability": ["nextjs-app-router"],
+      "falsePositiveModes": ["Middleware, a gateway or a framework extension outside the route file may enforce authentication."],
+      "reviewGuidance": "Verify the deployed route with an unauthenticated request and locate the server-enforced identity and authorization boundary."
+    },
+    {
+      "ruleId": "ci.github-expression-command-injection",
+      "source": "native",
+      "category": "application",
+      "summary": "Untrusted GitHub event data is interpolated into a shell step",
+      "cwe": ["CWE-78"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["github-actions"],
+      "falsePositiveModes": ["The event value may be structurally constrained or the matched step may be unreachable for untrusted events."],
+      "reviewGuidance": "Inspect event triggers, permissions and shell expansion; pass event text through an environment variable as quoted data instead of script text."
+    },
+    {
+      "ruleId": "privacy.sensitive-logging",
+      "source": "native",
+      "category": "application",
+      "summary": "Potential credential or session data written to logs",
+      "cwe": ["CWE-532"],
+      "defaultEvidenceLevel": "inferred",
+      "applicability": ["javascript-typescript"],
+      "falsePositiveModes": ["A sensitive-looking variable may already contain a fixed placeholder, hash or redacted representation."],
+      "reviewGuidance": "Inspect the runtime value and logger processors, then verify production logs cannot contain credentials, cookies or bearer tokens."
+    },
+
+    {
+      "ruleId": "fastapi.auth.whitelisted-sensitive-route",
+      "source": "native",
+      "category": "api-security",
+      "summary": "FastAPI sensitive route bypasses authentication through a global whitelist",
+      "cwe": ["CWE-306", "CWE-862"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["fastapi"],
+      "falsePositiveModes": ["The route may be intentionally public or protected by an upstream control not visible in the project."],
+      "reviewGuidance": "Confirm the whitelist match and deployed middleware order, then test the exact route without credentials and with a low-privilege identity."
+    },
+    {
+      "ruleId": "fastapi.auth.sensitive-route-without-guard",
+      "source": "native",
+      "category": "api-security",
+      "summary": "FastAPI sensitive route has no visible authentication guard",
+      "cwe": ["CWE-306", "CWE-862"],
+      "defaultEvidenceLevel": "inferred",
+      "applicability": ["fastapi"],
+      "falsePositiveModes": ["An upstream gateway, dynamic dependency or unsupported middleware may enforce authentication."],
+      "reviewGuidance": "Locate the deployed identity boundary and verify an unauthenticated request receives 401 or 403."
+    },
+    {
+      "ruleId": "fastapi.authorization.object-without-ownership-check",
+      "source": "native",
+      "category": "api-security",
+      "summary": "FastAPI object operation has no visible ownership or role check",
+      "cwe": ["CWE-639", "CWE-862"],
+      "defaultEvidenceLevel": "inferred",
+      "applicability": ["fastapi"],
+      "falsePositiveModes": ["Ownership may be enforced by an unsupported ORM scope, policy engine, dependency or database view."],
+      "reviewGuidance": "Trace the object query to a server-controlled subject, tenant or privileged role and verify with two low-privilege accounts."
+    },
+    {
+      "ruleId": "express.auth.sensitive-route-without-guard",
+      "source": "native",
+      "category": "api-security",
+      "summary": "Express sensitive route has no visible authentication guard",
+      "cwe": ["CWE-306", "CWE-862"],
+      "defaultEvidenceLevel": "inferred",
+      "applicability": ["express"],
+      "falsePositiveModes": ["An upstream gateway, package middleware, dynamic mount or unsupported wrapper may enforce authentication."],
+      "reviewGuidance": "Locate the effective deployed middleware chain and verify an unauthenticated request receives 401 or 403."
+    },
+    {
+      "ruleId": "express.authorization.object-without-ownership-check",
+      "source": "native",
+      "category": "api-security",
+      "summary": "Express object operation has no visible ownership or role check",
+      "cwe": ["CWE-639", "CWE-862"],
+      "defaultEvidenceLevel": "inferred",
+      "applicability": ["express"],
+      "falsePositiveModes": ["Ownership may be enforced in an unsupported ORM scope, policy engine, package base class or complex helper."],
+      "reviewGuidance": "Trace the object query to the authenticated subject or tenant and verify cross-account identifiers receive 403 or 404."
+    },
+    {
+      "ruleId": "express.authorization.privileged-operation-without-role-check",
+      "source": "native",
+      "category": "api-security",
+      "summary": "Express privileged operation has no visible role or permission check",
+      "cwe": ["CWE-862", "CWE-863"],
+      "defaultEvidenceLevel": "inferred",
+      "applicability": ["express"],
+      "falsePositiveModes": ["The route name may look privileged while the operation is harmless, or authorization may live in an unsupported policy layer."],
+      "reviewGuidance": "Identify the required permission and verify an authenticated low-privilege account is denied before business logic executes."
+    },
+    {
+      "ruleId": "nestjs.auth.sensitive-route-without-guard",
+      "source": "native",
+      "category": "api-security",
+      "summary": "NestJS sensitive route has no visible authentication guard",
+      "cwe": ["CWE-306", "CWE-862"],
+      "defaultEvidenceLevel": "inferred",
+      "applicability": ["nestjs"],
+      "falsePositiveModes": ["A gateway, mixin/package guard, dynamic module or unsupported bootstrap wrapper may enforce authentication."],
+      "reviewGuidance": "Locate the effective global/controller/route guard and verify the deployed route rejects unauthenticated callers."
+    },
+    {
+      "ruleId": "nestjs.authorization.object-without-ownership-check",
+      "source": "native",
+      "category": "api-security",
+      "summary": "NestJS object operation has no visible ownership or role check",
+      "cwe": ["CWE-639", "CWE-862"],
+      "defaultEvidenceLevel": "inferred",
+      "applicability": ["nestjs"],
+      "falsePositiveModes": ["Ownership may be enforced in an unsupported provider, ORM scope, policy engine, mixin or package base class."],
+      "reviewGuidance": "Trace the object query through providers to a subject/tenant constraint and verify cross-account access with two low-privilege accounts."
+    },
+    {
+      "ruleId": "nestjs.authorization.privileged-operation-without-role-check",
+      "source": "native",
+      "category": "api-security",
+      "summary": "NestJS privileged operation has no visible role or permission check",
+      "cwe": ["CWE-862", "CWE-863"],
+      "defaultEvidenceLevel": "inferred",
+      "applicability": ["nestjs"],
+      "falsePositiveModes": ["The composed path may look administrative while the operation is harmless, or an unsupported policy layer may authorize it."],
+      "reviewGuidance": "Identify the effective module/controller/route policy and verify a low-privilege identity is denied before the privileged action."
+    },
+    {
+      "ruleId": "python.dataflow.ssrf",
+      "source": "native",
+      "category": "api-security",
+      "summary": "Request-derived URL reaches a Python network client",
+      "cwe": ["CWE-918"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["python-source"],
+      "falsePositiveModes": ["A strict host/IP allowlist may exist in an unsupported helper outside the bounded local flow."],
+      "reviewGuidance": "Review scheme, host, port, DNS resolution and redirects, and ensure private, loopback, link-local and metadata addresses are rejected."
+    },
+    {
+      "ruleId": "python.dataflow.untrusted-file-path",
+      "source": "native",
+      "category": "api-security",
+      "summary": "Request-derived path reaches or feeds a server file operation",
+      "cwe": ["CWE-22", "CWE-73"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["python-source"],
+      "falsePositiveModes": ["Canonicalization under a fixed root may occur in an unsupported helper or storage abstraction."],
+      "reviewGuidance": "Require opaque server identifiers, canonicalize under a fixed root, reject absolute/traversal paths and verify the final path remains inside the root."
+    },
+    {
+      "ruleId": "python.dataflow.sql-injection",
+      "source": "native",
+      "category": "api-security",
+      "summary": "Request-derived data is interpolated into Python SQL",
+      "cwe": ["CWE-89"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["python-source"],
+      "falsePositiveModes": ["Parameterization or identifier allowlisting may occur in an unsupported query wrapper."],
+      "reviewGuidance": "Confirm values are bound parameters and any dynamic identifiers come from a strict server-side allowlist."
+    },
+    {
+      "ruleId": "python.dataflow.client-url-with-server-secret",
+      "source": "native",
+      "category": "api-security",
+      "summary": "Client-controlled model URL can receive a server-side API key",
+      "cwe": ["CWE-918", "CWE-200", "CWE-441"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["python-source"],
+      "falsePositiveModes": ["The destination may be normalized to a server allowlist or the credential may be destination-bound in an unsupported wrapper."],
+      "reviewGuidance": "Ensure callers cannot choose credential destinations; bind each server secret to a fixed allowlisted provider origin."
+    },
+    {
+      "ruleId": "fastapi.config.wildcard-cors-with-credentials",
+      "source": "native",
+      "category": "api-security",
+      "summary": "FastAPI allows credentialed CORS from a wildcard origin",
+      "cwe": ["CWE-942"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["fastapi"],
+      "falsePositiveModes": ["Middleware may normalize the combination into a non-wildcard response, or no browser credential flow may exist."],
+      "reviewGuidance": "Inspect actual preflight/response headers and declare exact trusted origins, methods and headers for browser credential flows."
+    },
+    {
+      "ruleId": "fastapi.config.raw-exception-response",
+      "source": "native",
+      "category": "api-security",
+      "summary": "FastAPI returns raw internal exception text to clients",
+      "cwe": ["CWE-209"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["fastapi"],
+      "falsePositiveModes": ["The caught exception type or string conversion may produce only a fixed client-safe message."],
+      "reviewGuidance": "Exercise representative failures and confirm clients receive a fixed message/correlation ID while details stay only in protected server logs."
+    },
+    {
+      "ruleId": "jwt.config.committed-signing-secret",
+      "source": "native",
+      "category": "api-security",
+      "summary": "JWT signing secret is committed in a production configuration",
+      "cwe": ["CWE-321", "CWE-798"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["jwt-configuration"],
+      "falsePositiveModes": ["A production-named file may be a synthetic fixture or the value may be an intentionally invalid placeholder."],
+      "reviewGuidance": "Confirm provenance without signing tokens, rotate any real key, remove it from history and load replacements from a secret manager."
+    },
+    {
+      "ruleId": "jwt.config.long-lived-access-token",
+      "source": "native",
+      "category": "api-security",
+      "summary": "JWT access token lifetime exceeds one day",
+      "cwe": ["CWE-613"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["jwt-configuration"],
+      "falsePositiveModes": ["The literal may describe a refresh/non-bearer token or compensating revocation may sharply limit effective lifetime."],
+      "reviewGuidance": "Confirm token type and deployed value; prefer short-lived access tokens with rotation, audience/issuer checks and revocation controls."
+    },
+    {
+      "ruleId": "docker.config.unguarded-service-published",
+      "source": "native",
+      "category": "api-security",
+      "summary": "Production Compose publishes an API service with unguarded FastAPI routes",
+      "cwe": ["CWE-306", "CWE-668"],
+      "defaultEvidenceLevel": "inferred",
+      "applicability": ["docker-compose-fastapi"],
+      "falsePositiveModes": ["A host firewall, authenticated reverse proxy or private deployment network may prevent direct reachability."],
+      "reviewGuidance": "Inspect the effective deployment and bind internal services to private networks/loopback while also enforcing service identity in the app."
+    },
+
+    {
+      "ruleId": "supabase.table-without-rls",
+      "source": "native",
+      "category": "baas",
+      "summary": "Supabase application table is created without enabling RLS",
+      "cwe": ["CWE-862"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["supabase-postgres"],
+      "falsePositiveModes": ["RLS may be enabled by an unscanned migration, provisioning step or generated schema outside the repository."],
+      "reviewGuidance": "Inspect the deployed database catalog and migration order, then require explicit least-privilege policies for every client-accessible operation."
+    },
+    {
+      "ruleId": "supabase.permissive-rls-policy",
+      "source": "native",
+      "category": "baas",
+      "summary": "Supabase RLS policy unconditionally allows access",
+      "cwe": ["CWE-863"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["supabase-postgres"],
+      "falsePositiveModes": ["The policy may target an intentionally public table, a narrow role or only one deliberately public operation."],
+      "reviewGuidance": "Review target roles and commands in the deployed policy and bind private rows to auth.uid(), tenant membership or another trusted claim."
+    },
+    {
+      "ruleId": "firebase.unconditional-access",
+      "source": "native",
+      "category": "baas",
+      "summary": "Firebase security rule grants unconditional access",
+      "cwe": ["CWE-862"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["firebase-rules"],
+      "falsePositiveModes": ["The matched path may intentionally contain public data or the scanned rule file may not be the deployed ruleset."],
+      "reviewGuidance": "Confirm the deployed rules and data sensitivity, then require request.auth plus ownership/tenant checks for non-public operations."
+    },
+
+    {
+      "ruleId": "android.cleartext-enabled",
+      "source": "native",
+      "category": "mobile-source",
+      "summary": "Android application permits cleartext network traffic",
+      "cwe": ["CWE-319"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["android-manifest"],
+      "falsePositiveModes": ["The manifest may belong only to a debug flavor or be overridden during the release manifest merge."],
+      "reviewGuidance": "Inspect the merged release manifest and Network Security Configuration, and restrict any development exception to non-release builds."
+    },
+    {
+      "ruleId": "android.backup-enabled",
+      "source": "native",
+      "category": "mobile-source",
+      "summary": "Android application data backup is enabled",
+      "cwe": ["CWE-200"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["android-manifest"],
+      "falsePositiveModes": ["Release data-extraction rules may exclude all sensitive data or the manifest may be debug-only."],
+      "reviewGuidance": "Inspect the merged release manifest and backup/data-extraction rules, then verify credentials and private records are excluded."
+    },
+    {
+      "ruleId": "ios.ats-disabled",
+      "source": "native",
+      "category": "mobile-source",
+      "summary": "iOS App Transport Security is globally disabled",
+      "cwe": ["CWE-319"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["ios-plist"],
+      "falsePositiveModes": ["The property list may be test-only, unused by the release target or replaced during build."],
+      "reviewGuidance": "Inspect the signed release app Info.plist and remove the global exception, retaining only justified narrow HTTPS-compatible exceptions."
+    },
+    {
+      "ruleId": "mobile.webview-javascript-bridge",
+      "source": "native",
+      "category": "mobile-source",
+      "summary": "Mobile WebView enables an elevated JavaScript capability",
+      "cwe": ["CWE-749"],
+      "defaultEvidenceLevel": "inferred",
+      "applicability": ["mobile-webview-source"],
+      "falsePositiveModes": ["The WebView may load only bundled trusted content, block navigation and expose no sensitive native methods."],
+      "reviewGuidance": "Review every load/navigation source, origin allowlist, bridge method and message schema; disable JavaScript/bridges when not required."
+    },
+    {
+      "ruleId": "mobile.insecure-http-endpoint",
+      "source": "native",
+      "category": "mobile-source",
+      "summary": "Mobile source references a cleartext HTTP endpoint",
+      "cwe": ["CWE-319"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["mobile-source"],
+      "falsePositiveModes": ["The URL may be unreachable test data, documentation, a non-release branch or a harmless local-network development endpoint."],
+      "reviewGuidance": "Trace the literal into the release build and runtime traffic; production endpoints must use HTTPS with normal certificate validation."
+    },
+    {
+      "ruleId": "react-native.sensitive-async-storage",
+      "source": "native",
+      "category": "mobile-source",
+      "summary": "Sensitive value stored in React Native AsyncStorage",
+      "cwe": ["CWE-922"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["react-native"],
+      "falsePositiveModes": ["The sensitive-looking key may store a non-secret marker, short-lived public identifier or already protected envelope."],
+      "reviewGuidance": "Inspect the runtime value and use Keychain/Keystore-backed storage for credentials, keeping tokens short-lived and revocable."
+    },
+    {
+      "ruleId": "flutter.sensitive-shared-preferences",
+      "source": "native",
+      "category": "mobile-source",
+      "summary": "Sensitive value stored in Flutter SharedPreferences",
+      "cwe": ["CWE-922"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["flutter"],
+      "falsePositiveModes": ["The sensitive-looking key may contain only a non-secret marker or already protected value."],
+      "reviewGuidance": "Inspect the stored value and use platform secure storage for credentials, with short lifetimes and server-side revocation."
+    },
+    {
+      "ruleId": "flutter.webview-unrestricted-javascript",
+      "source": "native",
+      "category": "mobile-source",
+      "summary": "Flutter WebView enables unrestricted JavaScript",
+      "cwe": ["CWE-749"],
+      "defaultEvidenceLevel": "inferred",
+      "applicability": ["flutter"],
+      "falsePositiveModes": ["The WebView may be restricted to bundled trusted content with external navigation and bridges disabled."],
+      "reviewGuidance": "Review all origins, navigation callbacks and channels; disable JavaScript when possible and strictly validate every bridge message."
+    },
+    {
+      "ruleId": "flutter.accept-all-certificates",
+      "source": "native",
+      "category": "mobile-source",
+      "summary": "Flutter networking accepts invalid TLS certificates",
+      "cwe": ["CWE-295"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["flutter"],
+      "falsePositiveModes": ["The callback may be confined to a compile-time debug branch that is absent from the release artifact."],
+      "reviewGuidance": "Inspect the release build path and remove unconditional acceptance; use a development-only trust store for local certificates."
+    },
+
+    {
+      "ruleId": "artifact.embedded-secret",
+      "source": "native",
+      "category": "mobile-artifact",
+      "summary": "Credential embedded in a distributed mobile artifact",
+      "cwe": ["CWE-798"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["mobile-artifact"],
+      "falsePositiveModes": ["A recoverable credential-shaped string may be synthetic, revoked or unused decoy data."],
+      "reviewGuidance": "Establish provenance without authenticating, revoke any real credential and move privileged operations behind a server boundary."
+    },
+    {
+      "ruleId": "artifact.cleartext-endpoint",
+      "source": "native",
+      "category": "mobile-artifact",
+      "summary": "Cleartext endpoint embedded in a mobile artifact",
+      "cwe": ["CWE-319"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["mobile-artifact"],
+      "falsePositiveModes": ["The string may be unused, test-only, documentation or dead code retained in the artifact."],
+      "reviewGuidance": "Confirm runtime reachability and release traffic, then replace production cleartext endpoints and remove fallback strings before rebuilding."
+    },
+    {
+      "ruleId": "artifact.ios-ats-disabled",
+      "source": "native",
+      "category": "mobile-artifact",
+      "summary": "Packaged iOS app disables App Transport Security",
+      "cwe": ["CWE-319"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["mobile-artifact"],
+      "falsePositiveModes": ["A matching property-list fragment may be an unused bundled resource rather than the effective application Info.plist."],
+      "reviewGuidance": "Inspect the signed app's effective Info.plist and remove global ATS disablement, retaining only narrow documented exceptions."
+    },
+
+    {
+      "ruleId": "aisec.javascript.dynamic-code-execution",
+      "source": "bundled_opengrep",
+      "category": "sast-general",
+      "summary": "JavaScript or TypeScript uses eval or the Function constructor",
+      "cwe": ["CWE-95"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["opengrep-javascript"],
+      "falsePositiveModes": ["The executed text may be a fixed trusted constant, generated code or an intentionally isolated sandbox input."],
+      "reviewGuidance": "Determine input provenance and execution privileges; remove dynamic evaluation or replace it with a fixed parser/operation allowlist."
+    },
+    {
+      "ruleId": "aisec.python.unsafe-pickle-load",
+      "source": "bundled_opengrep",
+      "category": "sast-general",
+      "summary": "Python deserializes data with pickle.load or pickle.loads",
+      "cwe": ["CWE-502"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["opengrep-python"],
+      "falsePositiveModes": ["The serialized bytes may come only from a trusted local build artifact with an authenticated integrity boundary."],
+      "reviewGuidance": "Trace byte provenance and integrity; prefer a non-executable format and never unpickle data controlled by users or remote systems."
+    },
+    {
+      "ruleId": "aisec.generic.weak-hash",
+      "source": "bundled_opengrep",
+      "category": "sast-general",
+      "summary": "MD5 or SHA-1 is used through a recognized hash API",
+      "cwe": ["CWE-328"],
+      "defaultEvidenceLevel": "static_confirmed",
+      "applicability": ["opengrep-multilang"],
+      "falsePositiveModes": ["The hash may be used only as a non-security checksum, cache key or compatibility identifier."],
+      "reviewGuidance": "Identify the security property: use a modern password KDF for passwords and SHA-256 or stronger for signatures/integrity."
+    }
+  ]
+}

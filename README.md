@@ -8,6 +8,13 @@ produces constrained repair contracts for an existing coding agent.
 It does **not** try to guess whether code was written by a human or an AI. It
 does **not** certify an application as secure.
 
+The complete shipped-rule inventory is available as generated human-readable
+documentation in [RULES.md](RULES.md) and as the versioned machine-readable
+[rule catalog](rules/catalog.json), validated by
+[its public schema](schemas/rule-catalog.schema.json). Each entry declares CWE,
+default evidence, bounded applicability/version policy, known false-positive
+modes and review guidance.
+
 ## Current beta scope
 
 Depth is intentionally concentrated in:
@@ -404,6 +411,7 @@ binaries and prepare the Trivy database before scanning.
 
 | Capability | Mode / engine | Beta behavior and boundary |
 | --- | --- | --- |
+| Public rule catalog | JSON + generated Markdown | 52 shipped deterministic rules: 49 native and 3 bundled Opengrep; strict schema and drift checks tie detector IDs, corpus coverage, CWE/evidence metadata, Opengrep YAML/verified version and `RULES.md` to one catalog; `*` means syntax/config/artifact based without a dependency-semver gate, not complete framework support |
 | Project inventory and stack map | Native | Local read only; supported text candidates and manifests, no dependency installation or project execution |
 | Secrets in selected source files | Native | Deterministic patterns; working tree only, not Git history |
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
@@ -583,8 +591,8 @@ as resolved, with no new high/critical finding.
 ## Versioned data contracts
 
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, fix
-contracts, passive-web authorization, BOLA draft plans and BOLA authorization
-manifests in
+contracts, the rule catalog, passive-web authorization, BOLA draft plans and
+BOLA authorization manifests in
 [`schemas/`](schemas/). Version
 `1.0.0` is validated at runtime when a report is generated, serialized, saved
 or loaded, when a fix contract is generated, and before authorization semantics
@@ -592,10 +600,13 @@ are evaluated. Unknown fields, unsupported schema versions and malformed nested
 values fail closed instead of flowing into CLI or MCP output.
 
 The package also exports `validateScanReport`, `validateFixContract`,
+`validateRuleCatalog`, `loadRuleCatalog`, `renderRuleCatalog`,
 `validateAuthorizationManifestSchema`, `validateBolaDraftPlan` and
 `validateBolaAuthorizationManifestSchema` for integrations that consume these
-objects directly. Fields declared optional may be omitted by `1.0.0` producers;
-new fields or other contract changes require a new schema version.
+objects directly. The JSON catalog is also exported at
+`@aisec/cli/rules/catalog.json`. Fields declared optional may be omitted by
+`1.0.0` producers; new fields or other contract changes require a new schema
+version.
 
 ## Scanner safety model
 
@@ -638,6 +649,7 @@ npm run benchmark:resources
 npm run test:docs
 npm run test:package
 npm run test:release
+npm run rules:check
 
 # Requires the exact engine versions above and a prepared Trivy database
 npm run test:engines
@@ -646,15 +658,17 @@ npm run test:engines
 The public synthetic corpus contains 32 isolated cases: 16 positive/near-miss
 pairs covering all 49 deterministic native Beta rules across secrets, data
 flow, application configuration, FastAPI authentication and object
-authorization, Express/NestJS authentication and object authorization, Python API data flow/configuration, BaaS, mobile source and
-mobile artifacts. The
-benchmark reports each category separately and verifies the expected evidence
-level as well as false positives and false negatives. Its perfect fixture score
-is **not** a real-world efficacy claim; the corpus is deliberately small and
-synthetic. A catalog-drift test fails when a native rule is added without both
-fixture variants. The separate real-engine suite verifies Gitleaks, Opengrep and
-Trivy against their own positive/near-miss fixtures and hostile target
-configuration.
+authorization, Express/NestJS authentication and object authorization, Python
+API data flow/configuration, BaaS, mobile source and mobile artifacts. Together
+with the 3 bundled Opengrep rules, these form the 52 entries in the public rule
+catalog. The benchmark reports each category separately and verifies expected
+evidence and CWE metadata as well as false positives and false negatives. Its
+perfect fixture score is **not** a real-world efficacy claim; the corpus is
+deliberately small and synthetic. Drift tests fail when a native rule lacks both
+fixture variants, detector metadata differs from the catalog, bundled Opengrep
+YAML/version metadata changes independently, or `RULES.md` is stale. The
+separate real-engine suite verifies Gitleaks, Opengrep and Trivy against their
+own positive/near-miss fixtures and hostile target configuration.
 
 The resource benchmark creates synthetic 500-file, 5,000-file and deliberately
 truncated projects at runtime. It records elapsed time and peak RSS in isolated

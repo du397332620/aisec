@@ -2,16 +2,11 @@ import { cp, mkdir, mkdtemp, readFile, readdir, realpath, rm, writeFile } from "
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import type { EvidenceLevel } from "./schema.js";
+import type { RuleCatalogEntry } from "./schema.js";
 import { scanProject } from "./core/scan.js";
+import { validateRuleCatalog } from "./core/schema-validation.js";
 
 type CorpusVariant = "positive" | "near_miss";
-
-interface RuleCatalogEntry {
-  ruleId: string;
-  category: string;
-  evidenceLevel: EvidenceLevel;
-}
 
 interface ArtifactFixture {
   filename: string;
@@ -31,9 +26,8 @@ interface CorpusCase {
 }
 
 interface Manifest {
-  schemaVersion: 2;
+  schemaVersion: 3;
   description: string;
-  ruleCatalog: RuleCatalogEntry[];
   cases: CorpusCase[];
 }
 
@@ -42,6 +36,7 @@ interface Score {
   falsePositive: number;
   falseNegative: number;
   evidenceMismatches: number;
+  cweMismatches: number;
   precision: number;
   recall: number;
   f1: number;
@@ -52,6 +47,7 @@ interface MutableScore {
   falsePositive: number;
   falseNegative: number;
   evidenceMismatches: number;
+  cweMismatches: number;
 }
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -157,18 +153,13 @@ async function writeStoredZip(path: string, entries: Record<string, string>): Pr
   await writeFile(path, Buffer.concat([...locals, centralDirectory, end]));
 }
 
-function validateManifest(value: unknown): Manifest {
+function validateManifest(value: unknown, nativeRules: RuleCatalogEntry[]): Manifest {
   if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Benchmark manifest must be an object");
   const manifest = value as Partial<Manifest>;
-  if (manifest.schemaVersion !== 2 || typeof manifest.description !== "string" || !manifest.description.trim()) throw new Error("Benchmark manifest must use schemaVersion 2 and include a description");
-  if (!Array.isArray(manifest.ruleCatalog) || manifest.ruleCatalog.length === 0 || !Array.isArray(manifest.cases) || manifest.cases.length === 0) throw new Error("Benchmark manifest requires ruleCatalog and cases");
-  const catalog = new Map<string, RuleCatalogEntry>();
-  for (const item of manifest.ruleCatalog) {
-    if (!item || typeof item.ruleId !== "string" || !item.ruleId || typeof item.category !== "string" || !item.category
-      || !["verified", "static_confirmed", "inferred"].includes(item.evidenceLevel)) throw new Error("Benchmark rule catalog contains an invalid entry");
-    if (catalog.has(item.ruleId)) throw new Error(`Duplicate benchmark rule: ${item.ruleId}`);
-    catalog.set(item.ruleId, item);
-  }
+  if (manifest.schemaVersion !== 3 || typeof manifest.description !== "string" || !manifest.description.trim()) throw new Error("Benchmark manifest must use schemaVersion 3 and include a description");
+  if (!Array.isArray(manifest.cases) || manifest.cases.length === 0) throw new Error("Benchmark manifest requires cases");
+  if (nativeRules.length === 0) throw new Error("Public rule catalog contains no native rules");
+  const catalog = new Map(nativeRules.map((rule) => [rule.ruleId, rule]));
   const caseIds = new Set<string>();
   const positive = new Set<string>();
   const nearMiss = new Set<string>();
@@ -226,11 +217,13 @@ function finishScore(value: MutableScore): Score {
 }
 
 export async function runBenchmark(root = repositoryRoot) {
-  const manifest = validateManifest(JSON.parse(await readFile(join(root, "benchmark", "manifest.json"), "utf8")) as unknown);
-  const catalog = new Map(manifest.ruleCatalog.map((item) => [item.ruleId, item]));
-  const totals: MutableScore = { truePositive: 0, falsePositive: 0, falseNegative: 0, evidenceMismatches: 0 };
+  const publicCatalog = validateRuleCatalog(JSON.parse(await readFile(join(root, "rules", "catalog.json"), "utf8")) as unknown);
+  const nativeRules = publicCatalog.rules.filter((rule) => rule.source === "native");
+  const manifest = validateManifest(JSON.parse(await readFile(join(root, "benchmark", "manifest.json"), "utf8")) as unknown, nativeRules);
+  const catalog = new Map(nativeRules.map((item) => [item.ruleId, item]));
+  const totals: MutableScore = { truePositive: 0, falsePositive: 0, falseNegative: 0, evidenceMismatches: 0, cweMismatches: 0 };
   const categoryScores = new Map<string, MutableScore>();
-  for (const category of new Set(manifest.ruleCatalog.map((item) => item.category))) categoryScores.set(category, { truePositive: 0, falsePositive: 0, falseNegative: 0, evidenceMismatches: 0 });
+  for (const category of new Set(nativeRules.map((item) => item.category))) categoryScores.set(category, { truePositive: 0, falsePositive: 0, falseNegative: 0, evidenceMismatches: 0, cweMismatches: 0 });
   const cases = [];
   for (const item of manifest.cases) {
     const prepared = await prepareCase(root, item);
@@ -245,18 +238,27 @@ export async function runBenchmark(root = repositoryRoot) {
       const falsePositive = [...actual].filter((ruleId) => !expected.has(ruleId));
       const falseNegative = [...expected].filter((ruleId) => !actual.has(ruleId));
       const evidenceMismatches = [...expected].flatMap((ruleId) => {
-        const expectedLevel = catalog.get(ruleId)!.evidenceLevel;
+        const expectedLevel = catalog.get(ruleId)!.defaultEvidenceLevel;
         const actualLevels = [...new Set(actualSignals.filter((signal) => signal.ruleId === ruleId).map((signal) => signal.evidenceLevel))];
         return actualLevels.some((level) => level !== expectedLevel) ? [{ ruleId, expected: expectedLevel, actual: actualLevels }] : [];
+      });
+      const cweMismatches = [...expected].flatMap((ruleId) => {
+        const expectedCwe = [...catalog.get(ruleId)!.cwe].sort();
+        const actualCwe = actualSignals.filter((signal) => signal.ruleId === ruleId).map((signal) => [...(signal.cwe ?? [])].sort());
+        return actualCwe.some((value) => JSON.stringify(value) !== JSON.stringify(expectedCwe))
+          ? [{ ruleId, expected: expectedCwe, actual: actualCwe }]
+          : [];
       });
       totals.truePositive += truePositive.length;
       totals.falsePositive += falsePositive.length;
       totals.falseNegative += falseNegative.length;
       totals.evidenceMismatches += evidenceMismatches.length;
+      totals.cweMismatches += cweMismatches.length;
       for (const ruleId of truePositive) categoryScores.get(catalog.get(ruleId)!.category)!.truePositive += 1;
       for (const ruleId of falsePositive) categoryScores.get(catalog.get(ruleId)?.category ?? item.category)!.falsePositive += 1;
       for (const ruleId of falseNegative) categoryScores.get(catalog.get(ruleId)!.category)!.falseNegative += 1;
       for (const mismatch of evidenceMismatches) categoryScores.get(catalog.get(mismatch.ruleId)!.category)!.evidenceMismatches += 1;
+      for (const mismatch of cweMismatches) categoryScores.get(catalog.get(mismatch.ruleId)!.category)!.cweMismatches += 1;
       cases.push({
         id: item.id,
         category: item.category,
@@ -268,19 +270,20 @@ export async function runBenchmark(root = repositoryRoot) {
         falsePositive,
         falseNegative,
         evidenceMismatches,
+        cweMismatches,
       });
     } finally {
       await prepared.cleanup();
     }
   }
   return {
-    schemaVersion: 2 as const,
+    schemaVersion: 3 as const,
     generatedAt: new Date().toISOString(),
     disclaimer: manifest.description,
     catalog: {
-      totalRules: manifest.ruleCatalog.length,
-      rulesWithPositive: manifest.ruleCatalog.length,
-      rulesWithNearMiss: manifest.ruleCatalog.length,
+      totalRules: nativeRules.length,
+      rulesWithPositive: nativeRules.length,
+      rulesWithNearMiss: nativeRules.length,
     },
     totals: finishScore(totals),
     categories: Object.fromEntries([...categoryScores].map(([category, score]) => [category, finishScore(score)])),
@@ -289,7 +292,8 @@ export async function runBenchmark(root = repositoryRoot) {
 }
 
 export function benchmarkSucceeded(result: Awaited<ReturnType<typeof runBenchmark>>): boolean {
-  return result.totals.falsePositive === 0 && result.totals.falseNegative === 0 && result.totals.evidenceMismatches === 0;
+  return result.totals.falsePositive === 0 && result.totals.falseNegative === 0
+    && result.totals.evidenceMismatches === 0 && result.totals.cweMismatches === 0;
 }
 
 async function isDirectExecution(): Promise<boolean> {

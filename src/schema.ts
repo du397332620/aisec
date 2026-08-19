@@ -5,6 +5,41 @@ export type EvidenceLevel = "verified" | "static_confirmed" | "inferred";
 export type CoverageStatus = "complete" | "partial" | "not_run" | "failed";
 export type Decision = "block" | "incomplete" | "review" | "no_blockers_found";
 
+export type RuleCatalogSource = "native" | "bundled_opengrep";
+export type RuleApplicabilityBasis = "syntax" | "configuration" | "artifact" | "engine";
+
+export interface RuleApplicabilityTechnology {
+  name: string;
+  versionRange: string;
+  basis: RuleApplicabilityBasis;
+}
+
+export interface RuleApplicabilityProfile {
+  id: string;
+  languages: string[];
+  technologies: RuleApplicabilityTechnology[];
+  versionStatement: string;
+}
+
+export interface RuleCatalogEntry {
+  ruleId: string;
+  source: RuleCatalogSource;
+  category: "secrets" | "dataflow" | "application" | "api-security" | "baas" | "mobile-source" | "mobile-artifact" | "sast-general";
+  summary: string;
+  cwe: string[];
+  defaultEvidenceLevel: EvidenceLevel;
+  applicability: string[];
+  falsePositiveModes: string[];
+  reviewGuidance: string;
+}
+
+export interface RuleCatalog {
+  schemaVersion: "1.0.0";
+  description: string;
+  applicabilityProfiles: RuleApplicabilityProfile[];
+  rules: RuleCatalogEntry[];
+}
+
 export interface SourceLocation {
   path: string;
   line?: number;

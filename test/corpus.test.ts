@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import { benchmarkSucceeded, runBenchmark } from "../src/benchmark.js";
+import { loadRuleCatalog } from "../src/rules/catalog.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const repositoryRoot = join(here, "..", "..");
@@ -15,9 +16,10 @@ test("the public corpus gives every native Beta rule a positive and near-miss wi
   assert.equal(result.totals.falsePositive, 0);
   assert.equal(result.totals.falseNegative, 0);
   assert.equal(result.totals.evidenceMismatches, 0);
+  assert.equal(result.totals.cweMismatches, 0);
   assert.equal(benchmarkSucceeded(result), true);
   assert.ok(Object.values(result.categories).every((category) => category.falsePositive === 0
-    && category.falseNegative === 0 && category.evidenceMismatches === 0));
+    && category.falseNegative === 0 && category.evidenceMismatches === 0 && category.cweMismatches === 0));
   assert.equal(result.cases.filter((item) => item.variant === "positive").length, 16);
   assert.equal(result.cases.filter((item) => item.variant === "near_miss").length, 16);
 });
@@ -32,7 +34,7 @@ test("the corpus catalog cannot drift from rule ids declared by native detectors
     const source = await readFile(join(repositoryRoot, "src", "detectors", filename), "utf8");
     for (const match of source.matchAll(/(?:ruleId|id):\s*"([a-z0-9-]+\.[a-z0-9.-]+)"/g)) if (match[1]) declared.add(match[1]);
   }
-  const manifest = JSON.parse(await readFile(join(repositoryRoot, "benchmark", "manifest.json"), "utf8")) as { ruleCatalog: Array<{ ruleId: string }> };
-  const catalog = new Set(manifest.ruleCatalog.map((item) => item.ruleId));
+  const catalog = new Set(loadRuleCatalog(join(repositoryRoot, "rules", "catalog.json")).rules
+    .filter((item) => item.source === "native").map((item) => item.ruleId));
   assert.deepEqual([...catalog].sort(), [...declared].sort());
 });
