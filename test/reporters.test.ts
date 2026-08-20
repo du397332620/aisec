@@ -10,6 +10,7 @@ import { scanProject } from "../src/core/scan.js";
 import { validateCiReport } from "../src/core/schema-validation.js";
 import { buildCiReport, renderGithubAnnotations, renderMarkdownSummary } from "../src/reporters/ci.js";
 import { renderHtml } from "../src/reporters/html.js";
+import { buildRouteSecurityReview } from "../src/reporters/route-security-cards.js";
 import { renderSarif } from "../src/reporters/sarif.js";
 import { renderTerminalReport } from "../src/reporters/terminal.js";
 
@@ -144,6 +145,32 @@ test("terminal and HTML group repeated FastAPI exception findings without changi
   assert.ok(projectFinding);
   const projectSignal = report.signals.find((signal) => projectFinding.signalIds.includes(signal.id));
   assert.ok(projectSignal);
+  const initialRouteReview = buildRouteSecurityReview(report);
+  const projectPostCard = initialRouteReview.cards.find((card) => card.route === "POST /projects/{project_id}");
+  const projectPutCard = initialRouteReview.cards.find((card) => card.route === "PUT /projects/{project_id}");
+  assert.ok(projectPostCard);
+  assert.ok(projectPutCard);
+  assert.deepEqual(projectPostCard.categories, ["authentication", "exception_disclosure"]);
+  assert.deepEqual(projectPutCard.categories, ["authentication", "exception_disclosure"]);
+  assert.equal(projectPostCard.signalCount, 2);
+  assert.equal(projectPostCard.findingCount, 2);
+  assert.deepEqual(initialRouteReview.deploymentContexts.map((context) => context.service), ["algorithm", "api"]);
+  const deploymentSignalIds = new Set(initialRouteReview.deploymentContexts.map((context) => context.signal.id));
+  assert.ok(initialRouteReview.cards.every((card) => card.evidence.every((evidence) => !deploymentSignalIds.has(evidence.signal.id))),
+    "project deployment context must not become route-attributed evidence");
+  const boundedReport = structuredClone(report);
+  const boundedSignal = structuredClone(projectSignal);
+  boundedSignal.metadata = {
+    ...boundedSignal.metadata,
+    route: "GET /bounded/primary",
+    routes: Array.from({ length: 130 }, (_, index) => `GET /bounded/${index}`),
+  };
+  boundedReport.signals = [boundedSignal];
+  const boundedFinding = structuredClone(projectFinding);
+  boundedFinding.signalIds = [boundedSignal.id];
+  const boundedReview = buildRouteSecurityReview(boundedReport, [boundedFinding]);
+  assert.equal(boundedReview.cards.length, 128);
+  assert.equal(boundedReview.omittedRouteAliases, 3);
   const sameFingerprintOccurrence = structuredClone(projectSignal);
   sameFingerprintOccurrence.id = "sig_fffffffffffffffe";
   sameFingerprintOccurrence.locations[0]!.line = (sameFingerprintOccurrence.locations[0]!.line ?? 1) + 1;
@@ -156,7 +183,15 @@ test("terminal and HTML group repeated FastAPI exception findings without changi
   report.signals.push(sameFingerprintOccurrence);
   projectFinding.signalIds.push(sameFingerprintOccurrence.id);
 
+  const routeReview = buildRouteSecurityReview(report);
+  assert.ok(!routeReview.cards.some((card) => card.route.includes("owned")), "multiline route metadata must be ignored");
+  const reportBeforeRendering = structuredClone(report);
   const terminal = renderTerminalReport(report);
+  assert.match(terminal, /Route security review/u);
+  assert.match(terminal, /Evidence-only summary/u);
+  assert.match(terminal, /Project deployment context \(not attributed to a specific route\)/u);
+  assert.match(terminal, /FastAPI · POST \/projects\/\{project_id\}/u);
+  assert.match(terminal, /authentication gap, exception disclosure · 2 signals · 2 findings/u);
   assert.match(terminal, /Grouped findings/u);
   assert.match(terminal, /main\.py · 3 occurrences · 2 findings · 3 handlers · 4 routes/u);
   assert.match(terminal, /interpolation → HTTPException\.detail/u);
@@ -166,6 +201,12 @@ test("terminal and HTML group repeated FastAPI exception findings without changi
   for (const finding of findings) assert.match(terminal, new RegExp(finding.id, "u"));
 
   const html = renderHtml(report);
+  assert.match(html, /<h2>Route security review<\/h2>/u);
+  assert.match(html, /An absent category is not evidence that the control passed/u);
+  assert.match(html, /<h3>Project deployment context<\/h3>/u);
+  assert.match(html, /<strong>FastAPI<\/strong> · <code>POST \/projects\/\{project_id\}<\/code>/u);
+  assert.match(html, /authentication gap/u);
+  assert.match(html, /exception disclosure/u);
   assert.match(html, /<h2>Grouped findings<\/h2>/u);
   assert.match(html, /<details class="finding-group finding-open">/u);
   assert.match(html, /3 occurrences \/ 2 findings/u);
@@ -175,6 +216,47 @@ test("terminal and HTML group repeated FastAPI exception findings without changi
   assert.doesNotMatch(html, /<script>/u);
   assert.match(html, /&lt;script&gt; ::error::owned&lt;\/script&gt;/u);
   for (const finding of findings) assert.match(html, new RegExp(finding.id, "u"));
+  assert.deepEqual(report, reportBeforeRendering, "presentation-only route cards must not mutate canonical evidence");
+});
+
+test("route security cards separate frameworks and reject multiline route metadata", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "node-api", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const expressSignal = report.signals.find((signal) => signal.ruleId === "express.auth.sensitive-route-without-guard");
+  const nestSignal = report.signals.find((signal) => signal.ruleId === "nestjs.auth.sensitive-route-without-guard");
+  assert.ok(expressSignal);
+  assert.ok(nestSignal);
+  const originalReview = buildRouteSecurityReview(report);
+  assert.ok(originalReview.cards.some((card) => card.framework === "Express"
+    && card.categories.includes("object_authorization")));
+  assert.ok(originalReview.cards.some((card) => card.framework === "Express"
+    && card.categories.includes("privileged_authorization")));
+  assert.ok(originalReview.cards.some((card) => card.framework === "NestJS"
+    && card.categories.includes("object_authorization")));
+  assert.ok(originalReview.cards.some((card) => card.framework === "NestJS"
+    && card.categories.includes("privileged_authorization")));
+  const sharedRoute = "POST /admin/shared";
+  expressSignal.metadata = { ...expressSignal.metadata, route: sharedRoute, framework: "NestJS" };
+  nestSignal.metadata = { ...nestSignal.metadata, route: sharedRoute, framework: "Express" };
+
+  const review = buildRouteSecurityReview(report);
+  const sharedCards = review.cards.filter((card) => card.route === sharedRoute);
+  assert.deepEqual(sharedCards.map((card) => card.framework).sort(), ["Express", "NestJS"],
+    "trusted rule identity, not route text or target metadata, defines the framework boundary");
+
+  expressSignal.metadata.route = "POST /admin/shared\n::error::owned";
+  const strictReview = buildRouteSecurityReview(report);
+  assert.ok(!strictReview.cards.some((card) => card.route.includes("owned")));
+
+  expressSignal.metadata.route = "POST /admin/<script>alert(1)</script>";
+  const html = renderHtml(report);
+  assert.doesNotMatch(html, /<script>alert\(1\)<\/script>/u);
+  assert.match(html, /POST \/admin\/&lt;script&gt;alert\(1\)&lt;\/script&gt;/u);
+  const terminal = renderTerminalReport(report);
+  assert.doesNotMatch(terminal, /\n::error::owned/u);
 });
 
 test("scan and rescan retain decision exits with CI output formats", async () => {

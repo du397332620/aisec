@@ -1,10 +1,14 @@
 import type { FixContract, ScanReport } from "../schema.js";
 import { partitionFindingGroups } from "./finding-groups.js";
+import { buildRouteSecurityReview, ROUTE_SECURITY_CATEGORY_LABELS } from "./route-security-cards.js";
 import { safeRelativePath, singleLine } from "./safety.js";
 
 const ICON = { critical: "CRITICAL", high: "HIGH", medium: "MEDIUM", low: "LOW", info: "INFO" } as const;
 const MAX_GROUPS = 20;
 const MAX_GROUP_MEMBERS = 3;
+const MAX_ROUTE_CARDS = 20;
+const MAX_ROUTE_EVIDENCE = 3;
+const MAX_DEPLOYMENT_CONTEXTS = 5;
 
 export function renderTerminalReport(report: ScanReport): string {
   const stack = [...new Set([...report.profile.frameworks, ...report.profile.baas, ...report.profile.mobilePlatforms])];
@@ -35,6 +39,51 @@ export function renderTerminalReport(report: ScanReport): string {
     lines.push("");
   }
   const open = report.findings.filter((finding) => finding.status === "open");
+  const routeSecurity = buildRouteSecurityReview(report, open);
+  if (routeSecurity.cards.length > 0 || routeSecurity.deploymentContexts.length > 0) {
+    lines.push("Route security review");
+    lines.push("  Evidence-only summary: shown categories are detected gaps; an absent category is not a passed control.");
+    if (routeSecurity.deploymentContexts.length > 0) {
+      lines.push("  Project deployment context (not attributed to a specific route)");
+      for (const context of routeSecurity.deploymentContexts.slice(0, MAX_DEPLOYMENT_CONTEXTS)) {
+        const location = context.signal.locations[0];
+        const path = safeRelativePath(location?.path) ?? "path not recorded";
+        const service = context.service ? `service ${singleLine(context.service, 120)}` : "service not recorded";
+        const ports = context.publishedPorts.length > 0 ? `ports ${singleLine(context.publishedPorts.join(", "), 160)}` : "ports not recorded";
+        const findingIds = singleLine(context.findings.map((finding) => finding.id).join(", "), 260);
+        lines.push(`    [${ICON[context.severity]}] ${singleLine(context.signal.title, 200)}`);
+        lines.push(`      ${service} · ${ports} · ${path}${location?.line ? `:${location.line}` : ""} · ${findingIds}`);
+      }
+      if (routeSecurity.deploymentContexts.length > MAX_DEPLOYMENT_CONTEXTS) {
+        lines.push(`    … ${routeSecurity.deploymentContexts.length - MAX_DEPLOYMENT_CONTEXTS} additional deployment contexts are available in JSON/HTML output.`);
+      }
+    }
+    for (const card of routeSecurity.cards.slice(0, MAX_ROUTE_CARDS)) {
+      const findingLabel = card.findingCount === 1 ? "finding" : "findings";
+      const signalLabel = card.signalCount === 1 ? "signal" : "signals";
+      const categories = card.categories.map((category) => ROUTE_SECURITY_CATEGORY_LABELS[category]).join(", ");
+      lines.push(`  [${ICON[card.severity]}] ${card.framework} · ${singleLine(card.route, 500)}`);
+      lines.push(`    ${categories} · ${card.signalCount} ${signalLabel} · ${card.findingCount} ${findingLabel}`);
+      for (const evidence of card.evidence.slice(0, MAX_ROUTE_EVIDENCE)) {
+        const location = evidence.signal.locations[0];
+        const path = safeRelativePath(location?.path) ?? "path not recorded";
+        const handler = evidence.handler ? ` · ${singleLine(evidence.handler, 160)}` : "";
+        const findingIds = singleLine(evidence.findings.map((finding) => finding.id).join(", "), 260);
+        lines.push(`    - ${ROUTE_SECURITY_CATEGORY_LABELS[evidence.category]}: ${singleLine(evidence.signal.title, 200)}`);
+        lines.push(`      ${path}${location?.line ? `:${location.line}` : ""}${handler} · ${findingIds}`);
+      }
+      if (card.evidence.length > MAX_ROUTE_EVIDENCE) {
+        lines.push(`    … ${card.evidence.length - MAX_ROUTE_EVIDENCE} additional route evidence entries remain in the finding views.`);
+      }
+    }
+    if (routeSecurity.cards.length > MAX_ROUTE_CARDS) {
+      lines.push(`  … ${routeSecurity.cards.length - MAX_ROUTE_CARDS} additional route cards are available in HTML output.`);
+    }
+    if (routeSecurity.omittedRouteAliases > 0 || routeSecurity.omittedAssociations > 0) {
+      lines.push(`  Presentation bounds omitted ${routeSecurity.omittedRouteAliases} route aliases and ${routeSecurity.omittedAssociations} route-evidence associations; canonical findings remain unchanged.`);
+    }
+    lines.push("");
+  }
   const { groups, ungrouped } = partitionFindingGroups(report, open);
   if (groups.length > 0) {
     lines.push("Grouped findings");

@@ -570,7 +570,7 @@ finding fingerprints and accepted suppressions for compatible consumers.
 | Static-to-active BOLA planning | `draft-bola` | Converts open static BOLA/IDOR signals into a non-executable review worksheet; mutation routes are excluded and object IDs/markers remain placeholders |
 | Two-account BOLA verification | `verify-bola` | Exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
 | Agent integration | stdio MCP | Local read-oriented inspection, bounded rule-pack selector previews, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
-| Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; terminal/HTML can group opted-in repeated evidence by file while retaining canonical findings and full expandable occurrence detail; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
+| Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; terminal/HTML can group opted-in repeated evidence by file and derive exact-route security review cards while retaining canonical findings; deployment exposure stays explicitly project-level unless service-to-route ownership is proven; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
 
 `--profile native` is the deterministic source-only first pass: external and
 artifact domains are non-required. The default `predeploy` profile is the
@@ -746,7 +746,14 @@ layout so baselines, suppressions, JSON and SARIF stay stable. When a detector
 marks repeated evidence as presentation-groupable, terminal output summarizes
 it by file and shows representative route/handler entries; HTML uses expandable
 groups containing every occurrence, finding ID, route, location and classified
-pattern. Single occurrences and all other rules keep the normal flat view.
+pattern. Terminal and HTML also derive evidence-only route security cards for
+recognized FastAPI, Express and NestJS authentication, object-authorization,
+privileged-authorization and exception-disclosure gaps. Cards join exact route
+aliases without changing canonical results; published-service evidence remains
+project-level deployment context because static co-occurrence does not prove
+that a specific route is externally reachable. A category absent from a card is
+not a passed control. Single occurrences and all rules keep the normal finding
+views.
 
 Without an operator policy, only evidence-backed high/critical findings block.
 Inferred findings require review and cannot be promoted merely by an LLM. A
