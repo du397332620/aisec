@@ -6323,6 +6323,171 @@ app.include_router(router, prefix="/api")
   }
 });
 
+test("Python route attribution follows a multiline import through an invoked closure", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-python-closure-provenance-"));
+  try {
+    await mkdir(join(temporary, "app"), { recursive: true });
+    await writeFile(join(temporary, "app", "__init__.py"), "");
+    await writeFile(join(temporary, "app", "storage.py"), `
+from pathlib import Path
+
+def read_payload_path(payload):
+    source_path = Path(payload.get("path"))
+    return source_path.read_text(encoding="utf-8")
+
+def query_payload(payload):
+    return session.exec(text(f"select * from documents where title = '{payload.get('term')}'"))
+`);
+    await writeFile(join(temporary, "app", "routes.py"), `
+import asyncio
+from fastapi import APIRouter
+from .storage import (
+    read_payload_path,
+    query_payload as imported_query_payload,
+)
+
+router = APIRouter()
+
+@router.post("/attachment")
+async def read_attachment(payload: dict):
+    async def event_stream():
+        return await asyncio.to_thread(read_payload_path, payload)
+
+    return await event_stream()
+
+@router.post("/query")
+def query_attachment(payload: dict):
+    return imported_query_payload(payload)
+`);
+    await writeFile(join(temporary, "main.py"), `
+from fastapi import FastAPI
+from app.routes import router
+
+app = FastAPI()
+app.include_router(router, prefix="/api")
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const signal = report.signals.find((candidate) => candidate.ruleId === "python.dataflow.untrusted-file-path"
+      && candidate.metadata?.function === "read_payload_path");
+    assert.ok(signal);
+    assert.equal(signal.metadata?.route, "POST /api/attachment");
+    assert.deepEqual(signal.metadata?.routes, ["POST /api/attachment"]);
+    assert.equal(signal.metadata?.handler, "read_attachment");
+    assert.equal(signal.metadata?.routeAttribution, "bounded_call_graph");
+    assert.equal(signal.metadata?.routeCallDepth, 2);
+
+    const sql = report.signals.find((candidate) => candidate.ruleId === "python.dataflow.sql-injection"
+      && candidate.metadata?.function === "query_payload");
+    assert.ok(sql);
+    assert.equal(sql.metadata?.route, "POST /api/query");
+    assert.deepEqual(sql.metadata?.routes, ["POST /api/query"]);
+    assert.equal(sql.metadata?.handler, "query_attachment");
+    assert.equal(sql.metadata?.routeAttribution, "bounded_call_graph");
+    assert.equal(sql.metadata?.routeCallDepth, 1);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Python route attribution resolves only unique dominated nested callables", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-python-nested-provenance-"));
+  try {
+    await writeFile(join(temporary, "main.py"), `
+import requests
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.post("/nested")
+def nested_route(payload: dict):
+    try:
+        def write_value(data):
+            destination = data.get("path")
+            with open(destination, "w", encoding="utf-8") as handle:
+                handle.write("fixture")
+        return write_value(payload)
+    except OSError:
+        return None
+
+@app.post("/captured")
+def captured_route(payload: dict):
+    def captured_fetch():
+        return requests.get(payload.get("url"))
+    return captured_fetch()
+
+@app.post("/conditional")
+def conditional_route(payload: dict):
+    if payload.get("enabled"):
+        def conditional_fetch(url):
+            return requests.get(url)
+    return conditional_fetch(payload.get("url"))
+
+@app.post("/duplicate")
+def duplicate_route(payload: dict):
+    def duplicate_fetch(url):
+        return requests.get(url)
+    def duplicate_fetch(url):
+        return requests.get(url)
+    return duplicate_fetch(payload.get("url"))
+
+@app.post("/shadowed")
+def shadowed_route(payload: dict):
+    def shadowed_fetch(url):
+        return requests.get(url)
+    shadowed_fetch = payload.get("callback")
+    return shadowed_fetch(payload.get("url"))
+
+@app.post("/returned")
+def returned_route(payload: dict):
+    def returned_fetch():
+        return requests.get(payload.get("url"))
+    return returned_fetch
+
+def dormant_fetch(url):
+    return requests.get(url)
+
+def class_shadowed_fetch(url):
+    return requests.get(url)
+
+@app.post("/commented")
+def commented_route(payload: dict):
+    # dormant_fetch(payload.get("url"))
+    return {"ok": True}
+
+@app.post("/class-shadowed")
+def class_shadowed_route(payload: dict):
+    class class_shadowed_fetch:
+        pass
+    return class_shadowed_fetch(payload.get("url"))
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const nested = report.signals.find((signal) => signal.ruleId === "python.dataflow.untrusted-file-path"
+      && signal.metadata?.function === "write_value");
+    assert.ok(nested);
+    assert.equal(nested.metadata?.route, "POST /nested");
+    assert.equal(nested.metadata?.handler, "nested_route");
+    assert.equal(nested.metadata?.routeAttribution, "bounded_call_graph");
+    assert.equal(nested.metadata?.routeCallDepth, 1);
+
+    const captured = report.signals.find((signal) => signal.ruleId === "python.dataflow.ssrf"
+      && signal.metadata?.function === "captured_route");
+    assert.ok(captured);
+    assert.equal(captured.metadata?.route, "POST /captured");
+    assert.equal(captured.metadata?.handler, "captured_route");
+    assert.equal(captured.metadata?.routeAttribution, "bounded_call_graph");
+    assert.equal(captured.metadata?.routeCallDepth, 1);
+
+    const unresolvedNames = new Set(["conditional_fetch", "duplicate_fetch", "shadowed_fetch", "returned_route", "returned_fetch", "dormant_fetch", "class_shadowed_fetch"]);
+    const unresolved = report.signals.filter((signal) => unresolvedNames.has(String(signal.metadata?.function)));
+    assert.ok(unresolved.length >= 6, "the canonical broad detector must retain the ambiguous sink evidence");
+    assert.ok(unresolved.every((signal) => signal.metadata?.route === undefined
+      && signal.metadata?.routes === undefined
+      && signal.metadata?.routeAttribution === undefined));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("Python route attribution bounds stacked route origins and records partial coverage", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-python-route-origin-bound-"));
   try {

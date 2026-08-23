@@ -22,15 +22,20 @@ interface PythonFunction {
   id: string;
   name: string;
   className?: string;
+  lexicalParentId?: string;
   path: string;
   file: ProjectFile;
   indent: number;
+  bodyIndent: number;
   start: number;
   end: number;
   source: string;
+  routeSource: string;
   parameters: Parameter[];
   calls: PythonCall[];
+  routeCalls: PythonCall[];
   aliases: Map<string, string[]>;
+  routeAliases: Map<string, string[]>;
   routeRoot: boolean;
 }
 
@@ -76,6 +81,8 @@ interface RouteFunctionIndex {
   byModuleAndName: Map<string, PythonFunction[]>;
   byPathAndName: Map<string, PythonFunction[]>;
   byClassAndName: Map<string, PythonFunction[]>;
+  byLexicalParentAndName: Map<string, PythonFunction[]>;
+  byId: Map<string, PythonFunction>;
 }
 
 interface RoutePropagationState {
@@ -242,6 +249,81 @@ function parseAliases(source: string): Map<string, string[]> {
   return aliases;
 }
 
+function functionBodyIndent(source: string, functionIndent: number): number {
+  const opening = source.indexOf("(");
+  const closing = opening === -1 ? -1 : findClosing(source, opening);
+  const colon = closing === -1 ? -1 : source.indexOf(":", closing);
+  let cursor = colon === -1 ? -1 : source.indexOf("\n", colon);
+  while (cursor !== -1 && cursor + 1 < source.length) {
+    const next = cursor + 1;
+    const end = source.indexOf("\n", next);
+    const line = source.slice(next, end === -1 ? source.length : end);
+    if (line.trim() && !line.trimStart().startsWith("#")) {
+      return line.match(/^[ \t]*/)?.[0].length ?? functionIndent + 1;
+    }
+    if (end === -1) break;
+    cursor = end;
+  }
+  return functionIndent + 1;
+}
+
+function maskNestedFunctionSources(fn: PythonFunction, functions: PythonFunction[]): string {
+  const children = functions
+    .filter((candidate) => candidate.lexicalParentId === fn.id)
+    .sort((left, right) => left.start - right.start);
+  if (children.length === 0) return fn.source;
+  const parts: string[] = [];
+  let cursor = 0;
+  for (const child of children) {
+    const start = Math.max(cursor, child.start - fn.start);
+    const end = Math.min(fn.source.length, child.end - fn.start);
+    if (end <= start) continue;
+    parts.push(fn.source.slice(cursor, start));
+    parts.push(fn.source.slice(start, end).replace(/[^\r\n]/g, " "));
+    cursor = end;
+  }
+  parts.push(fn.source.slice(cursor));
+  return parts.join("");
+}
+
+function maskPythonComments(source: string): string {
+  const parts: string[] = [];
+  let cursor = 0;
+  let quote = "";
+  let triple = false;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const character = source[index]!;
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (triple && source.slice(index, index + 3) === quote.repeat(3)) {
+        index += 2;
+        quote = "";
+        triple = false;
+      } else if (!triple && character === quote) quote = "";
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      if (source.slice(index, index + 3) === character.repeat(3)) {
+        quote = character;
+        triple = true;
+        index += 2;
+      } else quote = character;
+      continue;
+    }
+    if (character !== "#") continue;
+    const end = source.indexOf("\n", index);
+    const commentEnd = end === -1 ? source.length : end;
+    parts.push(source.slice(cursor, index), " ".repeat(commentEnd - index));
+    cursor = commentEnd;
+    index = commentEnd - 1;
+  }
+  if (cursor === 0) return source;
+  parts.push(source.slice(cursor));
+  return parts.join("");
+}
+
 function extractFunctions(file: ProjectFile, classes: ClassBlock[], routeKeys: Set<string>): PythonFunction[] {
   const functions: PythonFunction[] = [];
   const pattern = /^(\s*)(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/gm;
@@ -267,6 +349,8 @@ function extractFunctions(file: ProjectFile, classes: ClassBlock[], routeKeys: S
       .filter((block) => block.start < start && block.end >= end)
       .sort((a, b) => b.start - a.start)[0];
     const name = match[2]!;
+    const calls = parseCalls(source, start);
+    const aliases = parseAliases(source);
     functions.push({
       id: `${file.relativePath}:${start}`,
       name,
@@ -274,14 +358,31 @@ function extractFunctions(file: ProjectFile, classes: ClassBlock[], routeKeys: S
       path: file.relativePath,
       file,
       indent,
+      bodyIndent: functionBodyIndent(source, indent),
       start,
       end,
       source,
+      routeSource: source,
       parameters,
-      calls: parseCalls(source, start),
-      aliases: parseAliases(source),
+      calls,
+      routeCalls: calls,
+      aliases,
+      routeAliases: aliases,
       routeRoot: routeKeys.has(`${file.relativePath}\u0000${name}`),
     });
+  }
+  for (const fn of functions) {
+    const parent = functions
+      .filter((candidate) => candidate.id !== fn.id
+        && candidate.start < fn.start
+        && candidate.end >= fn.end)
+      .sort((left, right) => (left.end - left.start) - (right.end - right.start))[0];
+    if (parent) fn.lexicalParentId = parent.id;
+  }
+  for (const fn of functions) {
+    fn.routeSource = maskPythonComments(maskNestedFunctionSources(fn, functions));
+    fn.routeCalls = parseCalls(fn.routeSource, fn.start);
+    fn.routeAliases = parseAliases(fn.routeSource);
   }
   return functions;
 }
@@ -327,10 +428,11 @@ function projectImports(files: ProjectFile[]): Map<string, Map<string, PythonImp
     const add = (alias: string, target: PythonImportTarget): void => {
       bindings.set(alias, [...(bindings.get(alias) ?? []), target]);
     };
-    const fromPattern = /^\s*from\s+([.\w]+)\s+import\s+([^\n#]+)/gm;
+    const fromPattern = /^[ \t]*from[ \t]+([.\w]+)[ \t]+import[ \t]*(?:\(([\s\S]*?)\)|([^\n#]+))/gm;
     for (const match of file.content.matchAll(fromPattern)) {
       const importedModule = resolveRelativeModule(module, file.relativePath, match[1] ?? "");
-      for (const raw of (match[2] ?? "").replace(/[()]/g, "").split(",")) {
+      const importedNames = (match[2] ?? match[3] ?? "").replace(/#[^\n]*/g, "");
+      for (const raw of importedNames.split(",")) {
         const parsed = raw.trim().match(/^([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?$/);
         if (!parsed?.[1]) continue;
         add(parsed[2] ?? parsed[1], { module: importedModule, symbol: parsed[1], kind: "symbol" });
@@ -359,7 +461,10 @@ function routeFunctionIndex(functions: PythonFunction[]): RouteFunctionIndex {
   const byModuleAndName = new Map<string, PythonFunction[]>();
   const byPathAndName = new Map<string, PythonFunction[]>();
   const byClassAndName = new Map<string, PythonFunction[]>();
+  const byLexicalParentAndName = new Map<string, PythonFunction[]>();
+  const byId = new Map<string, PythonFunction>();
   for (const fn of functions) {
+    byId.set(fn.id, fn);
     if (fn.indent === 0) {
       const moduleParts = pythonModule(fn.path).split(".").filter(Boolean);
       for (let offset = 0; offset < moduleParts.length; offset += 1) {
@@ -367,9 +472,14 @@ function routeFunctionIndex(functions: PythonFunction[]): RouteFunctionIndex {
       }
       addFunctionIndex(byPathAndName, `${fn.path}\u0000${fn.name}`, fn);
     }
-    if (fn.className) addFunctionIndex(byClassAndName, `${fn.path}\u0000${fn.className}\u0000${fn.name}`, fn);
+    if (fn.className && !fn.lexicalParentId) {
+      addFunctionIndex(byClassAndName, `${fn.path}\u0000${fn.className}\u0000${fn.name}`, fn);
+    }
+    if (fn.lexicalParentId) {
+      addFunctionIndex(byLexicalParentAndName, `${fn.lexicalParentId}\u0000${fn.name}`, fn);
+    }
   }
-  return { byModuleAndName, byPathAndName, byClassAndName };
+  return { byModuleAndName, byPathAndName, byClassAndName, byLexicalParentAndName, byId };
 }
 
 function escaped(value: string): string {
@@ -456,8 +566,54 @@ function hasUnsupportedLocalBinding(fn: PythonFunction, name: string): boolean {
   const assignment = new RegExp(`^\\s*${identifier}(?:\\s*:[^=\\n]+)?\\s*=\\s*(?!=)`, "m");
   const loop = new RegExp(`^\\s*(?:async\\s+)?for\\s+${identifier}\\s+in\\b`, "m");
   const contextBinding = new RegExp(`^\\s*(?:async\\s+)?with\\b[^\\n]*\\bas\\s+${identifier}\\b|^\\s*except\\b[^\\n]*\\bas\\s+${identifier}\\b`, "m");
-  const nestedDefinition = new RegExp(`^\\s*(?:(?:async\\s+)?def|class)\\s+${identifier}\\b`, "m");
-  return assignment.test(fn.source) || loop.test(fn.source) || contextBinding.test(fn.source) || nestedDefinition.test(fn.source);
+  const localClass = new RegExp(`^\\s*class\\s+${identifier}\\b`, "m");
+  return assignment.test(fn.routeSource) || loop.test(fn.routeSource) || contextBinding.test(fn.routeSource)
+    || localClass.test(fn.routeSource);
+}
+
+function lexicalDefinitionDominates(
+  parent: PythonFunction,
+  target: PythonFunction,
+  callOffset: number,
+): boolean {
+  if (target.start >= callOffset) return false;
+  if (target.indent === parent.bodyIndent) return true;
+  const indentStep = Math.max(1, parent.bodyIndent - parent.indent);
+  const tryPattern = /^([ \t]*)try[ \t]*:/gm;
+  for (const match of parent.source.matchAll(tryPattern)) {
+    const tryIndent = match[1]?.length ?? 0;
+    if (tryIndent !== parent.bodyIndent || target.indent !== tryIndent + indentStep) continue;
+    const tryStart = parent.start + (match.index ?? 0);
+    const headerEnd = tryStart + match[0].length;
+    const suiteEnd = blockEnd(parent.file.content, tryStart, tryIndent, headerEnd);
+    if (target.start > headerEnd && target.end <= suiteEnd && callOffset < suiteEnd) return true;
+  }
+  return false;
+}
+
+function uniqueLexicalTarget(
+  fn: PythonFunction,
+  name: string,
+  callOffset: number,
+  index: RouteFunctionIndex,
+): { target?: PythonFunction; shadowsOuterScope: boolean } {
+  const directChildren = index.byLexicalParentAndName.get(`${fn.id}\u0000${name}`) ?? [];
+  if (directChildren.length > 0) {
+    const target = uniqueRouteTarget(directChildren);
+    return {
+      target: target && lexicalDefinitionDominates(fn, target, callOffset) ? target : undefined,
+      shadowsOuterScope: true,
+    };
+  }
+  if (!fn.lexicalParentId) return { shadowsOuterScope: false };
+  const siblings = index.byLexicalParentAndName.get(`${fn.lexicalParentId}\u0000${name}`) ?? [];
+  if (siblings.length === 0) return { shadowsOuterScope: false };
+  const parent = index.byId.get(fn.lexicalParentId);
+  const target = uniqueRouteTarget(siblings);
+  return {
+    target: target && parent && lexicalDefinitionDominates(parent, target, callOffset) ? target : undefined,
+    shadowsOuterScope: true,
+  };
 }
 
 function resolveRouteCallTarget(
@@ -465,24 +621,28 @@ function resolveRouteCallTarget(
   callee: string,
   imports: Map<string, Map<string, PythonImportTarget[]>>,
   index: RouteFunctionIndex,
+  callOffset: number,
 ): PythonFunction | undefined {
   let expression = callee.trim();
   if (!expression.includes(".")) {
-    if (hasUnsupportedLocalBinding(fn, expression) && !fn.aliases.has(expression)) return undefined;
+    if (hasUnsupportedLocalBinding(fn, expression) && !fn.routeAliases.has(expression)) return undefined;
     const visited = new Set<string>();
-    while (fn.aliases.has(expression)) {
+    while (fn.routeAliases.has(expression)) {
       if (visited.has(expression)) return undefined;
       visited.add(expression);
-      const aliases = fn.aliases.get(expression) ?? [];
+      const aliases = fn.routeAliases.get(expression) ?? [];
       if (aliases.length !== 1 || !aliases[0]) return undefined;
       expression = aliases[0];
     }
     if (hasUnsupportedLocalBinding(fn, expression)) return undefined;
+
+    const lexical = uniqueLexicalTarget(fn, expression, callOffset, index);
+    if (lexical.shadowsOuterScope) return lexical.target;
   }
 
   const parts = expression.split(".");
   if (parts.length > 1 && parts[0] !== "self" && parts[0] !== "cls"
-    && (fn.aliases.has(parts[0]!) || hasUnsupportedLocalBinding(fn, parts[0]!))) return undefined;
+    && (fn.routeAliases.has(parts[0]!) || hasUnsupportedLocalBinding(fn, parts[0]!))) return undefined;
   const candidates: PythonFunction[] = [];
   if (parts.length === 1) {
     candidates.push(...(index.byPathAndName.get(`${fn.path}\u0000${parts[0]}`) ?? []));
@@ -565,8 +725,8 @@ function routeLocalFlow(
     origins.set(name, copy);
   }
   const flow = { origins };
-  const assignments = [...fn.source.matchAll(/^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)(?:\s*:[^=\n]+)?\s*=\s*(?!=)([^\n]+)/gm)];
-  const loops = [...fn.source.matchAll(/^\s*(?:async\s+)?for\s+([A-Za-z_]\w*)\s+in\s+([^:\n]+)\s*:/gm)];
+  const assignments = [...fn.routeSource.matchAll(/^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)(?:\s*:[^=\n]+)?\s*=\s*(?!=)([^\n]+)/gm)];
+  const loops = [...fn.routeSource.matchAll(/^\s*(?:async\s+)?for\s+(\(?[A-Za-z_]\w*(?:\s*,\s*[A-Za-z_]\w*)*\)?)\s+in\s+([^:\n]+)\s*:/gm)];
   for (let pass = 0; pass < 8; pass += 1) {
     let changed = false;
     for (const match of assignments) {
@@ -581,9 +741,12 @@ function routeLocalFlow(
     for (const match of loops) {
       const source = expressionOriginDepths(match[2]!, flow, state);
       if (source.size === 0) continue;
-      const target = origins.get(match[1]!) ?? new Map<string, number>();
-      if (mergeOriginDepths(target, source, 0, state)) changed = true;
-      origins.set(match[1]!, target);
+      const targets = (match[1] ?? "").replace(/[()]/g, "").split(",").map((name) => name.trim()).filter(Boolean);
+      for (const name of targets) {
+        const target = origins.get(name) ?? new Map<string, number>();
+        if (mergeOriginDepths(target, source, 0, state)) changed = true;
+        origins.set(name, target);
+      }
     }
     if (!changed) break;
   }
@@ -598,20 +761,20 @@ function routeCall(
 ): { target: PythonFunction; arguments: string[] } | undefined {
   const wrapper = baseName(call.callee);
   if (wrapper === "to_thread" && call.arguments[0]) {
-    const target = resolveRouteCallTarget(fn, call.arguments[0].trim(), imports, index);
+    const target = resolveRouteCallTarget(fn, call.arguments[0].trim(), imports, index, call.offset);
     const argumentsList = call.arguments.slice(1);
     return target && !argumentsList.some((argument) => /^\s*\*{1,2}/.test(argument))
       ? { target, arguments: argumentsList }
       : undefined;
   }
   if (wrapper === "run_in_executor" && call.arguments[1]) {
-    const target = resolveRouteCallTarget(fn, call.arguments[1].trim(), imports, index);
+    const target = resolveRouteCallTarget(fn, call.arguments[1].trim(), imports, index, call.offset);
     const argumentsList = call.arguments.slice(2);
     return target && !argumentsList.some((argument) => /^\s*\*{1,2}/.test(argument))
       ? { target, arguments: argumentsList }
       : undefined;
   }
-  const target = resolveRouteCallTarget(fn, call.callee, imports, index);
+  const target = resolveRouteCallTarget(fn, call.callee, imports, index, call.offset);
   return target && !call.arguments.some((argument) => /^\s*\*{1,2}/.test(argument))
     ? { target, arguments: call.arguments }
     : undefined;
@@ -662,7 +825,7 @@ function propagateRouteOrigins(
       if (fnInput.size === 0) continue;
       const flow = routeLocalFlow(fn, fnInput, state);
       local.set(fn.id, flow);
-      for (const call of fn.calls) {
+      for (const call of fn.routeCalls) {
         const resolved = routeCall(fn, call, imports, index);
         if (!resolved) continue;
         const targetInput = input.get(resolved.target.id)!;
@@ -679,6 +842,17 @@ function propagateRouteOrigins(
           if (mergeOriginDepths(parameterOrigins, argumentOrigins, 1, state)) changed = true;
           targetInput.set(parameter.name, parameterOrigins);
         });
+        if (resolved.target.lexicalParentId === fn.id) {
+          for (const [name, capturedOrigins] of flow.origins) {
+            if (!expressionHasName(resolved.target.routeSource, name)) continue;
+            if (hasUnsupportedLocalBinding(resolved.target, name)) continue;
+            const nestedBinding = index.byLexicalParentAndName.get(`${resolved.target.id}\u0000${name}`) ?? [];
+            if (nestedBinding.length > 0) continue;
+            const targetOrigins = targetInput.get(name) ?? new Map<string, number>();
+            if (mergeOriginDepths(targetOrigins, capturedOrigins, 1, state)) changed = true;
+            targetInput.set(name, targetOrigins);
+          }
+        }
       }
     }
     if (!changed) break;
@@ -887,6 +1061,22 @@ function routeSignalMetadata(
   };
 }
 
+function routeCallOwners(functions: PythonFunction[]): Map<string, PythonFunction> {
+  const candidates = new Map<string, PythonFunction[]>();
+  for (const fn of functions) {
+    for (const call of fn.routeCalls) {
+      const key = `${fn.path}\u0000${call.offset}`;
+      candidates.set(key, [...(candidates.get(key) ?? []), fn]);
+    }
+  }
+  const owners = new Map<string, PythonFunction>();
+  for (const [key, possibleOwners] of candidates) {
+    const owner = uniqueRouteTarget(possibleOwners);
+    if (owner) owners.set(key, owner);
+  }
+  return owners;
+}
+
 function credentialClients(classes: ClassBlock[]): Map<string, { secret: SourceLocation; authorization: SourceLocation }> {
   const result = new Map<string, { secret: SourceLocation; authorization: SourceLocation }>();
   for (const block of classes) {
@@ -926,6 +1116,7 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
   const imports = importAliases(files);
   const propagated = propagateFlows(functions, imports);
   const routeProvenance = propagateRouteOrigins(functions, fastApi.routes, projectImports(files));
+  const callOwners = routeCallOwners(functions);
   const clients = credentialClients(classes);
   const signals: Signal[] = [];
   const emitted = new Set<string>();
@@ -941,8 +1132,9 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
     if (!propagated.active.has(fn.id) || truncated) continue;
     const flow = propagated.local.get(fn.id);
     if (!flow) continue;
-    const routeFlow = routeProvenance.local.get(fn.id);
     for (const call of fn.calls) {
+      const routeOwner = callOwners.get(`${fn.path}\u0000${call.offset}`);
+      const scopedRouteFlow = routeOwner ? routeProvenance.local.get(routeOwner.id) : undefined;
       const argument = firstArgument(call);
       if (networkSink(call) && expressionTainted(argument, flow.tainted)) {
         add(flowSignal({
@@ -958,7 +1150,7 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
           metadata: {
             function: fn.name,
             sink: call.callee,
-            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([argument], routeFlow, routeProvenance)),
+            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([argument], scopedRouteFlow, routeProvenance)),
           },
         }), `${fn.id}:${call.offset}:ssrf`);
       }
@@ -976,7 +1168,7 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
           metadata: {
             function: fn.name,
             sink: call.callee,
-            ...routeSignalMetadata(routeProvenance, signalRouteOrigins(fileSinkExpressions(call), routeFlow, routeProvenance)),
+            ...routeSignalMetadata(routeProvenance, signalRouteOrigins(fileSinkExpressions(call), scopedRouteFlow, routeProvenance)),
           },
         }), `${fn.id}:${call.offset}:file`);
       }
@@ -994,7 +1186,7 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
           metadata: {
             function: fn.name,
             sink: call.callee,
-            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([argument], routeFlow, routeProvenance)),
+            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([argument], scopedRouteFlow, routeProvenance)),
           },
         }), `${fn.id}:${call.offset}:sql`);
       }
@@ -1017,7 +1209,7 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
           metadata: {
             function: fn.name,
             client: resolved,
-            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([baseUrl.expression], routeFlow, routeProvenance)),
+            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([baseUrl.expression], scopedRouteFlow, routeProvenance)),
           },
         }), `${fn.id}:${call.offset}:secret-url`);
       }
@@ -1025,6 +1217,8 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
 
     const storedPath = storedPathFlow(fn, flow);
     if (storedPath) {
+      const routeOwner = callOwners.get(`${fn.path}\u0000${storedPath.offset}`);
+      const scopedRouteFlow = routeOwner ? routeProvenance.local.get(routeOwner.id) : undefined;
       add(flowSignal({
         ruleId: "python.dataflow.untrusted-file-path",
         title: "Request-derived path is persisted for a later server file operation",
@@ -1039,7 +1233,7 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
           function: fn.name,
           sink: baseName(storedPath.callee),
           secondOrder: true,
-          ...routeSignalMetadata(routeProvenance, signalRouteOrigins(storedPathExpressions(storedPath), routeFlow, routeProvenance)),
+          ...routeSignalMetadata(routeProvenance, signalRouteOrigins(storedPathExpressions(storedPath), scopedRouteFlow, routeProvenance)),
         },
       }), `${fn.id}:${storedPath.offset}:stored-file`);
     }
