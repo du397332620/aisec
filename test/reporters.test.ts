@@ -259,6 +259,32 @@ test("route security cards separate frameworks and reject multiline route metada
   assert.doesNotMatch(terminal, /\n::error::owned/u);
 });
 
+test("route security cards include exact FastAPI dangerous-dataflow evidence", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "python-dataflow", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const review = buildRouteSecurityReview(report);
+  const categories = new Map(review.cards.map((card) => [card.route, card.categories]));
+  assert.deepEqual(categories.get("POST /fetch"), ["ssrf"]);
+  assert.deepEqual(categories.get("POST /write"), ["untrusted_file_path"]);
+  assert.deepEqual(categories.get("POST /query"), ["sql_injection"]);
+  assert.deepEqual(categories.get("POST /generate"), ["credential_forwarding"]);
+  assert.equal(review.cards.find((card) => card.route === "POST /query")?.signalCount, 2);
+
+  const terminal = renderTerminalReport(report);
+  assert.match(terminal, /server-side request forgery/u);
+  assert.match(terminal, /untrusted file path/u);
+  assert.match(terminal, /SQL injection/u);
+  assert.match(terminal, /server credential forwarding/u);
+  const html = renderHtml(report);
+  assert.match(html, /server-side request forgery/u);
+  assert.match(html, /untrusted file path/u);
+  assert.match(html, /SQL injection/u);
+  assert.match(html, /server credential forwarding/u);
+});
+
 test("scan and rescan retain decision exits with CI output formats", async () => {
   const source = await vulnerableReport();
   const temporary = await mkdtemp(join(tmpdir(), "aisec-ci-exits-"));

@@ -5,12 +5,20 @@ export type RouteSecurityCategory =
   | "authentication"
   | "object_authorization"
   | "privileged_authorization"
+  | "sql_injection"
+  | "ssrf"
+  | "untrusted_file_path"
+  | "credential_forwarding"
   | "exception_disclosure";
 
 export const ROUTE_SECURITY_CATEGORY_LABELS: Record<RouteSecurityCategory, string> = {
   authentication: "authentication gap",
   object_authorization: "object authorization gap",
   privileged_authorization: "privileged authorization gap",
+  sql_injection: "SQL injection",
+  ssrf: "server-side request forgery",
+  untrusted_file_path: "untrusted file path",
+  credential_forwarding: "server credential forwarding",
   exception_disclosure: "exception disclosure",
 };
 
@@ -26,6 +34,10 @@ const ROUTE_RULES: Readonly<Record<string, RouteRulePresentation>> = {
   "fastapi.auth.sensitive-route-without-guard": { category: "authentication", framework: "FastAPI" },
   "fastapi.authorization.object-without-ownership-check": { category: "object_authorization", framework: "FastAPI" },
   "fastapi.config.route-raw-exception-response": { category: "exception_disclosure", framework: "FastAPI" },
+  "python.dataflow.sql-injection": { category: "sql_injection", framework: "FastAPI" },
+  "python.dataflow.ssrf": { category: "ssrf", framework: "FastAPI" },
+  "python.dataflow.untrusted-file-path": { category: "untrusted_file_path", framework: "FastAPI" },
+  "python.dataflow.client-url-with-server-secret": { category: "credential_forwarding", framework: "FastAPI" },
   "express.auth.sensitive-route-without-guard": { category: "authentication", framework: "Express" },
   "express.authorization.object-without-ownership-check": { category: "object_authorization", framework: "Express" },
   "express.authorization.privileged-operation-without-role-check": { category: "privileged_authorization", framework: "Express" },
@@ -38,6 +50,10 @@ const CATEGORY_ORDER: readonly RouteSecurityCategory[] = [
   "authentication",
   "object_authorization",
   "privileged_authorization",
+  "sql_injection",
+  "ssrf",
+  "untrusted_file_path",
+  "credential_forwarding",
   "exception_disclosure",
 ];
 const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;

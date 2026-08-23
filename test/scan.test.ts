@@ -6217,6 +6217,172 @@ test("Python API dataflow detects URL, file, SQL, and model credential destinati
   assert.ok(rules.has("python.dataflow.untrusted-file-path"));
   assert.ok(rules.has("python.dataflow.sql-injection"));
   assert.ok(rules.has("python.dataflow.client-url-with-server-secret"));
+  const dataflow = report.signals.filter((signal) => signal.ruleId.startsWith("python.dataflow."));
+  assert.equal(dataflow.length, 5, "route presentation metadata must not change canonical detections");
+  const expectedRoutes = new Map([
+    ["python.dataflow.ssrf", "POST /fetch"],
+    ["python.dataflow.untrusted-file-path", "POST /write"],
+    ["python.dataflow.sql-injection", "POST /query"],
+    ["python.dataflow.client-url-with-server-secret", "POST /generate"],
+  ]);
+  for (const signal of dataflow) {
+    assert.equal(signal.metadata?.route, expectedRoutes.get(signal.ruleId));
+    assert.deepEqual(signal.metadata?.routes, [expectedRoutes.get(signal.ruleId)]);
+    assert.equal(signal.metadata?.routeAttribution, "direct_handler");
+    assert.equal(signal.metadata?.routeCallDepth, 0);
+  }
+});
+
+test("Python route attribution keeps stacked aliases and excludes fixed helper arguments", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-python-route-provenance-"));
+  try {
+    await writeFile(join(temporary, "main.py"), `
+import requests
+from fastapi import FastAPI
+
+app = FastAPI()
+
+def fetch_url(url):
+    return requests.get(url)
+
+@app.post("/tainted")
+def tainted(payload: dict):
+    return fetch_url(payload.get("url"))
+
+@app.post("/fixed")
+def fixed(payload: dict):
+    return fetch_url("https://files.example.test/index.json")
+
+@app.post("/stacked-a")
+@app.put("/stacked-b")
+def stacked(payload: dict):
+    return requests.get(payload.get("url"))
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const helper = report.signals.find((signal) => signal.ruleId === "python.dataflow.ssrf"
+      && signal.metadata?.function === "fetch_url");
+    assert.ok(helper);
+    assert.equal(helper.metadata?.route, "POST /tainted");
+    assert.deepEqual(helper.metadata?.routes, ["POST /tainted"]);
+    assert.equal(helper.metadata?.handler, "tainted");
+    assert.equal(helper.metadata?.routeAttribution, "bounded_call_graph");
+    assert.equal(helper.metadata?.routeCallDepth, 1);
+    assert.ok(!JSON.stringify(helper.metadata).includes("/fixed"));
+
+    const stacked = report.signals.find((signal) => signal.ruleId === "python.dataflow.ssrf"
+      && signal.metadata?.function === "stacked");
+    assert.ok(stacked);
+    assert.equal(stacked.metadata?.route, "POST /stacked-a");
+    assert.deepEqual(stacked.metadata?.routes, ["POST /stacked-a", "PUT /stacked-b"]);
+    assert.equal(stacked.metadata?.routeAttribution, "direct_handler");
+    assert.equal(stacked.metadata?.routeCallDepth, 0);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Python route attribution follows a unique relative import", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-python-import-provenance-"));
+  try {
+    await mkdir(join(temporary, "app"), { recursive: true });
+    await writeFile(join(temporary, "app", "__init__.py"), "");
+    await writeFile(join(temporary, "app", "network.py"), `
+import requests
+
+def fetch_url(url):
+    return requests.get(url)
+`);
+    await writeFile(join(temporary, "app", "routes.py"), `
+from fastapi import APIRouter
+from .network import fetch_url
+
+router = APIRouter()
+
+@router.post("/fetch")
+def imported_route(payload: dict):
+    return fetch_url(payload.get("url"))
+`);
+    await writeFile(join(temporary, "main.py"), `
+from fastapi import FastAPI
+from app.routes import router
+
+app = FastAPI()
+app.include_router(router, prefix="/api")
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const signal = report.signals.find((candidate) => candidate.ruleId === "python.dataflow.ssrf"
+      && candidate.metadata?.function === "fetch_url");
+    assert.ok(signal);
+    assert.equal(signal.metadata?.route, "POST /api/fetch");
+    assert.deepEqual(signal.metadata?.routes, ["POST /api/fetch"]);
+    assert.equal(signal.metadata?.handler, "imported_route");
+    assert.equal(signal.metadata?.routeAttribution, "bounded_call_graph");
+    assert.equal(signal.metadata?.routeCallDepth, 1);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Python route attribution bounds stacked route origins and records partial coverage", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-python-route-origin-bound-"));
+  try {
+    const decorators = Array.from({ length: 130 }, (_, index) => `@app.post("/routes/${index}")`).join("\n");
+    await writeFile(join(temporary, "main.py"), `
+import requests
+from fastapi import FastAPI
+
+app = FastAPI()
+
+${decorators}
+def bounded(payload: dict):
+    return requests.get(payload.get("url"))
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const signal = report.signals.find((candidate) => candidate.ruleId === "python.dataflow.ssrf"
+      && candidate.metadata?.function === "bounded");
+    assert.ok(signal);
+    assert.equal(signal.metadata?.route, "POST /routes/0");
+    assert.equal(Array.isArray(signal.metadata?.routes) ? signal.metadata.routes.length : 0, 128);
+    assert.match(report.coverage.find((item) => item.domain === "python-dataflow")?.reason ?? "", /128-origin safety limit/u);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Python route attribution fails closed for ambiguous callable aliases", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-python-ambiguous-provenance-"));
+  try {
+    await writeFile(join(temporary, "main.py"), `
+import requests
+from fastapi import FastAPI
+
+app = FastAPI()
+
+def first_fetch(url):
+    return requests.get(url)
+
+def second_fetch(url):
+    return requests.get(url)
+
+@app.post("/ambiguous")
+def ambiguous(payload: dict):
+    chosen = first_fetch if payload.get("primary") else second_fetch
+    return chosen(payload.get("url"))
+
+@app.post("/shadowed")
+def shadowed(first_fetch, payload: dict):
+    return first_fetch(payload.get("url"))
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const signals = report.signals.filter((signal) => signal.ruleId === "python.dataflow.ssrf"
+      && ["first_fetch", "second_fetch"].includes(String(signal.metadata?.function)));
+    assert.equal(signals.length, 2, "the existing broad detector still reports both possible sinks");
+    assert.ok(signals.every((signal) => signal.metadata?.route === undefined
+      && signal.metadata?.routes === undefined
+      && signal.metadata?.routeAttribution === undefined));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
 });
 
 test("Python API dataflow accepts allowlisted URLs, fixed-root paths, bound SQL, and fixed model origins", async () => {

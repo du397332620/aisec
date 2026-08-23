@@ -2,7 +2,7 @@ import type { ProjectFile } from "../core/files.js";
 import type { ScanContext } from "../core/context.js";
 import type { DetectorResult } from "./types.js";
 import type { Severity, Signal, SourceLocation } from "../schema.js";
-import { analyzeFastApi } from "../api/fastapi.js";
+import { analyzeFastApi, type FastApiRoute } from "../api/fastapi.js";
 import { createSignal, makeLocation } from "../core/utils.js";
 import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
 
@@ -24,6 +24,7 @@ interface PythonFunction {
   className?: string;
   path: string;
   file: ProjectFile;
+  indent: number;
   start: number;
   end: number;
   source: string;
@@ -47,11 +48,46 @@ interface LocalFlow {
   dynamicSql: Set<string>;
 }
 
+interface PythonImportTarget {
+  module: string;
+  symbol?: string;
+  kind: "module" | "symbol";
+}
+
+interface RouteOrigin {
+  key: string;
+  route: string;
+  handler: string;
+}
+
+type OriginDepths = Map<string, number>;
+
+interface RouteLocalFlow {
+  origins: Map<string, OriginDepths>;
+}
+
+interface RouteProvenance {
+  origins: Map<string, RouteOrigin>;
+  local: Map<string, RouteLocalFlow>;
+  truncated: boolean;
+}
+
+interface RouteFunctionIndex {
+  byModuleAndName: Map<string, PythonFunction[]>;
+  byPathAndName: Map<string, PythonFunction[]>;
+  byClassAndName: Map<string, PythonFunction[]>;
+}
+
+interface RoutePropagationState {
+  truncated: boolean;
+}
+
 const NON_RUNTIME_PATH = /(?:^|\/)(?:test|tests|fixtures|examples?|scripts|old-archive)(?:\/|$)|(?:^|\/)(?:debug|test|example)[^/]*\.py$/i;
 const EXTERNAL_PARAMETER = /^(?:_?input|payload|request|req|body|data|params|query|form|attachment|attachments)$/i;
 const DEPENDENCY_PARAMETER = /\b(?:Depends|Security)\s*\(|^(?:self|cls|db|session|response|background_tasks|current_user|principal|identity)$/i;
 const SANITIZER_CALL = /(?:(?:[A-Za-z_]\w*)\.)*(?:validate_(?:public_|allowed_|safe_)?(?:url|uri|path)|ensure_(?:public|allowed|safe)_(?:url|uri|path)|allowlist_(?:url|uri|host)|resolve_under_root|safe_join|secure_filename|sanitize_filename|safe_name|basename)\s*\(/i;
 const DYNAMIC_STRING = /(?:\bf\s*["']|\.format\s*\(|%\s*(?:\(|[A-Za-z_])|(?:["']|\w)\s*\+\s*\w)/i;
+const MAX_ROUTE_ORIGINS_PER_VALUE = 128;
 
 function findClosing(text: string, opening: number): number {
   const pairs: Record<string, string> = { "(": ")", "[": "]", "{": "}" };
@@ -210,15 +246,17 @@ function extractFunctions(file: ProjectFile, classes: ClassBlock[], routeKeys: S
   const functions: PythonFunction[] = [];
   const pattern = /^(\s*)(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/gm;
   for (const match of file.content.matchAll(pattern)) {
-    const indent = match[1]?.length ?? 0;
+    const leadingWhitespace = match[1] ?? "";
+    const blockIndent = leadingWhitespace.length;
+    const indent = leadingWhitespace.split(/\r?\n/).at(-1)?.length ?? 0;
     const matchStart = match.index ?? 0;
-    const start = matchStart + indent;
+    const start = matchStart + blockIndent;
     const opening = file.content.indexOf("(", start);
     const closing = opening === -1 ? -1 : findClosing(file.content, opening);
     if (closing === -1) continue;
     const colon = file.content.indexOf(":", closing);
     if (colon === -1) continue;
-    const end = blockEnd(file.content, start, indent, colon);
+    const end = blockEnd(file.content, start, blockIndent, colon);
     const source = file.content.slice(start, end);
     const parameters = splitTopLevel(file.content.slice(opening + 1, closing)).flatMap((declaration): Parameter[] => {
       const cleaned = declaration.trim().replace(/^\*{1,2}/, "");
@@ -235,6 +273,7 @@ function extractFunctions(file: ProjectFile, classes: ClassBlock[], routeKeys: S
       className: containing?.name,
       path: file.relativePath,
       file,
+      indent,
       start,
       end,
       source,
@@ -256,6 +295,81 @@ function importAliases(files: ProjectFile[]): Map<string, Map<string, string>> {
     result.set(file.relativePath, aliases);
   }
   return result;
+}
+
+function pythonModule(path: string): string {
+  const withoutExtension = path.replace(/\.py$/i, "");
+  const normalized = withoutExtension.split("/").join(".");
+  return normalized.endsWith(".__init__") ? normalized.slice(0, -".__init__".length) : normalized;
+}
+
+function modulePackage(module: string, path: string): string {
+  if (path.split("/").at(-1) === "__init__.py") return module;
+  const separator = module.lastIndexOf(".");
+  return separator === -1 ? "" : module.slice(0, separator);
+}
+
+function resolveRelativeModule(currentModule: string, path: string, rawModule: string): string {
+  const dots = rawModule.match(/^\.+/)?.[0].length ?? 0;
+  if (dots === 0) return rawModule;
+  const suffix = rawModule.slice(dots);
+  const parts = modulePackage(currentModule, path).split(".").filter(Boolean);
+  parts.splice(Math.max(0, parts.length - Math.max(0, dots - 1)));
+  if (suffix) parts.push(...suffix.split("."));
+  return parts.join(".");
+}
+
+function projectImports(files: ProjectFile[]): Map<string, Map<string, PythonImportTarget[]>> {
+  const result = new Map<string, Map<string, PythonImportTarget[]>>();
+  for (const file of files) {
+    const module = pythonModule(file.relativePath);
+    const bindings = new Map<string, PythonImportTarget[]>();
+    const add = (alias: string, target: PythonImportTarget): void => {
+      bindings.set(alias, [...(bindings.get(alias) ?? []), target]);
+    };
+    const fromPattern = /^\s*from\s+([.\w]+)\s+import\s+([^\n#]+)/gm;
+    for (const match of file.content.matchAll(fromPattern)) {
+      const importedModule = resolveRelativeModule(module, file.relativePath, match[1] ?? "");
+      for (const raw of (match[2] ?? "").replace(/[()]/g, "").split(",")) {
+        const parsed = raw.trim().match(/^([A-Za-z_]\w*)(?:\s+as\s+([A-Za-z_]\w*))?$/);
+        if (!parsed?.[1]) continue;
+        add(parsed[2] ?? parsed[1], { module: importedModule, symbol: parsed[1], kind: "symbol" });
+      }
+    }
+    const importPattern = /^\s*import\s+([^\n#]+)/gm;
+    for (const match of file.content.matchAll(importPattern)) {
+      for (const raw of (match[1] ?? "").split(",")) {
+        const parsed = raw.trim().match(/^([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*)(?:\s+as\s+([A-Za-z_]\w*))?$/);
+        if (!parsed?.[1]) continue;
+        const alias = parsed[2] ?? parsed[1].split(".")[0]!;
+        const importedModule = parsed[2] ? parsed[1] : parsed[1].split(".")[0]!;
+        add(alias, { module: importedModule, kind: "module" });
+      }
+    }
+    result.set(file.relativePath, bindings);
+  }
+  return result;
+}
+
+function addFunctionIndex(index: Map<string, PythonFunction[]>, key: string, fn: PythonFunction): void {
+  index.set(key, [...(index.get(key) ?? []), fn]);
+}
+
+function routeFunctionIndex(functions: PythonFunction[]): RouteFunctionIndex {
+  const byModuleAndName = new Map<string, PythonFunction[]>();
+  const byPathAndName = new Map<string, PythonFunction[]>();
+  const byClassAndName = new Map<string, PythonFunction[]>();
+  for (const fn of functions) {
+    if (fn.indent === 0) {
+      const moduleParts = pythonModule(fn.path).split(".").filter(Boolean);
+      for (let offset = 0; offset < moduleParts.length; offset += 1) {
+        addFunctionIndex(byModuleAndName, `${moduleParts.slice(offset).join(".")}\u0000${fn.name}`, fn);
+      }
+      addFunctionIndex(byPathAndName, `${fn.path}\u0000${fn.name}`, fn);
+    }
+    if (fn.className) addFunctionIndex(byClassAndName, `${fn.path}\u0000${fn.className}\u0000${fn.name}`, fn);
+  }
+  return { byModuleAndName, byPathAndName, byClassAndName };
 }
 
 function escaped(value: string): string {
@@ -329,6 +443,251 @@ function sourceParameters(fn: PythonFunction): Set<string> {
     if (fn.routeRoot || containsRawSqlInterpolation) result.add(parameter.name);
   }
   return result;
+}
+
+function uniqueRouteTarget(candidates: Iterable<PythonFunction>): PythonFunction | undefined {
+  const unique = [...new Map([...candidates].map((candidate) => [candidate.id, candidate])).values()];
+  return unique.length === 1 ? unique[0] : undefined;
+}
+
+function hasUnsupportedLocalBinding(fn: PythonFunction, name: string): boolean {
+  if (fn.parameters.some((parameter) => parameter.name === name)) return true;
+  const identifier = escaped(name);
+  const assignment = new RegExp(`^\\s*${identifier}(?:\\s*:[^=\\n]+)?\\s*=\\s*(?!=)`, "m");
+  const loop = new RegExp(`^\\s*(?:async\\s+)?for\\s+${identifier}\\s+in\\b`, "m");
+  const contextBinding = new RegExp(`^\\s*(?:async\\s+)?with\\b[^\\n]*\\bas\\s+${identifier}\\b|^\\s*except\\b[^\\n]*\\bas\\s+${identifier}\\b`, "m");
+  const nestedDefinition = new RegExp(`^\\s*(?:(?:async\\s+)?def|class)\\s+${identifier}\\b`, "m");
+  return assignment.test(fn.source) || loop.test(fn.source) || contextBinding.test(fn.source) || nestedDefinition.test(fn.source);
+}
+
+function resolveRouteCallTarget(
+  fn: PythonFunction,
+  callee: string,
+  imports: Map<string, Map<string, PythonImportTarget[]>>,
+  index: RouteFunctionIndex,
+): PythonFunction | undefined {
+  let expression = callee.trim();
+  if (!expression.includes(".")) {
+    if (hasUnsupportedLocalBinding(fn, expression) && !fn.aliases.has(expression)) return undefined;
+    const visited = new Set<string>();
+    while (fn.aliases.has(expression)) {
+      if (visited.has(expression)) return undefined;
+      visited.add(expression);
+      const aliases = fn.aliases.get(expression) ?? [];
+      if (aliases.length !== 1 || !aliases[0]) return undefined;
+      expression = aliases[0];
+    }
+    if (hasUnsupportedLocalBinding(fn, expression)) return undefined;
+  }
+
+  const parts = expression.split(".");
+  if (parts.length > 1 && parts[0] !== "self" && parts[0] !== "cls"
+    && (fn.aliases.has(parts[0]!) || hasUnsupportedLocalBinding(fn, parts[0]!))) return undefined;
+  const candidates: PythonFunction[] = [];
+  if (parts.length === 1) {
+    candidates.push(...(index.byPathAndName.get(`${fn.path}\u0000${parts[0]}`) ?? []));
+    for (const binding of imports.get(fn.path)?.get(parts[0]!) ?? []) {
+      if (binding.kind !== "symbol" || !binding.symbol) continue;
+      candidates.push(...(index.byModuleAndName.get(`${binding.module}\u0000${binding.symbol}`) ?? []));
+    }
+    return uniqueRouteTarget(candidates);
+  }
+
+  if ((parts[0] === "self" || parts[0] === "cls") && parts.length === 2 && fn.className) {
+    return uniqueRouteTarget(index.byClassAndName.get(`${fn.path}\u0000${fn.className}\u0000${parts[1]}`) ?? []);
+  }
+  if (parts.length === 2) {
+    candidates.push(...(index.byClassAndName.get(`${fn.path}\u0000${parts[0]}\u0000${parts[1]}`) ?? []));
+  }
+
+  const first = parts[0]!;
+  const functionName = parts.at(-1)!;
+  const middle = parts.slice(1, -1);
+  for (const binding of imports.get(fn.path)?.get(first) ?? []) {
+    const moduleParts = binding.kind === "module"
+      ? [binding.module, ...middle]
+      : [binding.module, binding.symbol, ...middle];
+    const module = moduleParts.filter(Boolean).join(".");
+    candidates.push(...(index.byModuleAndName.get(`${module}\u0000${functionName}`) ?? []));
+  }
+  return uniqueRouteTarget(candidates);
+}
+
+function mergeOriginDepths(
+  target: OriginDepths,
+  source: OriginDepths,
+  increment: number,
+  state: RoutePropagationState,
+): boolean {
+  let changed = false;
+  for (const [origin, depth] of source) {
+    const nextDepth = depth + increment;
+    const current = target.get(origin);
+    if (current !== undefined) {
+      if (nextDepth < current) {
+        target.set(origin, nextDepth);
+        changed = true;
+      }
+      continue;
+    }
+    if (target.size >= MAX_ROUTE_ORIGINS_PER_VALUE) {
+      state.truncated = true;
+      continue;
+    }
+    target.set(origin, nextDepth);
+    changed = true;
+  }
+  return changed;
+}
+
+function expressionOriginDepths(
+  expression: string,
+  flow: RouteLocalFlow,
+  state: RoutePropagationState,
+): OriginDepths {
+  const result = new Map<string, number>();
+  if (SANITIZER_CALL.test(expression)) return result;
+  for (const [name, origins] of flow.origins) {
+    if (expressionHasName(expression, name)) mergeOriginDepths(result, origins, 0, state);
+  }
+  return result;
+}
+
+function routeLocalFlow(
+  fn: PythonFunction,
+  input: Map<string, OriginDepths>,
+  state: RoutePropagationState,
+): RouteLocalFlow {
+  const origins = new Map<string, OriginDepths>();
+  for (const [name, source] of input) {
+    const copy = new Map<string, number>();
+    mergeOriginDepths(copy, source, 0, state);
+    origins.set(name, copy);
+  }
+  const flow = { origins };
+  const assignments = [...fn.source.matchAll(/^\s*([A-Za-z_]\w*(?:\.[A-Za-z_]\w*)?)(?:\s*:[^=\n]+)?\s*=\s*(?!=)([^\n]+)/gm)];
+  const loops = [...fn.source.matchAll(/^\s*(?:async\s+)?for\s+([A-Za-z_]\w*)\s+in\s+([^:\n]+)\s*:/gm)];
+  for (let pass = 0; pass < 8; pass += 1) {
+    let changed = false;
+    for (const match of assignments) {
+      const expression = match[2]!.trim();
+      if (SANITIZER_CALL.test(expression)) continue;
+      const source = expressionOriginDepths(expression, flow, state);
+      if (source.size === 0) continue;
+      const target = origins.get(match[1]!) ?? new Map<string, number>();
+      if (mergeOriginDepths(target, source, 0, state)) changed = true;
+      origins.set(match[1]!, target);
+    }
+    for (const match of loops) {
+      const source = expressionOriginDepths(match[2]!, flow, state);
+      if (source.size === 0) continue;
+      const target = origins.get(match[1]!) ?? new Map<string, number>();
+      if (mergeOriginDepths(target, source, 0, state)) changed = true;
+      origins.set(match[1]!, target);
+    }
+    if (!changed) break;
+  }
+  return flow;
+}
+
+function routeCall(
+  fn: PythonFunction,
+  call: PythonCall,
+  imports: Map<string, Map<string, PythonImportTarget[]>>,
+  index: RouteFunctionIndex,
+): { target: PythonFunction; arguments: string[] } | undefined {
+  const wrapper = baseName(call.callee);
+  if (wrapper === "to_thread" && call.arguments[0]) {
+    const target = resolveRouteCallTarget(fn, call.arguments[0].trim(), imports, index);
+    const argumentsList = call.arguments.slice(1);
+    return target && !argumentsList.some((argument) => /^\s*\*{1,2}/.test(argument))
+      ? { target, arguments: argumentsList }
+      : undefined;
+  }
+  if (wrapper === "run_in_executor" && call.arguments[1]) {
+    const target = resolveRouteCallTarget(fn, call.arguments[1].trim(), imports, index);
+    const argumentsList = call.arguments.slice(2);
+    return target && !argumentsList.some((argument) => /^\s*\*{1,2}/.test(argument))
+      ? { target, arguments: argumentsList }
+      : undefined;
+  }
+  const target = resolveRouteCallTarget(fn, call.callee, imports, index);
+  return target && !call.arguments.some((argument) => /^\s*\*{1,2}/.test(argument))
+    ? { target, arguments: call.arguments }
+    : undefined;
+}
+
+function propagateRouteOrigins(
+  functions: PythonFunction[],
+  routes: FastApiRoute[],
+  imports: Map<string, Map<string, PythonImportTarget[]>>,
+): RouteProvenance {
+  const index = routeFunctionIndex(functions);
+  const origins = new Map<string, RouteOrigin>();
+  const input = new Map<string, Map<string, OriginDepths>>(functions.map((fn) => [fn.id, new Map()]));
+  const state: RoutePropagationState = { truncated: false };
+  const functionsByRouteKey = new Map<string, PythonFunction[]>();
+  for (const fn of functions) {
+    const key = `${fn.path}\u0000${fn.name}`;
+    functionsByRouteKey.set(key, [...(functionsByRouteKey.get(key) ?? []), fn]);
+  }
+
+  const orderedRoutes = [...routes].sort((left, right) => left.sourcePath.localeCompare(right.sourcePath)
+    || left.handlerName.localeCompare(right.handlerName)
+    || left.method.localeCompare(right.method)
+    || left.path.localeCompare(right.path)
+    || left.appKey.localeCompare(right.appKey));
+  for (const route of orderedRoutes) {
+    const candidates = (functionsByRouteKey.get(`${route.sourcePath}\u0000${route.handlerName}`) ?? [])
+      .filter((fn) => fn.source === route.handlerSource);
+    const fn = uniqueRouteTarget(candidates);
+    if (!fn) continue;
+    const routeText = `${route.method} ${route.path}`;
+    const originKey = [fn.id, route.appKey, route.routerKey, routeText].join("\u0000");
+    origins.set(originKey, { key: originKey, route: routeText, handler: route.handlerName });
+    const fnInput = input.get(fn.id)!;
+    for (const parameter of fn.parameters) {
+      if (DEPENDENCY_PARAMETER.test(parameter.declaration) || DEPENDENCY_PARAMETER.test(parameter.name)) continue;
+      const parameterOrigins = fnInput.get(parameter.name) ?? new Map<string, number>();
+      mergeOriginDepths(parameterOrigins, new Map([[originKey, 0]]), 0, state);
+      fnInput.set(parameter.name, parameterOrigins);
+    }
+  }
+
+  const local = new Map<string, RouteLocalFlow>();
+  for (let pass = 0; pass < 14; pass += 1) {
+    let changed = false;
+    for (const fn of functions) {
+      const fnInput = input.get(fn.id)!;
+      if (fnInput.size === 0) continue;
+      const flow = routeLocalFlow(fn, fnInput, state);
+      local.set(fn.id, flow);
+      for (const call of fn.calls) {
+        const resolved = routeCall(fn, call, imports, index);
+        if (!resolved) continue;
+        const targetInput = input.get(resolved.target.id)!;
+        const positionalParameters = resolved.target.parameters.filter((parameter) => !/^(?:self|cls)$/.test(parameter.name));
+        resolved.arguments.forEach((rawArgument, argumentIndex) => {
+          const argument = keywordArgument(rawArgument);
+          const argumentOrigins = expressionOriginDepths(argument.expression, flow, state);
+          if (argumentOrigins.size === 0) return;
+          const parameter = argument.name
+            ? resolved.target.parameters.find((item) => item.name === argument.name)
+            : positionalParameters[argumentIndex];
+          if (!parameter) return;
+          const parameterOrigins = targetInput.get(parameter.name) ?? new Map<string, number>();
+          if (mergeOriginDepths(parameterOrigins, argumentOrigins, 1, state)) changed = true;
+          targetInput.set(parameter.name, parameterOrigins);
+        });
+      }
+    }
+    if (!changed) break;
+  }
+  for (const fn of functions) {
+    const fnInput = input.get(fn.id)!;
+    if (fnInput.size > 0) local.set(fn.id, routeLocalFlow(fn, fnInput, state));
+  }
+  return { origins, local, truncated: state.truncated };
 }
 
 function propagateFlows(
@@ -442,6 +801,19 @@ function fileSink(call: PythonCall, tainted: Set<string>): boolean {
   return false;
 }
 
+function fileSinkExpressions(call: PythonCall): string[] {
+  const lower = call.callee.toLowerCase();
+  const base = baseName(lower);
+  if (base === "open" || /(?:^|\.)os\.(?:remove|unlink|rename|replace)$/.test(lower)) {
+    return [firstArgument(call)].filter(Boolean);
+  }
+  if (["read_text", "read_bytes", "write_text", "write_bytes", "unlink", "rename"].includes(base)) {
+    const receiver = call.callee.split(".").slice(0, -1).join(".");
+    return [receiver, firstArgument(call)].filter(Boolean);
+  }
+  return [];
+}
+
 function dynamicSqlSink(call: PythonCall, flow: LocalFlow): boolean {
   const base = baseName(call.callee).toLowerCase();
   if (!["text", "execute", "exec", "query", "exec_driver_sql"].includes(base)) return false;
@@ -463,6 +835,56 @@ function storedPathFlow(fn: PythonFunction, flow: LocalFlow): PythonCall | undef
         && expressionTainted(argument.expression, flow.tainted));
     });
   });
+}
+
+function storedPathExpressions(call: PythonCall): string[] {
+  return call.arguments.map(keywordArgument).flatMap((argument) => (
+    argument.name && /^(?:url|path|file_path|local_path|filename)$/i.test(argument.name)
+      ? [argument.expression]
+      : []
+  ));
+}
+
+function signalRouteOrigins(
+  expressions: string[],
+  flow: RouteLocalFlow | undefined,
+  provenance: RouteProvenance,
+): OriginDepths {
+  const result = new Map<string, number>();
+  if (!flow) return result;
+  const state: RoutePropagationState = { truncated: provenance.truncated };
+  for (const expression of expressions) {
+    mergeOriginDepths(result, expressionOriginDepths(expression, flow, state), 0, state);
+  }
+  if (state.truncated) provenance.truncated = true;
+  return result;
+}
+
+function routeSignalMetadata(
+  provenance: RouteProvenance,
+  depths: OriginDepths,
+): Record<string, string | number | boolean | string[]> {
+  const resolved = [...depths.entries()].flatMap(([originKey, depth]) => {
+    const origin = provenance.origins.get(originKey);
+    return origin ? [{ origin, depth }] : [];
+  }).sort((left, right) => left.origin.route.localeCompare(right.origin.route)
+    || left.origin.handler.localeCompare(right.origin.handler)
+    || left.origin.key.localeCompare(right.origin.key));
+  if (resolved.length === 0) return {};
+  const routes = [...new Set(resolved.map((item) => item.origin.route))];
+  const handlers = [...new Set(resolved.map((item) => item.origin.handler))];
+  const minimumDepth = Math.min(...resolved.map((item) => item.depth));
+  const maximumDepth = Math.max(...resolved.map((item) => item.depth));
+  const routeAttribution = maximumDepth === 0
+    ? "direct_handler"
+    : minimumDepth > 0 ? "bounded_call_graph" : "mixed";
+  return {
+    route: routes[0]!,
+    routes,
+    ...(handlers.length === 1 ? { handler: handlers[0]! } : {}),
+    routeAttribution,
+    routeCallDepth: maximumDepth,
+  };
 }
 
 function credentialClients(classes: ClassBlock[]): Map<string, { secret: SourceLocation; authorization: SourceLocation }> {
@@ -503,6 +925,7 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
   const functions = files.flatMap((file) => extractFunctions(file, classes.filter((block) => block.path === file.relativePath), routeKeys));
   const imports = importAliases(files);
   const propagated = propagateFlows(functions, imports);
+  const routeProvenance = propagateRouteOrigins(functions, fastApi.routes, projectImports(files));
   const clients = credentialClients(classes);
   const signals: Signal[] = [];
   const emitted = new Set<string>();
@@ -518,6 +941,7 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
     if (!propagated.active.has(fn.id) || truncated) continue;
     const flow = propagated.local.get(fn.id);
     if (!flow) continue;
+    const routeFlow = routeProvenance.local.get(fn.id);
     for (const call of fn.calls) {
       const argument = firstArgument(call);
       if (networkSink(call) && expressionTainted(argument, flow.tainted)) {
@@ -531,7 +955,11 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
           tags: ["python", "dataflow", "ssrf", "api", "network"],
           remediation: "Allowlist HTTPS hosts and ports, resolve and reject private, loopback, link-local and metadata addresses, disable cross-origin redirects, and revalidate every redirect target.",
           locations: [callLocation(fn, call)],
-          metadata: { function: fn.name, sink: call.callee },
+          metadata: {
+            function: fn.name,
+            sink: call.callee,
+            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([argument], routeFlow, routeProvenance)),
+          },
         }), `${fn.id}:${call.offset}:ssrf`);
       }
       if (fileSink(call, flow.tainted)) {
@@ -545,7 +973,11 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
           tags: ["python", "dataflow", "path-traversal", "file", "api"],
           remediation: "Ignore client filesystem paths. Generate server-side names, resolve under a fixed root, reject absolute paths and traversal, and verify the canonical target remains inside that root.",
           locations: [callLocation(fn, call)],
-          metadata: { function: fn.name, sink: call.callee },
+          metadata: {
+            function: fn.name,
+            sink: call.callee,
+            ...routeSignalMetadata(routeProvenance, signalRouteOrigins(fileSinkExpressions(call), routeFlow, routeProvenance)),
+          },
         }), `${fn.id}:${call.offset}:file`);
       }
       if (dynamicSqlSink(call, flow)) {
@@ -559,7 +991,11 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
           tags: ["python", "dataflow", "sql-injection", "database", "api"],
           remediation: "Use bound parameters for values and a strict allowlist for identifiers; never interpolate request-derived text into a SQL string.",
           locations: [callLocation(fn, call)],
-          metadata: { function: fn.name, sink: call.callee },
+          metadata: {
+            function: fn.name,
+            sink: call.callee,
+            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([argument], routeFlow, routeProvenance)),
+          },
         }), `${fn.id}:${call.offset}:sql`);
       }
 
@@ -578,7 +1014,11 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
           tags: ["python", "dataflow", "ssrf", "credential-exfiltration", "llm", "api"],
           remediation: "Do not accept model base URLs from ordinary requests. Select providers from a server-side allowlist and bind each credential to its configured origin; never reuse a server secret for a caller-selected destination.",
           locations: [callLocation(fn, call), client.secret, client.authorization],
-          metadata: { function: fn.name, client: resolved },
+          metadata: {
+            function: fn.name,
+            client: resolved,
+            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([baseUrl.expression], routeFlow, routeProvenance)),
+          },
         }), `${fn.id}:${call.offset}:secret-url`);
       }
     }
@@ -595,7 +1035,12 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
         tags: ["python", "dataflow", "path-traversal", "file", "second-order"],
         remediation: "Persist only opaque storage identifiers. Derive canonical server paths from those identifiers under a fixed root and reject client-provided absolute or relative filesystem paths.",
         locations: [callLocation(fn, storedPath)],
-        metadata: { function: fn.name, sink: baseName(storedPath.callee), secondOrder: true },
+        metadata: {
+          function: fn.name,
+          sink: baseName(storedPath.callee),
+          secondOrder: true,
+          ...routeSignalMetadata(routeProvenance, signalRouteOrigins(storedPathExpressions(storedPath), routeFlow, routeProvenance)),
+        },
       }), `${fn.id}:${storedPath.offset}:stored-file`);
     }
   }
@@ -609,6 +1054,7 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
       required: context.profile.languages.includes("Python") || fastApi.detected,
       reason: [
         "Lexical interprocedural analysis covers explicit Python calls and common wrappers; reflection, framework pipelines, ORM aliases, and runtime URL/path validation require review",
+        routeProvenance.truncated ? `route attribution reached the ${MAX_ROUTE_ORIGINS_PER_VALUE}-origin safety limit` : undefined,
         truncated ? `finding output reached the ${MAX_SIGNALS_PER_DETECTOR} signal safety limit` : undefined,
       ].filter(Boolean).join("; "),
       durationMs: Date.now() - started,
