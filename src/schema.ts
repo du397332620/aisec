@@ -1,6 +1,6 @@
 export const SCHEMA_VERSION = "1.0.0" as const;
 export const SCAN_REPORT_SCHEMA_VERSION = "1.2.0" as const;
-export const CI_REPORT_SCHEMA_VERSION = "1.1.0" as const;
+export const CI_REPORT_SCHEMA_VERSION = "1.2.0" as const;
 export const RULE_PACK_PREVIEW_SCHEMA_VERSION = "1.0.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
@@ -327,6 +327,12 @@ export interface ScanReport {
 export type CiAnnotationLevel = "error" | "warning" | "notice";
 export type CiAnnotationKind = "decision" | "coverage" | "finding";
 export type CiBaselineState = "new" | "unchanged";
+export type RouteAttributionGapReason =
+  | "commented_out_call"
+  | "ambiguous_or_dynamic_dispatch"
+  | "request_origin_not_proven"
+  | "no_proven_route_path"
+  | "not_recorded";
 
 export interface CiCoverageGap {
   domain: string;
@@ -367,8 +373,21 @@ export interface CiAnnotation {
   baselineState?: CiBaselineState;
 }
 
+export interface CiRouteAttributionReasonSummary {
+  reason: RouteAttributionGapReason;
+  signals: number;
+}
+
+export interface CiRouteAttributionSummary {
+  eligibleSignals: number;
+  attributedSignals: number;
+  unattributedSignals: number;
+  unattributedFindings: number;
+  reasons: CiRouteAttributionReasonSummary[];
+}
+
 export interface CiReport {
-  schemaVersion: "1.0.0" | typeof CI_REPORT_SCHEMA_VERSION;
+  schemaVersion: "1.0.0" | "1.1.0" | typeof CI_REPORT_SCHEMA_VERSION;
   toolVersion: string;
   scanId: string;
   profileName: ScanReport["profileName"];
@@ -383,6 +402,7 @@ export interface CiReport {
   };
   policy: CiPolicySummary;
   rulePacks?: RulePackRecord[];
+  routeAttribution?: CiRouteAttributionSummary;
   comparison?: {
     baselineScanId: string;
     new: number;

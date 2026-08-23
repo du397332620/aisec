@@ -58,6 +58,8 @@ try {
     "aisec rule-pack check ../target",
     "RulePack 1.1.0",
     "RulePackPreview 1.0.0",
+    "CiReport 1.2.0",
+    "stable machine-readable reasons",
     "also makes every active pack's required scan coverage `partial`",
     "emitWhen: absent",
     "--confirm-policy-suppressions",
@@ -101,7 +103,14 @@ try {
   const stored = join(temporary, "data", "scans", `${vulnerable.scanId}.json`);
   await access(stored);
   const ci = report(run(["report", stored, "--format", "ci"]), "CI report");
-  assert.equal(ci.schemaVersion, "1.1.0");
+  assert.equal(ci.schemaVersion, "1.2.0");
+  assert.deepEqual(ci.routeAttribution, {
+    eligibleSignals: 0,
+    attributedSignals: 0,
+    unattributedSignals: 0,
+    unattributedFindings: 0,
+    reasons: [],
+  });
   assert.equal(ci.scanId, vulnerable.scanId);
   assert.equal(ci.recommendedExitCode, 1);
   assert.ok(ci.annotations.length <= 71);
@@ -114,6 +123,7 @@ try {
   const markdown = await readFile(markdownOutput, "utf8");
   assert.match(markdown, /^# AIsec security acceptance/u);
   assert.match(markdown, /## Required coverage/u);
+  assert.match(markdown, /## Route attribution/u);
   assert.match(markdown, /## Policy/u);
   const finding = vulnerable.findings.find((item) => item.status === "open");
   assert.ok(finding, "vulnerable fixture must expose a finding for the documented fix-contract path");

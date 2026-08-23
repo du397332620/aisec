@@ -29,6 +29,7 @@ test("CiReport is a strict coverage-aware machine contract", async () => {
   const source = await vulnerableReport();
   const report = buildCiReport(source);
   assert.equal(validateCiReport(report), report);
+  assert.equal(report.schemaVersion, "1.2.0");
   assert.equal(report.decision, "block");
   assert.equal(report.recommendedExitCode, 1);
   assert.equal(report.counts.open, report.counts.critical + report.counts.high + report.counts.medium + report.counts.low + report.counts.info);
@@ -37,14 +38,28 @@ test("CiReport is a strict coverage-aware machine contract", async () => {
   assert.ok(report.annotations.some((item) => item.kind === "finding" && item.evidenceLevel === "inferred" && item.level === "warning"));
   assert.deepEqual(report.policy.relaxations, ["source_only_profile", "external_engines_disabled"]);
   assert.deepEqual(report.rulePacks, []);
+  assert.deepEqual(report.routeAttribution, {
+    eligibleSignals: 0,
+    attributedSignals: 0,
+    unattributedSignals: 0,
+    unattributedFindings: 0,
+    reasons: [],
+  });
 
-  const legacy = structuredClone(report);
+  const legacy11 = structuredClone(report);
+  legacy11.schemaVersion = "1.1.0";
+  delete legacy11.routeAttribution;
+  assert.equal(validateCiReport(legacy11), legacy11, "legacy CiReport 1.1.0 remains readable without route-attribution records");
+  const legacy = structuredClone(legacy11);
   legacy.schemaVersion = "1.0.0";
   delete legacy.rulePacks;
-  assert.equal(validateCiReport(legacy), legacy, "legacy CiReport 1.0.0 remains readable without rule-pack records");
+  assert.equal(validateCiReport(legacy), legacy, "legacy CiReport 1.0.0 remains readable without rule-pack or route-attribution records");
   const missingRulePacks = structuredClone(report);
   delete missingRulePacks.rulePacks;
   assert.throws(() => validateCiReport(missingRulePacks), /CiReport.*rulePacks/);
+  const missingRouteAttribution = structuredClone(report);
+  delete missingRouteAttribution.routeAttribution;
+  assert.throws(() => validateCiReport(missingRouteAttribution), /CiReport.*routeAttribution/);
 
   const incomplete = structuredClone(source);
   incomplete.decision = "incomplete";
@@ -283,6 +298,53 @@ test("route security cards include exact FastAPI dangerous-dataflow evidence", a
   assert.match(html, /untrusted file path/u);
   assert.match(html, /SQL injection/u);
   assert.match(html, /server credential forwarding/u);
+});
+
+test("route attribution gaps remain canonical evidence across CI, Markdown, terminal and HTML", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "python-dataflow", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const signal = report.signals.find((candidate) => candidate.ruleId === "python.dataflow.ssrf");
+  assert.ok(signal?.metadata);
+  const originalIdentity = { id: signal.id, fingerprint: signal.fingerprint, signals: report.signals.length, findings: report.findings.length };
+  delete signal.metadata.route;
+  delete signal.metadata.routes;
+  delete signal.metadata.handler;
+  delete signal.metadata.routeAttribution;
+  delete signal.metadata.routeCallDepth;
+  signal.metadata.routeAttributionStatus = "unattributed";
+  signal.metadata.routeAttributionReason = "request_origin_not_proven";
+
+  const review = buildRouteSecurityReview(report);
+  assert.equal(review.attribution.eligibleSignals, 5);
+  assert.equal(review.attribution.attributedSignals, 4);
+  assert.equal(review.attribution.unattributedSignals, 1);
+  assert.equal(review.attributionGaps.length, 1);
+  assert.equal(review.attributionGaps[0]?.reason, "request_origin_not_proven");
+  assert.ok(!review.cards.some((card) => card.route === "POST /fetch"));
+
+  const ci = buildCiReport(report);
+  assert.deepEqual(ci.routeAttribution, {
+    eligibleSignals: 5,
+    attributedSignals: 4,
+    unattributedSignals: 1,
+    unattributedFindings: 1,
+    reasons: [{ reason: "request_origin_not_proven", signals: 1 }],
+  });
+  assert.match(renderMarkdownSummary(ci), /## Route attribution[\s\S]*request origin not proven/u);
+  assert.match(renderTerminalReport(report), /Unattributed FastAPI data-flow evidence[\s\S]*request origin not proven/u);
+  assert.match(renderHtml(report), /Unattributed FastAPI data-flow evidence[\s\S]*request origin not proven/u);
+  assert.deepEqual(
+    { id: signal.id, fingerprint: signal.fingerprint, signals: report.signals.length, findings: report.findings.length },
+    originalIdentity,
+    "presentation metadata must not change canonical signal or finding identity",
+  );
+
+  const inconsistent = structuredClone(ci);
+  inconsistent.routeAttribution!.unattributedSignals = 2;
+  assert.throws(() => validateCiReport(inconsistent), /route-attribution totals are inconsistent/u);
 });
 
 test("scan and rescan retain decision exits with CI output formats", async () => {

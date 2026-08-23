@@ -1,12 +1,13 @@
 import type { Finding, ScanReport, Signal } from "../schema.js";
 import { buildCiReport } from "./ci.js";
 import { partitionFindingGroups } from "./finding-groups.js";
-import { buildRouteSecurityReview, ROUTE_SECURITY_CATEGORY_LABELS, type RouteSecurityEvidence } from "./route-security-cards.js";
+import { buildRouteSecurityReview, ROUTE_ATTRIBUTION_GAP_LABELS, ROUTE_SECURITY_CATEGORY_LABELS, type RouteSecurityEvidence } from "./route-security-cards.js";
 import { safeRelativePath, singleLine } from "./safety.js";
 
 const MAX_HTML_ROUTE_CARDS = 500;
 const MAX_HTML_ROUTE_EVIDENCE = 50;
 const MAX_HTML_DEPLOYMENT_CONTEXTS = 50;
+const MAX_HTML_ROUTE_ATTRIBUTION_GAPS = 200;
 
 function escape(value: unknown): string {
   return String(value ?? "")
@@ -74,13 +75,22 @@ export function renderHtml(report: ScanReport): string {
     const findings = context.findings.map((finding) => `<code>${escape(finding.id)}</code> <small>${escape(finding.status)} · ${escape(comparisonState(report, finding.fingerprint))}</small>`).join(", ");
     return `<article class="deployment-context ${context.hasOpenFinding ? "finding-open" : "finding-suppressed"}"><h3><span class="severity ${escape(context.severity)}">${escape(context.severity)}</span> ${escape(context.signal.title)}</h3><p>Service: ${service} · Published ports: ${ports}<br>Location: ${signalLocation(context.signal)}<br>Canonical findings: ${findings}</p></article>`;
   }).join("\n");
+  const routeAttributionGaps = routeSecurity.attributionGaps.slice(0, MAX_HTML_ROUTE_ATTRIBUTION_GAPS).map((gap) => {
+    const findings = gap.findings.map((finding) => `<code>${escape(finding.id)}</code> <small>${escape(finding.status)} · ${escape(comparisonState(report, finding.fingerprint))}</small>`).join(", ");
+    const functionName = gap.functionName ? `<code>${escape(singleLine(gap.functionName, 200))}</code>` : "not recorded";
+    return `<tr><td>${escape(ROUTE_ATTRIBUTION_GAP_LABELS[gap.reason])}</td><td>${escape(ROUTE_SECURITY_CATEGORY_LABELS[gap.category])}<br><small><code>${escape(gap.signal.ruleId)}</code></small></td><td>${functionName}</td><td>${signalLocation(gap.signal)}</td><td>${findings}</td></tr>`;
+  }).join("\n");
   const routePresentationBounds = [
     routeSecurity.cards.length > MAX_HTML_ROUTE_CARDS ? `${routeSecurity.cards.length - MAX_HTML_ROUTE_CARDS} additional route cards` : undefined,
     routeSecurity.deploymentContexts.length > MAX_HTML_DEPLOYMENT_CONTEXTS ? `${routeSecurity.deploymentContexts.length - MAX_HTML_DEPLOYMENT_CONTEXTS} additional deployment contexts` : undefined,
     routeSecurity.omittedRouteAliases > 0 ? `${routeSecurity.omittedRouteAliases} route aliases` : undefined,
     routeSecurity.omittedAssociations > 0 ? `${routeSecurity.omittedAssociations} route-evidence associations` : undefined,
+    routeSecurity.attributionGaps.length > MAX_HTML_ROUTE_ATTRIBUTION_GAPS ? `${routeSecurity.attributionGaps.length - MAX_HTML_ROUTE_ATTRIBUTION_GAPS} attribution gaps` : undefined,
   ].filter((value): value is string => Boolean(value));
-  const routeSecuritySection = routeCards || deploymentContexts ? `<section><h2>Route security review</h2><p><strong>Evidence-only view:</strong> shown categories are detected gaps. An absent category is not evidence that the control passed.</p>${deploymentContexts ? `<h3>Project deployment context</h3><p>This evidence is not attributed to a specific route because static project co-occurrence does not prove service-to-route ownership.</p>${deploymentContexts}` : ""}${routeCards ? `<h3>Route cards</h3>${routeCards}` : ""}${routePresentationBounds.length > 0 ? `<p><small>Presentation bounds omitted ${escape(routePresentationBounds.join(", "))}; canonical findings remain unchanged.</small></p>` : ""}</section>` : "";
+  const routeAttributionSummary = routeSecurity.attribution.eligibleSignals > 0
+    ? `<p><strong>Route attribution:</strong> ${routeSecurity.attribution.attributedSignals} of ${routeSecurity.attribution.eligibleSignals} eligible signals have proven routes; ${routeSecurity.attribution.unattributedSignals} signals across ${routeSecurity.attribution.unattributedFindings} findings remain unattributed.</p>`
+    : "";
+  const routeSecuritySection = routeCards || deploymentContexts || routeAttributionGaps ? `<section><h2>Route security review</h2><p><strong>Evidence-only view:</strong> shown categories are detected gaps. An absent category is not evidence that the control passed.</p>${routeAttributionSummary}${deploymentContexts ? `<h3>Project deployment context</h3><p>This evidence is not attributed to a specific route because static project co-occurrence does not prove service-to-route ownership.</p>${deploymentContexts}` : ""}${routeAttributionGaps ? `<h3>Unattributed FastAPI data-flow evidence</h3><p>These canonical findings remain reviewable, but static analysis did not prove an exact request route. Reasons describe the attribution boundary, not exploitability.</p><table><thead><tr><th>Reason</th><th>Observed gap</th><th>Function</th><th>Location</th><th>Canonical findings</th></tr></thead><tbody>${routeAttributionGaps}</tbody></table>` : ""}${routeCards ? `<h3>Route cards</h3>${routeCards}` : ""}${routePresentationBounds.length > 0 ? `<p><small>Presentation bounds omitted ${escape(routePresentationBounds.join(", "))}; canonical findings remain unchanged.</small></p>` : ""}</section>` : "";
   const { groups: findingGroups, ungrouped: ungroupedFindings } = partitionFindingGroups(report);
   const findingRows = ungroupedFindings.map((finding) => findingRow(report, finding)).join("\n");
   const groupedFindingSections = findingGroups.map((group) => {

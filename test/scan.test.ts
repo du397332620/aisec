@@ -6228,6 +6228,7 @@ test("Python API dataflow detects URL, file, SQL, and model credential destinati
   for (const signal of dataflow) {
     assert.equal(signal.metadata?.route, expectedRoutes.get(signal.ruleId));
     assert.deepEqual(signal.metadata?.routes, [expectedRoutes.get(signal.ruleId)]);
+    assert.equal(signal.metadata?.routeAttributionStatus, "attributed");
     assert.equal(signal.metadata?.routeAttribution, "direct_handler");
     assert.equal(signal.metadata?.routeCallDepth, 0);
   }
@@ -6265,6 +6266,7 @@ def stacked(payload: dict):
     assert.equal(helper.metadata?.route, "POST /tainted");
     assert.deepEqual(helper.metadata?.routes, ["POST /tainted"]);
     assert.equal(helper.metadata?.handler, "tainted");
+    assert.equal(helper.metadata?.routeAttributionStatus, "attributed");
     assert.equal(helper.metadata?.routeAttribution, "bounded_call_graph");
     assert.equal(helper.metadata?.routeCallDepth, 1);
     assert.ok(!JSON.stringify(helper.metadata).includes("/fixed"));
@@ -6275,6 +6277,7 @@ def stacked(payload: dict):
     assert.equal(stacked.metadata?.route, "POST /stacked-a");
     assert.deepEqual(stacked.metadata?.routes, ["POST /stacked-a", "PUT /stacked-b"]);
     assert.equal(stacked.metadata?.routeAttribution, "direct_handler");
+    assert.equal(stacked.metadata?.routeAttributionStatus, "attributed");
     assert.equal(stacked.metadata?.routeCallDepth, 0);
   } finally {
     await rm(temporary, { recursive: true, force: true });
@@ -6316,6 +6319,7 @@ app.include_router(router, prefix="/api")
     assert.equal(signal.metadata?.route, "POST /api/fetch");
     assert.deepEqual(signal.metadata?.routes, ["POST /api/fetch"]);
     assert.equal(signal.metadata?.handler, "imported_route");
+    assert.equal(signal.metadata?.routeAttributionStatus, "attributed");
     assert.equal(signal.metadata?.routeAttribution, "bounded_call_graph");
     assert.equal(signal.metadata?.routeCallDepth, 1);
   } finally {
@@ -6373,6 +6377,7 @@ app.include_router(router, prefix="/api")
     assert.equal(signal.metadata?.route, "POST /api/attachment");
     assert.deepEqual(signal.metadata?.routes, ["POST /api/attachment"]);
     assert.equal(signal.metadata?.handler, "read_attachment");
+    assert.equal(signal.metadata?.routeAttributionStatus, "attributed");
     assert.equal(signal.metadata?.routeAttribution, "bounded_call_graph");
     assert.equal(signal.metadata?.routeCallDepth, 2);
 
@@ -6382,6 +6387,7 @@ app.include_router(router, prefix="/api")
     assert.equal(sql.metadata?.route, "POST /api/query");
     assert.deepEqual(sql.metadata?.routes, ["POST /api/query"]);
     assert.equal(sql.metadata?.handler, "query_attachment");
+    assert.equal(sql.metadata?.routeAttributionStatus, "attributed");
     assert.equal(sql.metadata?.routeAttribution, "bounded_call_graph");
     assert.equal(sql.metadata?.routeCallDepth, 1);
   } finally {
@@ -6466,6 +6472,7 @@ def class_shadowed_route(payload: dict):
     assert.ok(nested);
     assert.equal(nested.metadata?.route, "POST /nested");
     assert.equal(nested.metadata?.handler, "nested_route");
+    assert.equal(nested.metadata?.routeAttributionStatus, "attributed");
     assert.equal(nested.metadata?.routeAttribution, "bounded_call_graph");
     assert.equal(nested.metadata?.routeCallDepth, 1);
 
@@ -6474,6 +6481,7 @@ def class_shadowed_route(payload: dict):
     assert.ok(captured);
     assert.equal(captured.metadata?.route, "POST /captured");
     assert.equal(captured.metadata?.handler, "captured_route");
+    assert.equal(captured.metadata?.routeAttributionStatus, "attributed");
     assert.equal(captured.metadata?.routeAttribution, "bounded_call_graph");
     assert.equal(captured.metadata?.routeCallDepth, 1);
 
@@ -6482,7 +6490,9 @@ def class_shadowed_route(payload: dict):
     assert.ok(unresolved.length >= 6, "the canonical broad detector must retain the ambiguous sink evidence");
     assert.ok(unresolved.every((signal) => signal.metadata?.route === undefined
       && signal.metadata?.routes === undefined
-      && signal.metadata?.routeAttribution === undefined));
+      && signal.metadata?.routeAttribution === undefined
+      && signal.metadata?.routeAttributionStatus === "unattributed"
+      && typeof signal.metadata?.routeAttributionReason === "string"));
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }
@@ -6507,6 +6517,7 @@ def bounded(payload: dict):
       && candidate.metadata?.function === "bounded");
     assert.ok(signal);
     assert.equal(signal.metadata?.route, "POST /routes/0");
+    assert.equal(signal.metadata?.routeAttributionStatus, "attributed");
     assert.equal(Array.isArray(signal.metadata?.routes) ? signal.metadata.routes.length : 0, 128);
     assert.match(report.coverage.find((item) => item.domain === "python-dataflow")?.reason ?? "", /128-origin safety limit/u);
   } finally {
@@ -6544,7 +6555,53 @@ def shadowed(first_fetch, payload: dict):
     assert.equal(signals.length, 2, "the existing broad detector still reports both possible sinks");
     assert.ok(signals.every((signal) => signal.metadata?.route === undefined
       && signal.metadata?.routes === undefined
-      && signal.metadata?.routeAttribution === undefined));
+      && signal.metadata?.routeAttribution === undefined
+      && signal.metadata?.routeAttributionStatus === "unattributed"
+      && signal.metadata?.routeAttributionReason === "ambiguous_or_dynamic_dispatch"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Python route attribution explains commented, ambiguous, runtime and uninvoked gaps", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-python-route-gap-reasons-"));
+  try {
+    await writeFile(join(temporary, "main.py"), `
+import requests
+from fastapi import FastAPI
+
+app = FastAPI()
+
+def commented_fetch(url):
+    return requests.get(url)
+
+def first_fetch(url):
+    return requests.get(url)
+
+def second_fetch(url):
+    return requests.get(url)
+
+def runtime_query(context):
+    return session.exec(text(f"select * from records where title = '{context.get('title')}'"))
+
+@app.post("/review")
+def review(payload: dict):
+    # commented_fetch(payload.get("url"))
+    selected = first_fetch if payload.get("primary") else second_fetch
+    selected(payload.get("url"))
+    def returned_fetch():
+        return requests.get(payload.get("nested_url"))
+    return returned_fetch
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const dataflow = report.signals.filter((signal) => signal.ruleId.startsWith("python.dataflow."));
+    const byFunction = new Map(dataflow.map((signal) => [String(signal.metadata?.function), signal]));
+    assert.equal(byFunction.get("commented_fetch")?.metadata?.routeAttributionReason, "commented_out_call");
+    assert.equal(byFunction.get("first_fetch")?.metadata?.routeAttributionReason, "ambiguous_or_dynamic_dispatch");
+    assert.equal(byFunction.get("second_fetch")?.metadata?.routeAttributionReason, "ambiguous_or_dynamic_dispatch");
+    assert.equal(byFunction.get("runtime_query")?.metadata?.routeAttributionReason, "request_origin_not_proven");
+    assert.equal(byFunction.get("review")?.metadata?.routeAttributionReason, "no_proven_route_path");
+    assert.ok(dataflow.every((signal) => signal.metadata?.routeAttributionStatus === "unattributed"));
   } finally {
     await rm(temporary, { recursive: true, force: true });
   }

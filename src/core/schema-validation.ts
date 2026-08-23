@@ -26,6 +26,18 @@ const ruleCatalogValidator = ajv.compile(loadSchema("rule-catalog.schema.json"))
 const rulePackValidator = ajv.compile(loadSchema("rule-pack.schema.json"));
 const rulePackPreviewValidator = ajv.compile(loadSchema("rule-pack-preview.schema.json"));
 const securityPolicyValidator = ajv.compile(loadSchema("security-policy.schema.json"));
+const ROUTE_ATTRIBUTION_RULES = new Set([
+  "python.dataflow.sql-injection",
+  "python.dataflow.ssrf",
+  "python.dataflow.untrusted-file-path",
+  "python.dataflow.client-url-with-server-secret",
+]);
+const ROUTE_ATTRIBUTION_REASONS = new Set([
+  "commented_out_call",
+  "ambiguous_or_dynamic_dispatch",
+  "request_origin_not_proven",
+  "no_proven_route_path",
+]);
 
 function describeError(error: ErrorObject): string {
   const path = error.instancePath || "/";
@@ -44,6 +56,30 @@ function assertSchema<T>(name: PublicSchemaName, validator: ValidateFunction, va
 
 export function validateScanReport(value: unknown): ScanReport {
   const report = assertSchema<ScanReport>("ScanReport", scanReportValidator, value, "1.2.0");
+  for (const signal of report.signals) {
+    if (signal.engine !== "aisec-python" || !ROUTE_ATTRIBUTION_RULES.has(signal.ruleId)) continue;
+    const status = signal.metadata?.routeAttributionStatus;
+    const reason = signal.metadata?.routeAttributionReason;
+    if (status === undefined && reason === undefined) continue;
+    if (status !== "attributed" && status !== "unattributed") {
+      throw new Error(`ScanReport Python route attribution ${signal.id} has an unsupported status`);
+    }
+    if (status === "attributed") {
+      if (reason !== undefined || typeof signal.metadata?.route !== "string"
+        || !Array.isArray(signal.metadata?.routes)
+        || !["direct_handler", "bounded_call_graph", "mixed"].includes(String(signal.metadata?.routeAttribution))
+        || typeof signal.metadata?.routeCallDepth !== "number") {
+        throw new Error(`ScanReport attributed Python signal ${signal.id} requires route evidence without a gap reason`);
+      }
+    } else if (typeof reason !== "string" || !ROUTE_ATTRIBUTION_REASONS.has(reason)
+      || signal.metadata?.route !== undefined
+      || signal.metadata?.routes !== undefined
+      || signal.metadata?.handler !== undefined
+      || signal.metadata?.routeAttribution !== undefined
+      || signal.metadata?.routeCallDepth !== undefined) {
+      throw new Error(`ScanReport unattributed Python signal ${signal.id} requires one supported reason without route claims`);
+    }
+  }
   if (report.policy?.source === "operator") {
     if (!report.policy.policyId || !report.policy.digestSha256 || !report.policy.expiresAt) {
       throw new Error("ScanReport operator policy record requires policyId, digestSha256 and expiresAt");
@@ -165,8 +201,23 @@ function ciPathIsSafe(path: string): boolean {
 }
 
 export function validateCiReport(value: unknown): CiReport {
-  const report = assertSchema<CiReport>("CiReport", ciReportValidator, value, "1.1.0");
+  const report = assertSchema<CiReport>("CiReport", ciReportValidator, value, "1.2.0");
   if (report.rulePacks) validateRulePackRecords(report.rulePacks, "CiReport");
+  if (report.routeAttribution) {
+    const attribution = report.routeAttribution;
+    if (attribution.eligibleSignals !== attribution.attributedSignals + attribution.unattributedSignals) {
+      throw new Error("CiReport route-attribution totals are inconsistent");
+    }
+    const reasons = new Set(attribution.reasons.map((item) => item.reason));
+    if (reasons.size !== attribution.reasons.length) throw new Error("CiReport route-attribution reasons must be unique");
+    const explainedSignals = attribution.reasons.reduce((total, item) => total + item.signals, 0);
+    if (explainedSignals !== attribution.unattributedSignals) {
+      throw new Error("CiReport route-attribution reason counts are inconsistent");
+    }
+    if ((attribution.unattributedSignals === 0) !== (attribution.unattributedFindings === 0)) {
+      throw new Error("CiReport route-attribution finding count is inconsistent");
+    }
+  }
   const expectedExitCode = report.decision === "block" ? 1 : report.decision === "incomplete" ? 2 : 0;
   if (report.recommendedExitCode !== expectedExitCode) throw new Error(`CiReport decision ${report.decision} requires recommendedExitCode ${expectedExitCode}`);
   const open = report.counts.critical + report.counts.high + report.counts.medium + report.counts.low + report.counts.info;

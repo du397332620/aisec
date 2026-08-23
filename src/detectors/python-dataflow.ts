@@ -1,7 +1,7 @@
 import type { ProjectFile } from "../core/files.js";
 import type { ScanContext } from "../core/context.js";
 import type { DetectorResult } from "./types.js";
-import type { Severity, Signal, SourceLocation } from "../schema.js";
+import type { RouteAttributionGapReason, Severity, Signal, SourceLocation } from "../schema.js";
 import { analyzeFastApi, type FastApiRoute } from "../api/fastapi.js";
 import { createSignal, makeLocation } from "../core/utils.js";
 import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
@@ -74,6 +74,9 @@ interface RouteLocalFlow {
 interface RouteProvenance {
   origins: Map<string, RouteOrigin>;
   local: Map<string, RouteLocalFlow>;
+  reachable: Set<string>;
+  commentedTargets: Set<string>;
+  ambiguousTargets: Set<string>;
   truncated: boolean;
 }
 
@@ -780,6 +783,139 @@ function routeCall(
     : undefined;
 }
 
+function potentialAliasNames(fn: PythonFunction, initial: string): string[] {
+  const pending = [initial];
+  const leaves: string[] = [];
+  const visited = new Set<string>();
+  while (pending.length > 0) {
+    const name = pending.shift()!;
+    if (visited.has(name)) continue;
+    visited.add(name);
+    const aliases = fn.routeAliases.get(name);
+    if (aliases && aliases.length > 0) pending.push(...aliases);
+    else leaves.push(name);
+  }
+  return leaves.length > 0 ? leaves : [initial];
+}
+
+function potentialRouteTargetsForExpression(
+  fn: PythonFunction,
+  rawExpression: string,
+  imports: Map<string, Map<string, PythonImportTarget[]>>,
+  index: RouteFunctionIndex,
+): PythonFunction[] {
+  const expression = rawExpression.trim();
+  const candidates: PythonFunction[] = [];
+  const addSimpleName = (name: string): void => {
+    candidates.push(...(index.byLexicalParentAndName.get(`${fn.id}\u0000${name}`) ?? []));
+    if (fn.lexicalParentId) {
+      candidates.push(...(index.byLexicalParentAndName.get(`${fn.lexicalParentId}\u0000${name}`) ?? []));
+    }
+    candidates.push(...(index.byPathAndName.get(`${fn.path}\u0000${name}`) ?? []));
+    for (const binding of imports.get(fn.path)?.get(name) ?? []) {
+      if (binding.kind !== "symbol" || !binding.symbol) continue;
+      candidates.push(...(index.byModuleAndName.get(`${binding.module}\u0000${binding.symbol}`) ?? []));
+    }
+  };
+
+  if (!expression.includes(".")) {
+    for (const name of potentialAliasNames(fn, expression)) addSimpleName(name);
+    return [...new Map(candidates.map((candidate) => [candidate.id, candidate])).values()];
+  }
+
+  const parts = expression.split(".");
+  if ((parts[0] === "self" || parts[0] === "cls") && parts.length === 2 && fn.className) {
+    candidates.push(...(index.byClassAndName.get(`${fn.path}\u0000${fn.className}\u0000${parts[1]}`) ?? []));
+  }
+  if (parts.length === 2) {
+    candidates.push(...(index.byClassAndName.get(`${fn.path}\u0000${parts[0]}\u0000${parts[1]}`) ?? []));
+  }
+  const first = parts[0]!;
+  const functionName = parts.at(-1)!;
+  const middle = parts.slice(1, -1);
+  for (const binding of imports.get(fn.path)?.get(first) ?? []) {
+    const moduleParts = binding.kind === "module"
+      ? [binding.module, ...middle]
+      : [binding.module, binding.symbol, ...middle];
+    candidates.push(...(index.byModuleAndName.get(`${moduleParts.filter(Boolean).join(".")}\u0000${functionName}`) ?? []));
+  }
+  return [...new Map(candidates.map((candidate) => [candidate.id, candidate])).values()];
+}
+
+function potentialRouteCallTargets(
+  fn: PythonFunction,
+  call: PythonCall,
+  imports: Map<string, Map<string, PythonImportTarget[]>>,
+  index: RouteFunctionIndex,
+): PythonFunction[] {
+  const wrapper = baseName(call.callee);
+  const expression = wrapper === "to_thread" && call.arguments[0]
+    ? call.arguments[0]
+    : wrapper === "run_in_executor" && call.arguments[1]
+      ? call.arguments[1]
+      : call.callee;
+  return potentialRouteTargetsForExpression(fn, expression, imports, index);
+}
+
+function callIsCommentedOut(fn: PythonFunction, call: PythonCall): boolean {
+  const localOffset = call.offset - fn.start;
+  const lineStart = fn.source.lastIndexOf("\n", Math.max(0, localOffset - 1)) + 1;
+  return fn.source.slice(lineStart, localOffset).trimStart().startsWith("#");
+}
+
+function expandResolvedRouteTargets(
+  seeds: Set<string>,
+  functions: PythonFunction[],
+  imports: Map<string, Map<string, PythonImportTarget[]>>,
+  index: RouteFunctionIndex,
+): Set<string> {
+  const expanded = new Set(seeds);
+  for (let pass = 0; pass < 14; pass += 1) {
+    let changed = false;
+    for (const fn of functions) {
+      if (!expanded.has(fn.id)) continue;
+      for (const call of fn.routeCalls) {
+        const resolved = routeCall(fn, call, imports, index);
+        if (resolved && !expanded.has(resolved.target.id)) {
+          expanded.add(resolved.target.id);
+          changed = true;
+        }
+      }
+    }
+    if (!changed) break;
+  }
+  return expanded;
+}
+
+function routeReachability(
+  functions: PythonFunction[],
+  routeRoots: Set<string>,
+  imports: Map<string, Map<string, PythonImportTarget[]>>,
+  index: RouteFunctionIndex,
+): Pick<RouteProvenance, "reachable" | "commentedTargets" | "ambiguousTargets"> {
+  const reachable = expandResolvedRouteTargets(routeRoots, functions, imports, index);
+  const ambiguousSeeds = new Set<string>();
+  const commentedSeeds = new Set<string>();
+  for (const fn of functions) {
+    if (!reachable.has(fn.id)) continue;
+    for (const call of fn.routeCalls) {
+      if (routeCall(fn, call, imports, index)) continue;
+      for (const candidate of potentialRouteCallTargets(fn, call, imports, index)) ambiguousSeeds.add(candidate.id);
+    }
+    for (const call of fn.calls) {
+      if (!callIsCommentedOut(fn, call)) continue;
+      const resolved = routeCall(fn, call, imports, index);
+      if (resolved) commentedSeeds.add(resolved.target.id);
+      else for (const candidate of potentialRouteCallTargets(fn, call, imports, index)) commentedSeeds.add(candidate.id);
+    }
+  }
+  return {
+    reachable,
+    commentedTargets: expandResolvedRouteTargets(commentedSeeds, functions, imports, index),
+    ambiguousTargets: expandResolvedRouteTargets(ambiguousSeeds, functions, imports, index),
+  };
+}
+
 function propagateRouteOrigins(
   functions: PythonFunction[],
   routes: FastApiRoute[],
@@ -789,6 +925,7 @@ function propagateRouteOrigins(
   const origins = new Map<string, RouteOrigin>();
   const input = new Map<string, Map<string, OriginDepths>>(functions.map((fn) => [fn.id, new Map()]));
   const state: RoutePropagationState = { truncated: false };
+  const routeRoots = new Set<string>();
   const functionsByRouteKey = new Map<string, PythonFunction[]>();
   for (const fn of functions) {
     const key = `${fn.path}\u0000${fn.name}`;
@@ -805,6 +942,7 @@ function propagateRouteOrigins(
       .filter((fn) => fn.source === route.handlerSource);
     const fn = uniqueRouteTarget(candidates);
     if (!fn) continue;
+    routeRoots.add(fn.id);
     const routeText = `${route.method} ${route.path}`;
     const originKey = [fn.id, route.appKey, route.routerKey, routeText].join("\u0000");
     origins.set(originKey, { key: originKey, route: routeText, handler: route.handlerName });
@@ -861,7 +999,7 @@ function propagateRouteOrigins(
     const fnInput = input.get(fn.id)!;
     if (fnInput.size > 0) local.set(fn.id, routeLocalFlow(fn, fnInput, state));
   }
-  return { origins, local, truncated: state.truncated };
+  return { origins, local, ...routeReachability(functions, routeRoots, imports, index), truncated: state.truncated };
 }
 
 function propagateFlows(
@@ -1037,6 +1175,7 @@ function signalRouteOrigins(
 function routeSignalMetadata(
   provenance: RouteProvenance,
   depths: OriginDepths,
+  owner: PythonFunction,
 ): Record<string, string | number | boolean | string[]> {
   const resolved = [...depths.entries()].flatMap(([originKey, depth]) => {
     const origin = provenance.origins.get(originKey);
@@ -1044,7 +1183,16 @@ function routeSignalMetadata(
   }).sort((left, right) => left.origin.route.localeCompare(right.origin.route)
     || left.origin.handler.localeCompare(right.origin.handler)
     || left.origin.key.localeCompare(right.origin.key));
-  if (resolved.length === 0) return {};
+  if (resolved.length === 0) {
+    if (provenance.origins.size === 0) return {};
+    let routeAttributionReason: Exclude<RouteAttributionGapReason, "not_recorded">;
+    if (provenance.reachable.has(owner.id)) routeAttributionReason = "request_origin_not_proven";
+    else if (provenance.commentedTargets.has(owner.id)) routeAttributionReason = "commented_out_call";
+    else if (provenance.ambiguousTargets.has(owner.id)) routeAttributionReason = "ambiguous_or_dynamic_dispatch";
+    else if (sourceParameters(owner).size > 0 && !owner.routeRoot) routeAttributionReason = "request_origin_not_proven";
+    else routeAttributionReason = "no_proven_route_path";
+    return { routeAttributionStatus: "unattributed", routeAttributionReason };
+  }
   const routes = [...new Set(resolved.map((item) => item.origin.route))];
   const handlers = [...new Set(resolved.map((item) => item.origin.handler))];
   const minimumDepth = Math.min(...resolved.map((item) => item.depth));
@@ -1053,6 +1201,7 @@ function routeSignalMetadata(
     ? "direct_handler"
     : minimumDepth > 0 ? "bounded_call_graph" : "mixed";
   return {
+    routeAttributionStatus: "attributed",
     route: routes[0]!,
     routes,
     ...(handlers.length === 1 ? { handler: handlers[0]! } : {}),
@@ -1150,7 +1299,7 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
           metadata: {
             function: fn.name,
             sink: call.callee,
-            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([argument], scopedRouteFlow, routeProvenance)),
+            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([argument], scopedRouteFlow, routeProvenance), routeOwner ?? fn),
           },
         }), `${fn.id}:${call.offset}:ssrf`);
       }
@@ -1168,7 +1317,7 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
           metadata: {
             function: fn.name,
             sink: call.callee,
-            ...routeSignalMetadata(routeProvenance, signalRouteOrigins(fileSinkExpressions(call), scopedRouteFlow, routeProvenance)),
+            ...routeSignalMetadata(routeProvenance, signalRouteOrigins(fileSinkExpressions(call), scopedRouteFlow, routeProvenance), routeOwner ?? fn),
           },
         }), `${fn.id}:${call.offset}:file`);
       }
@@ -1186,7 +1335,7 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
           metadata: {
             function: fn.name,
             sink: call.callee,
-            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([argument], scopedRouteFlow, routeProvenance)),
+            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([argument], scopedRouteFlow, routeProvenance), routeOwner ?? fn),
           },
         }), `${fn.id}:${call.offset}:sql`);
       }
@@ -1209,7 +1358,7 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
           metadata: {
             function: fn.name,
             client: resolved,
-            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([baseUrl.expression], scopedRouteFlow, routeProvenance)),
+            ...routeSignalMetadata(routeProvenance, signalRouteOrigins([baseUrl.expression], scopedRouteFlow, routeProvenance), routeOwner ?? fn),
           },
         }), `${fn.id}:${call.offset}:secret-url`);
       }
@@ -1233,7 +1382,7 @@ export async function runPythonDataflow(context: ScanContext): Promise<DetectorR
           function: fn.name,
           sink: baseName(storedPath.callee),
           secondOrder: true,
-          ...routeSignalMetadata(routeProvenance, signalRouteOrigins(storedPathExpressions(storedPath), scopedRouteFlow, routeProvenance)),
+          ...routeSignalMetadata(routeProvenance, signalRouteOrigins(storedPathExpressions(storedPath), scopedRouteFlow, routeProvenance), routeOwner ?? fn),
         },
       }), `${fn.id}:${storedPath.offset}:stored-file`);
     }

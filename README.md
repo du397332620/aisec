@@ -536,10 +536,12 @@ do not use a branch name as a security-tool pin. A full `predeploy` CI gate must
 also provision the exact three compatible engine versions, authenticate their
 binaries and prepare the Trivy database before scanning.
 
-`--format ci` emits the strict [`CiReport 1.1.0`](schemas/ci-report.schema.json)
+`--format ci` emits the strict [`CiReport 1.2.0`](schemas/ci-report.schema.json)
 JSON contract: decision and recommended exit code, open counts, required
 coverage gaps, effective policy, declarative rule-pack digests, baseline counts
-and bounded annotations.
+and bounded annotations. It also records FastAPI dangerous-dataflow route
+attribution totals and stable fail-closed reason counts without changing the
+canonical findings or release decision.
 `--format github` converts that same contract to workflow commands, while
 `--format markdown` creates a GitHub step summary. Output is deterministic and
 bounded to one decision, 20 required-coverage gaps and 50 prioritized findings;
@@ -567,7 +569,7 @@ finding fingerprints and accepted suppressions for compatible consumers.
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; BaaS analysis recognizes bounded PostgreSQL RLS and Firebase Firestore/Storage authorization expressions, while unsupported helpers or syntax make coverage `partial`; some findings are explicitly `inferred` and require review |
 | FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
 | Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local or one-hop directly imported immutable ESM route tables used by `forEach` and direct synchronous `for...of`, including at most two direct inline statically evaluable `filter`/`map` transforms, and NestJS controllers/guards/providers through local module imports, exports, re-exports and application-global visibility; accepts direct official `forwardRef` tokens/modules, visible synchronous static dynamic-module metadata, fully resolved direct official `NestFactory.create` roots from conventional runtime entry files, same-container direct `useGlobalGuards`, `setGlobalPrefix` and URI `enableVersioning` calls on their awaited `const` application instances, plus direct official static `RouterModule.register` trees from real module imports; composes independently scoped global/version/module/controller paths for shared controllers and otherwise retains bounded inferred-root routes without trusting imperative configuration, with both module and RouterModule traversal capped at eight edges and 256 entries; follows up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced, consumed through one single-condition `const`, or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, arbitrary collection transforms, unsupported operators/scopes or bootstrap graphs, unresolved providers/registration/bootstrap/global-guard/application-routing/RouterModule sites, package or mixin bases, complex wrappers and external policy engines still require review |
-| Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; exact FastAPI route origins propagate through direct handlers, unique local/relative imports and directly invoked lexical closures, while comments, returned closures and ambiguous dispatch remain unattributed; recognizes selected validation boundaries and reports partial coverage |
+| Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; exact FastAPI route origins propagate through direct handlers, unique local/relative imports and directly invoked lexical closures; comments, returned closures, ambiguous/dynamic dispatch and unproven request origins remain unattributed with stable machine-readable reasons in JSON/CI plus bounded terminal/Markdown/HTML summaries; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, global and broad route-local exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |
 | General SAST | Opengrep `1.26.0` | Required in pre-deploy mode; uses AIsec-owned rules and suppression controls |
@@ -577,7 +579,7 @@ finding fingerprints and accepted suppressions for compatible consumers.
 | Static-to-active BOLA planning | `draft-bola` | Converts open static BOLA/IDOR signals into a non-executable review worksheet; mutation routes are excluded and object IDs/markers remain placeholders |
 | Two-account BOLA verification | `verify-bola` | Exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
 | Agent integration | stdio MCP | Local read-oriented inspection, bounded rule-pack selector previews, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
-| Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; terminal/HTML can group opted-in repeated evidence by file and derive exact-route security review cards while retaining canonical findings; deployment exposure stays explicitly project-level unless service-to-route ownership is proven; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
+| Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; terminal/HTML can group opted-in repeated evidence by file and derive exact-route security review cards while retaining canonical findings, and terminal/HTML/CI Markdown keep unattributed FastAPI dataflow visible with bounded reason summaries; deployment exposure stays explicitly project-level unless service-to-route ownership is proven; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
 
 `--profile native` is the deterministic source-only first pass: external and
 artifact domains are non-required. The default `predeploy` profile is the
@@ -803,8 +805,9 @@ authorization, BOLA draft plans and BOLA authorization manifests in
 assertions and continues to accept legacy `1.0.0` packs only when the new field
 is absent. `RulePackPreview 1.0.0` is the strict bounded output of the CLI,
 Node API and MCP selector-preview operation. The policy and other unchanged contracts remain at `1.0.0`.
-`CiReport 1.1.0` adds rule-pack records while accepting legacy
-`1.0.0` input without them. `ScanReport 1.1.0` added the required machine-readable
+`CiReport 1.1.0` added rule-pack records, and `CiReport 1.2.0` adds the required
+FastAPI route-attribution summary; the validator still accepts legacy `1.0.0`
+and `1.1.0` inputs only when their newer fields are absent. `ScanReport 1.1.0` added the required machine-readable
 policy record, and `ScanReport 1.2.0` adds the required rule-pack record array;
 the validator continues to accept legacy `1.0.0` and `1.1.0` reports only when
 their newer fields are absent. Contracts are validated at runtime when a report is generated,

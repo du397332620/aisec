@@ -218,7 +218,8 @@ try {
   assert.equal(vulnerable.decision, "block");
   const storedReport = join(temporary, "data", "scans", `${vulnerable.scanId}.json`);
   const ci = parseReport(run(executable, ["report", storedReport, "--format", "ci"], { cwd: consumer, env: scanEnvironment }), "installed CI report");
-  assert.equal(ci.schemaVersion, "1.1.0");
+  assert.equal(ci.schemaVersion, "1.2.0");
+  assert.ok(ci.routeAttribution);
   assert.equal(ci.recommendedExitCode, 1);
   assert.ok(ci.annotations.length <= 71);
   const github = run(executable, ["report", storedReport, "--format", "github"], { cwd: consumer, env: scanEnvironment });
@@ -231,7 +232,7 @@ try {
     "--eval",
     `import { readFileSync } from "node:fs"; import { buildCiReport, validateCiReport } from ${JSON.stringify(packageMetadata.name)}; const scan = JSON.parse(readFileSync(${JSON.stringify(storedReport)}, "utf8")); const value = validateCiReport(buildCiReport(scan)); process.stdout.write(JSON.stringify({ schemaVersion: value.schemaVersion, annotations: value.annotations.length }));`,
   ], { cwd: consumer, env: scanEnvironment }), "installed CI report API");
-  assert.equal(ciApi.schemaVersion, "1.1.0");
+  assert.equal(ciApi.schemaVersion, "1.2.0");
   assert.equal(ciApi.annotations, ci.annotations.length);
 
   const bolaDraft = parseReport(run(executable, [

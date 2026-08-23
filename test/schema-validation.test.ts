@@ -105,6 +105,32 @@ test("public schemas reject unsupported versions, unknown fields and invalid nes
   }
 });
 
+test("Python route-attribution metadata fails closed on unsupported or contradictory claims", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "python-dataflow", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const signal = report.signals.find((candidate) => candidate.ruleId === "python.dataflow.ssrf");
+  assert.ok(signal?.metadata);
+
+  const unsupported = structuredClone(report);
+  const unsupportedSignal = unsupported.signals.find((candidate) => candidate.id === signal.id)!;
+  unsupportedSignal.metadata!.routeAttributionStatus = "unattributed";
+  unsupportedSignal.metadata!.routeAttributionReason = "target_claimed_safe";
+  delete unsupportedSignal.metadata!.route;
+  delete unsupportedSignal.metadata!.routes;
+  delete unsupportedSignal.metadata!.handler;
+  delete unsupportedSignal.metadata!.routeAttribution;
+  delete unsupportedSignal.metadata!.routeCallDepth;
+  assert.throws(() => validateScanReport(unsupported), /requires one supported reason/u);
+
+  const contradictory = structuredClone(report);
+  const contradictorySignal = contradictory.signals.find((candidate) => candidate.id === signal.id)!;
+  contradictorySignal.metadata!.routeAttributionReason = "request_origin_not_proven";
+  assert.throws(() => validateScanReport(contradictory), /requires route evidence without a gap reason/u);
+});
+
 test("report persistence validates before write and after read", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-schema-store-"));
   const previous = process.env.AISEC_DATA_DIR;

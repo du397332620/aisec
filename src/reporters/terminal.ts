@@ -1,6 +1,6 @@
 import type { FixContract, ScanReport } from "../schema.js";
 import { partitionFindingGroups } from "./finding-groups.js";
-import { buildRouteSecurityReview, ROUTE_SECURITY_CATEGORY_LABELS } from "./route-security-cards.js";
+import { buildRouteSecurityReview, ROUTE_ATTRIBUTION_GAP_LABELS, ROUTE_SECURITY_CATEGORY_LABELS } from "./route-security-cards.js";
 import { safeRelativePath, singleLine } from "./safety.js";
 
 const ICON = { critical: "CRITICAL", high: "HIGH", medium: "MEDIUM", low: "LOW", info: "INFO" } as const;
@@ -9,6 +9,7 @@ const MAX_GROUP_MEMBERS = 3;
 const MAX_ROUTE_CARDS = 20;
 const MAX_ROUTE_EVIDENCE = 3;
 const MAX_DEPLOYMENT_CONTEXTS = 5;
+const MAX_ROUTE_ATTRIBUTION_GAPS = 20;
 
 export function renderTerminalReport(report: ScanReport): string {
   const stack = [...new Set([...report.profile.frameworks, ...report.profile.baas, ...report.profile.mobilePlatforms])];
@@ -40,9 +41,12 @@ export function renderTerminalReport(report: ScanReport): string {
   }
   const open = report.findings.filter((finding) => finding.status === "open");
   const routeSecurity = buildRouteSecurityReview(report, open);
-  if (routeSecurity.cards.length > 0 || routeSecurity.deploymentContexts.length > 0) {
+  if (routeSecurity.cards.length > 0 || routeSecurity.deploymentContexts.length > 0 || routeSecurity.attributionGaps.length > 0) {
     lines.push("Route security review");
     lines.push("  Evidence-only summary: shown categories are detected gaps; an absent category is not a passed control.");
+    if (routeSecurity.attribution.eligibleSignals > 0) {
+      lines.push(`  Route attribution: ${routeSecurity.attribution.attributedSignals}/${routeSecurity.attribution.eligibleSignals} eligible signals proven; ${routeSecurity.attribution.unattributedSignals} unattributed across ${routeSecurity.attribution.unattributedFindings} findings.`);
+    }
     if (routeSecurity.deploymentContexts.length > 0) {
       lines.push("  Project deployment context (not attributed to a specific route)");
       for (const context of routeSecurity.deploymentContexts.slice(0, MAX_DEPLOYMENT_CONTEXTS)) {
@@ -56,6 +60,21 @@ export function renderTerminalReport(report: ScanReport): string {
       }
       if (routeSecurity.deploymentContexts.length > MAX_DEPLOYMENT_CONTEXTS) {
         lines.push(`    … ${routeSecurity.deploymentContexts.length - MAX_DEPLOYMENT_CONTEXTS} additional deployment contexts are available in JSON/HTML output.`);
+      }
+    }
+    if (routeSecurity.attributionGaps.length > 0) {
+      lines.push("  Unattributed FastAPI data-flow evidence");
+      for (const gap of routeSecurity.attributionGaps.slice(0, MAX_ROUTE_ATTRIBUTION_GAPS)) {
+        const location = gap.signal.locations[0];
+        const path = safeRelativePath(location?.path) ?? "path not recorded";
+        const functionName = gap.functionName ? ` · ${singleLine(gap.functionName, 160)}` : "";
+        const findingIds = singleLine(gap.findings.map((finding) => finding.id).join(", "), 260);
+        const severity = gap.findings[0]?.severity ?? gap.signal.severity;
+        lines.push(`    [${ICON[severity]}] ${ROUTE_SECURITY_CATEGORY_LABELS[gap.category]} · ${ROUTE_ATTRIBUTION_GAP_LABELS[gap.reason]}`);
+        lines.push(`      ${path}${location?.line ? `:${location.line}` : ""}${functionName} · ${findingIds}`);
+      }
+      if (routeSecurity.attributionGaps.length > MAX_ROUTE_ATTRIBUTION_GAPS) {
+        lines.push(`    … ${routeSecurity.attributionGaps.length - MAX_ROUTE_ATTRIBUTION_GAPS} additional attribution gaps are available in JSON/HTML output.`);
       }
     }
     for (const card of routeSecurity.cards.slice(0, MAX_ROUTE_CARDS)) {

@@ -13,6 +13,7 @@ import { CI_REPORT_SCHEMA_VERSION } from "../schema.js";
 import { SEVERITY_RANK } from "../core/constants.js";
 import { validateCiReport, validateScanReport } from "../core/schema-validation.js";
 import { githubData, githubProperty, markdownText, safeRelativePath, singleLine } from "./safety.js";
+import { buildRouteSecurityReview, ROUTE_ATTRIBUTION_GAP_LABELS } from "./route-security-cards.js";
 
 const DEFAULT_GATE: Readonly<SecurityPolicyGate> = {
   minimumSeverity: "high",
@@ -111,6 +112,7 @@ function findingPriority(report: ScanReport, finding: Finding): [number, number,
 
 export function buildCiReport(report: ScanReport): CiReport {
   validateScanReport(report);
+  const routeSecurity = buildRouteSecurityReview(report);
   const requiredCoverage = report.coverage.filter((item) => item.required);
   const gaps = requiredCoverage.filter((item) => item.status !== "complete").map((item) => ({
     domain: singleLine(item.domain, 200, "unknown-domain"),
@@ -165,6 +167,13 @@ export function buildCiReport(report: ScanReport): CiReport {
     },
     policy: policySummary(report.policy),
     rulePacks: (report.rulePacks ?? []).map((pack) => ({ ...pack })),
+    routeAttribution: {
+      eligibleSignals: routeSecurity.attribution.eligibleSignals,
+      attributedSignals: routeSecurity.attribution.attributedSignals,
+      unattributedSignals: routeSecurity.attribution.unattributedSignals,
+      unattributedFindings: routeSecurity.attribution.unattributedFindings,
+      reasons: routeSecurity.attribution.reasons.map((reason) => ({ ...reason })),
+    },
     ...(report.comparison ? {
       comparison: {
         baselineScanId: report.comparison.baselineScanId,
@@ -219,6 +228,18 @@ export function renderMarkdownSummary(report: CiReport): string {
     lines.push("| Domain | Engine | Status | Reason |", "| --- | --- | --- | --- |");
     for (const gap of report.requiredCoverage.gaps) {
       lines.push(`| ${markdownText(gap.domain, 200)} | ${markdownText(gap.engine, 200)} | ${markdownText(gap.status, 40)} | ${markdownText(gap.reason ?? "not recorded", 1000)} |`);
+    }
+  }
+  lines.push("", "## Route attribution", "");
+  if (!report.routeAttribution) lines.push("Route-attribution evidence was not recorded by this legacy CI report producer.");
+  else if (report.routeAttribution.eligibleSignals === 0) lines.push("No FastAPI dangerous-dataflow signals were eligible for route attribution.");
+  else {
+    lines.push(`${report.routeAttribution.attributedSignals} of ${report.routeAttribution.eligibleSignals} eligible signals have proven routes; ${report.routeAttribution.unattributedSignals} signals across ${report.routeAttribution.unattributedFindings} findings remain unattributed.`);
+    if (report.routeAttribution.reasons.length > 0) {
+      lines.push("", "| Unattributed reason | Signals |", "| --- | ---: |");
+      for (const reason of report.routeAttribution.reasons) {
+        lines.push(`| ${markdownText(ROUTE_ATTRIBUTION_GAP_LABELS[reason.reason], 120)} | ${reason.signals} |`);
+      }
     }
   }
   lines.push("", "## Policy", "");

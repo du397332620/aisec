@@ -245,7 +245,7 @@ test("declarative rule packs match bounded lines and expose digest evidence acro
     const sarif = renderSarif(report) as { runs: Array<{ properties: { rulePacks: unknown[] } }> };
     assert.equal(sarif.runs[0]?.properties.rulePacks.length, 1);
     const ci = buildCiReport(report);
-    assert.equal(ci.schemaVersion, "1.1.0");
+    assert.equal(ci.schemaVersion, "1.2.0");
     assert.equal(ci.rulePacks?.[0]?.packId, "team.security");
     assert.match(renderMarkdownSummary(ci), /## Declarative rule packs[\s\S]*team\.security/);
     const contract = createFixContract(report, report.findings.find((finding) => finding.signalIds.includes(danger.id))!.id);

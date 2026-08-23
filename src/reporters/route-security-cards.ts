@@ -1,5 +1,5 @@
 import { SEVERITY_RANK } from "../core/constants.js";
-import type { Finding, ScanReport, Severity, Signal } from "../schema.js";
+import type { Finding, RouteAttributionGapReason, ScanReport, Severity, Signal } from "../schema.js";
 
 export type RouteSecurityCategory =
   | "authentication"
@@ -20,6 +20,14 @@ export const ROUTE_SECURITY_CATEGORY_LABELS: Record<RouteSecurityCategory, strin
   untrusted_file_path: "untrusted file path",
   credential_forwarding: "server credential forwarding",
   exception_disclosure: "exception disclosure",
+};
+
+export const ROUTE_ATTRIBUTION_GAP_LABELS: Record<RouteAttributionGapReason, string> = {
+  commented_out_call: "commented-out call",
+  ambiguous_or_dynamic_dispatch: "ambiguous or dynamic dispatch",
+  request_origin_not_proven: "request origin not proven",
+  no_proven_route_path: "no proven route path",
+  not_recorded: "legacy reason not recorded",
 };
 
 export type RouteSecurityFramework = "FastAPI" | "Express" | "NestJS";
@@ -60,6 +68,19 @@ const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;
 const ROUTE_PATTERN = /^(CONNECT|DELETE|GET|HEAD|OPTIONS|PATCH|POST|PUT|TRACE|ALL) +(\/[^\s\u007f]{0,480})$/u;
 const MAX_ROUTE_ALIASES_PER_SIGNAL = 128;
 const MAX_ROUTE_ASSOCIATIONS = 10_000;
+const ROUTE_ATTRIBUTION_RULES = new Set([
+  "python.dataflow.sql-injection",
+  "python.dataflow.ssrf",
+  "python.dataflow.untrusted-file-path",
+  "python.dataflow.client-url-with-server-secret",
+]);
+const ROUTE_ATTRIBUTION_REASON_ORDER: readonly RouteAttributionGapReason[] = [
+  "commented_out_call",
+  "ambiguous_or_dynamic_dispatch",
+  "request_origin_not_proven",
+  "no_proven_route_path",
+  "not_recorded",
+];
 
 export interface RouteSecurityEvidence {
   category: RouteSecurityCategory;
@@ -89,9 +110,28 @@ export interface RouteSecurityDeploymentContext {
   publishedPorts: string[];
 }
 
+export interface RouteAttributionGap {
+  reason: RouteAttributionGapReason;
+  category: RouteSecurityCategory;
+  framework: "FastAPI";
+  signal: Signal;
+  findings: Finding[];
+  functionName?: string;
+}
+
+export interface RouteAttributionSummary {
+  eligibleSignals: number;
+  attributedSignals: number;
+  unattributedSignals: number;
+  unattributedFindings: number;
+  reasons: Array<{ reason: RouteAttributionGapReason; signals: number }>;
+}
+
 export interface RouteSecurityReview {
   cards: RouteSecurityCard[];
   deploymentContexts: RouteSecurityDeploymentContext[];
+  attributionGaps: RouteAttributionGap[];
+  attribution: RouteAttributionSummary;
   omittedRouteAliases: number;
   omittedAssociations: number;
 }
@@ -131,6 +171,13 @@ function handlerFor(signal: Signal): string | undefined {
   return handler && [...handler].length <= 256 ? handler : undefined;
 }
 
+function routeAttributionReason(signal: Signal): RouteAttributionGapReason {
+  const reason = metadataString(signal.metadata?.routeAttributionReason);
+  return ROUTE_ATTRIBUTION_REASON_ORDER.includes(reason as RouteAttributionGapReason)
+    ? reason as RouteAttributionGapReason
+    : "not_recorded";
+}
+
 function highestSeverity(findings: readonly Finding[]): Severity {
   const open = findings.filter((finding) => finding.status === "open");
   const candidates = open.length > 0 ? open : findings;
@@ -163,6 +210,9 @@ export function buildRouteSecurityReview(
 ): RouteSecurityReview {
   const findingsBySignal = findingIndex(findings);
   const cardsByKey = new Map<string, Omit<RouteSecurityCard, "severity" | "hasOpenFinding" | "categories" | "findingCount" | "signalCount">>();
+  const attributionGaps: RouteAttributionGap[] = [];
+  let eligibleSignals = 0;
+  let attributedSignals = 0;
   let omittedRouteAliases = 0;
   let associations = 0;
   let omittedAssociations = 0;
@@ -173,6 +223,21 @@ export function buildRouteSecurityReview(
     if (!presentation || !associatedFindings || associatedFindings.length === 0) continue;
     const aliases = routeAliases(signal);
     omittedRouteAliases += aliases.omitted;
+    if (ROUTE_ATTRIBUTION_RULES.has(signal.ruleId)) {
+      eligibleSignals += 1;
+      if (aliases.routes.length > 0) attributedSignals += 1;
+      else {
+        const functionName = metadataString(signal.metadata?.function);
+        attributionGaps.push({
+          reason: routeAttributionReason(signal),
+          category: presentation.category,
+          framework: "FastAPI",
+          signal,
+          findings: [...associatedFindings].sort(compareFindings),
+          ...(functionName && [...functionName].length <= 256 ? { functionName } : {}),
+        });
+      }
+    }
     for (const route of aliases.routes) {
       if (associations >= MAX_ROUTE_ASSOCIATIONS) {
         omittedAssociations += 1;
@@ -242,5 +307,21 @@ export function buildRouteSecurityReview(
       || (left.service ?? "").localeCompare(right.service ?? "")
       || left.signal.id.localeCompare(right.signal.id));
 
-  return { cards, deploymentContexts, omittedRouteAliases, omittedAssociations };
+  attributionGaps.sort((left, right) => ROUTE_ATTRIBUTION_REASON_ORDER.indexOf(left.reason) - ROUTE_ATTRIBUTION_REASON_ORDER.indexOf(right.reason)
+    || SEVERITY_RANK[highestSeverity(right.findings)] - SEVERITY_RANK[highestSeverity(left.findings)]
+    || left.signal.ruleId.localeCompare(right.signal.ruleId)
+    || left.signal.id.localeCompare(right.signal.id));
+  const unattributedFindingIds = new Set(attributionGaps.flatMap((gap) => gap.findings.map((finding) => finding.id)));
+  const attribution: RouteAttributionSummary = {
+    eligibleSignals,
+    attributedSignals,
+    unattributedSignals: attributionGaps.length,
+    unattributedFindings: unattributedFindingIds.size,
+    reasons: ROUTE_ATTRIBUTION_REASON_ORDER.flatMap((reason) => {
+      const signals = attributionGaps.filter((gap) => gap.reason === reason).length;
+      return signals > 0 ? [{ reason, signals }] : [];
+    }),
+  };
+
+  return { cards, deploymentContexts, attributionGaps, attribution, omittedRouteAliases, omittedAssociations };
 }
