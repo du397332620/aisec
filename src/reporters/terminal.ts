@@ -25,6 +25,7 @@ export function renderTerminalReport(report: ScanReport): string {
     ...(report.policy?.suppressionCount ? [`Policy suppressions: ${report.policy.suppressionCount} · ${report.policy.suppressionApproval}`] : []),
     ...(report.policy?.targetConfiguration === "ignored" ? ["Target policy: ignored (target-owned configuration is untrusted)"] : []),
     ...(report.policy?.relaxations.length ? [`Relaxations: ${report.policy.relaxations.join(", ")}`] : []),
+    ...(report.policy?.routeSecurityBaseline ? [`Route-security baseline gate: ${report.policy.routeSecurityBaseline.minimumSeverity}+ · inferred ${report.policy.routeSecurityBaseline.includeInferred ? "included" : "excluded"} · complete comparison ${report.policy.routeSecurityBaseline.requireComplete ? "required" : "not required"}`] : []),
     `Rule packs: ${(report.rulePacks ?? []).length > 0
       ? (report.rulePacks ?? []).map((pack) => `${pack.packId} sha256:${pack.digestSha256.slice(0, 12)}… (${pack.ruleCount})`).join(", ")
       : "none"}`,

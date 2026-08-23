@@ -1,6 +1,6 @@
 # Store the real policy outside the repository being scanned and replace this
 # demonstration expiry with a short, reviewed organizational expiry.
-schemaVersion: 1.0.0
+schemaVersion: 1.1.0
 policyId: example-release
 expiresAt: 2099-12-31T23:59:59Z
 profile: predeploy
@@ -12,6 +12,12 @@ gate:
   minimumSeverity: medium
   includeInferred: false
   requireNoSuppressions: false
+# Optional additive gate for baseline rescans. Uncomment only after deciding
+# how the first policy-governed scan will be retained as the baseline.
+# routeSecurityBaseline:
+#   minimumSeverity: high
+#   includeInferred: false
+#   requireComplete: true
 rules:
   required:
     - secret.stripe-live

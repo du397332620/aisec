@@ -41,6 +41,10 @@ test("generated reports and fix contracts satisfy the complete public schemas", 
     delete policyEra.rulePacks;
     assert.equal(validateScanReport(policyEra), policyEra, "legacy ScanReport 1.1.0 remains readable without rule-pack records");
 
+    const routeComparisonEra = structuredClone(report);
+    routeComparisonEra.schemaVersion = "1.3.0";
+    assert.equal(validateScanReport(routeComparisonEra), routeComparisonEra, "legacy ScanReport 1.3.0 remains readable without route-security policy gates");
+
     const compatible = structuredClone(report);
     compatible.schemaVersion = "1.0.0";
     compatible.toolVersion = "0.1.0-beta.1+build.7";
@@ -78,6 +82,13 @@ test("public schemas reject unsupported versions, unknown fields and invalid nes
   const forgedDefaultGate = structuredClone(report);
   forgedDefaultGate.policy!.gate.minimumSeverity = "medium";
   assert.throws(() => validateScanReport(forgedDefaultGate), /must retain the built-in gate/);
+
+  const forgedDefaultRouteGate = structuredClone(report);
+  forgedDefaultRouteGate.policy!.routeSecurityBaseline = { minimumSeverity: "high", includeInferred: false, requireComplete: true };
+  assert.throws(() => validateScanReport(forgedDefaultRouteGate), /cannot claim an operator route-security baseline gate/);
+  const legacyRouteGate = structuredClone(forgedDefaultRouteGate);
+  legacyRouteGate.schemaVersion = "1.3.0";
+  assert.throws(() => validateScanReport(legacyRouteGate), /ScanReport.*routeSecurityBaseline/);
 
   const unsupported = { ...report, schemaVersion: "2.0.0" };
   assert.throws(() => validateScanReport(unsupported), /ScanReport.*schemaVersion/);
@@ -176,7 +187,7 @@ test("serialization and the CLI report command reject malformed reports", async 
   const [exitCode] = await once(child, "close");
   assert.equal(exitCode, 64);
   assert.equal(stdout, "");
-  assert.match(stderr, /aisec: ScanReport does not match schema 1\.3\.0.*decision/);
+  assert.match(stderr, /aisec: ScanReport does not match schema 1\.4\.0.*decision/);
 });
 
 test("authorization manifests use the public schema before semantic authorization checks", () => {
@@ -233,7 +244,7 @@ test("BOLA authorization manifests use a separate strict public schema", () => {
   assert.throws(() => validateBolaAuthorization({ ...manifest, destructiveOverride: true }), /BolaAuthorizationManifest.*additional properties/);
 });
 
-test("target-owned suppressions are ignored and recorded in the 1.3.0 report contract", async () => {
+test("target-owned suppressions are ignored and recorded in the 1.4.0 report contract", async () => {
   const fixture = await materializeFixture(join(fixtures, "vulnerable"), [{
     relativePath: ".env.example",
     placeholder: "__AISEC_SYNTHETIC_STRIPE_LIVE_KEY__",

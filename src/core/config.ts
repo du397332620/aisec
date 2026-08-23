@@ -56,6 +56,7 @@ export function parseSecurityPolicy(text: string, now = new Date()): SecurityPol
     ...policy,
     requiredEngines: [...policy.requiredEngines],
     gate: { ...policy.gate },
+    ...(policy.routeSecurityBaseline ? { routeSecurityBaseline: { ...policy.routeSecurityBaseline } } : {}),
     rules: { required: [...policy.rules.required], block: [...policy.rules.block] },
     suppressions: policy.suppressions.map((suppression) => ({
       fingerprint: suppression.fingerprint.toLowerCase(),
@@ -113,6 +114,7 @@ export function createScanPolicyRecord(
       digestSha256: loaded.digestSha256,
       expiresAt: loaded.policy.expiresAt,
       gate: { ...loaded.policy.gate },
+      ...(loaded.policy.routeSecurityBaseline ? { routeSecurityBaseline: { ...loaded.policy.routeSecurityBaseline } } : {}),
       requiredEngines: [...loaded.policy.requiredEngines].sort(),
       requiredRuleIds: [...loaded.policy.rules.required].sort(),
       blockingRuleIds: [...loaded.policy.rules.block].sort(),

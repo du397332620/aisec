@@ -32,7 +32,9 @@ are explicit operator-owned files outside the target and may only retain or
 strengthen default predeploy requirements. Do not add target policy discovery,
 rule/engine disable lists, coverage overrides or silent baseline-policy
 migration. Update the public policy/report schemas and positive/negative policy
-tests together.
+tests together. Baseline gates must remain additive, distinguish confirmed
+blockers from incomplete comparison evidence, and retain explicit suppression
+semantics.
 
 Declarative rule-pack changes must preserve the non-executable extension
 boundary. Packs are explicit operator-owned files outside the target and may

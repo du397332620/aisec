@@ -58,7 +58,9 @@ try {
     "aisec rule-pack check ../target",
     "RulePack 1.1.0",
     "RulePackPreview 1.0.0",
-    "CiReport 1.3.0",
+    "SecurityPolicy 1.1.0",
+    "CiReport 1.4.0",
+    "routeSecurityBaseline",
     "stable machine-readable reasons",
     "also makes every active pack's required scan coverage `partial`",
     "emitWhen: absent",
@@ -94,7 +96,7 @@ try {
 
   const safe = report(run(["scan", "test/fixtures/safe", "--profile", "native", "--no-persist", "--format", "json"]), "safe fixture");
   assert.equal(safe.decision, "no_blockers_found");
-  assert.equal(safe.schemaVersion, "1.3.0");
+  assert.equal(safe.schemaVersion, "1.4.0");
   assert.equal(safe.profileName, "native");
   assert.equal(safe.coverage.find((item) => item.domain === "project-inventory")?.status, "complete");
 
@@ -103,7 +105,7 @@ try {
   const stored = join(temporary, "data", "scans", `${vulnerable.scanId}.json`);
   await access(stored);
   const ci = report(run(["report", stored, "--format", "ci"]), "CI report");
-  assert.equal(ci.schemaVersion, "1.3.0");
+  assert.equal(ci.schemaVersion, "1.4.0");
   assert.deepEqual(ci.routeAttribution, {
     eligibleSignals: 0,
     attributedSignals: 0,

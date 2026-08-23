@@ -31,7 +31,7 @@ test("CiReport is a strict coverage-aware machine contract", async () => {
   const source = await vulnerableReport();
   const report = buildCiReport(source);
   assert.equal(validateCiReport(report), report);
-  assert.equal(report.schemaVersion, "1.3.0");
+  assert.equal(report.schemaVersion, "1.4.0");
   assert.equal(report.decision, "block");
   assert.equal(report.recommendedExitCode, 1);
   assert.equal(report.counts.open, report.counts.critical + report.counts.high + report.counts.medium + report.counts.low + report.counts.info);
@@ -48,7 +48,10 @@ test("CiReport is a strict coverage-aware machine contract", async () => {
     reasons: [],
   });
 
-  const legacy12 = structuredClone(report);
+  const legacy13 = structuredClone(report);
+  legacy13.schemaVersion = "1.3.0";
+  assert.equal(validateCiReport(legacy13), legacy13, "legacy CiReport 1.3.0 remains readable without route-security policy gates");
+  const legacy12 = structuredClone(legacy13);
   legacy12.schemaVersion = "1.2.0";
   assert.equal(validateCiReport(legacy12), legacy12, "legacy CiReport 1.2.0 remains readable without route-security comparison records");
   const legacy11 = structuredClone(legacy12);
@@ -114,6 +117,12 @@ test("CiReport is a strict coverage-aware machine contract", async () => {
   const weakenedDefaults = structuredClone(report);
   weakenedDefaults.policy.gate!.includeInferred = true;
   assert.throws(() => validateCiReport(weakenedDefaults), /built-in gate/);
+  const forgedDefaultRouteGate = structuredClone(report);
+  forgedDefaultRouteGate.policy.routeSecurityBaseline = { minimumSeverity: "high", includeInferred: false, requireComplete: true };
+  assert.throws(() => validateCiReport(forgedDefaultRouteGate), /cannot claim an operator route-security baseline gate/);
+  const legacyRouteGate = structuredClone(forgedDefaultRouteGate);
+  legacyRouteGate.schemaVersion = "1.3.0";
+  assert.throws(() => validateCiReport(legacyRouteGate), /CiReport.*routeSecurityBaseline/);
   assert.throws(() => validateCiReport({ ...report, extraClaim: "secure" }), /CiReport.*additional properties/);
 });
 

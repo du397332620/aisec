@@ -1,6 +1,6 @@
 export const SCHEMA_VERSION = "1.0.0" as const;
-export const SCAN_REPORT_SCHEMA_VERSION = "1.3.0" as const;
-export const CI_REPORT_SCHEMA_VERSION = "1.3.0" as const;
+export const SCAN_REPORT_SCHEMA_VERSION = "1.4.0" as const;
+export const CI_REPORT_SCHEMA_VERSION = "1.4.0" as const;
 export const RULE_PACK_PREVIEW_SCHEMA_VERSION = "1.0.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
@@ -23,13 +23,20 @@ export interface SecurityPolicyGate {
   requireNoSuppressions: boolean;
 }
 
+export interface RouteSecurityBaselineGate {
+  minimumSeverity: PolicyMinimumSeverity;
+  includeInferred: boolean;
+  requireComplete: boolean;
+}
+
 export interface SecurityPolicy {
-  schemaVersion: "1.0.0";
+  schemaVersion: "1.0.0" | "1.1.0";
   policyId: string;
   expiresAt: string;
   profile: "predeploy";
   requiredEngines: SecurityPolicyEngine[];
   gate: SecurityPolicyGate;
+  routeSecurityBaseline?: RouteSecurityBaselineGate;
   rules: {
     required: string[];
     block: string[];
@@ -44,6 +51,7 @@ export interface ScanPolicyRecord {
   digestSha256?: string;
   expiresAt?: string;
   gate: SecurityPolicyGate;
+  routeSecurityBaseline?: RouteSecurityBaselineGate;
   requiredEngines: SecurityPolicyEngine[];
   requiredRuleIds: string[];
   blockingRuleIds: string[];
@@ -332,7 +340,7 @@ export interface ScanComparison {
 }
 
 export interface ScanReport {
-  schemaVersion: "1.0.0" | "1.1.0" | "1.2.0" | typeof SCAN_REPORT_SCHEMA_VERSION;
+  schemaVersion: "1.0.0" | "1.1.0" | "1.2.0" | "1.3.0" | typeof SCAN_REPORT_SCHEMA_VERSION;
   toolVersion: string;
   scanId: string;
   startedAt: string;
@@ -378,6 +386,7 @@ export interface CiPolicySummary {
   digestSha256?: string;
   expiresAt?: string;
   gate?: SecurityPolicyGate;
+  routeSecurityBaseline?: RouteSecurityBaselineGate;
   requiredEngines: SecurityPolicyEngine[];
   suppressionCount: number;
   suppressionApproval: "not_applicable" | "explicit" | "not_recorded";
@@ -436,7 +445,7 @@ export interface CiRouteSecurityComparisonSummary {
 }
 
 export interface CiReport {
-  schemaVersion: "1.0.0" | "1.1.0" | "1.2.0" | typeof CI_REPORT_SCHEMA_VERSION;
+  schemaVersion: "1.0.0" | "1.1.0" | "1.2.0" | "1.3.0" | typeof CI_REPORT_SCHEMA_VERSION;
   toolVersion: string;
   scanId: string;
   profileName: ScanReport["profileName"];

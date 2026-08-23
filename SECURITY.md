@@ -82,7 +82,10 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   versioned schema and expiry, and records the applied SHA-256 digest. A target
   `.aisec.yml` is ignored and cannot suppress native findings. Policy baselines
   require the same explicitly supplied digest. Non-empty policy suppressions
-  also require a separate explicit confirmation and record that approval.
+  also require a separate explicit confirmation and record that approval. The
+  optional route-security baseline gate is additive, requires comparison
+  evidence, evaluates only eligible open findings, and can require partial or
+  bounded route comparison to fail closed as incomplete.
 - A declarative rule pack is also never discovered from the target. Its real
   path must be outside the scan root, its strict schema has no regex, script,
   command, import or callback fields, and matching is bounded to line-local

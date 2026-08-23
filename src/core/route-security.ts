@@ -119,6 +119,13 @@ export function buildRouteSecuritySnapshot(
   report: ScanReport,
   findings: readonly Finding[] = report.findings,
 ): RouteSecuritySnapshot {
+  return buildRouteSecuritySnapshotFromEvidence(report.signals, findings);
+}
+
+export function buildRouteSecuritySnapshotFromEvidence(
+  signals: readonly Signal[],
+  findings: readonly Finding[],
+): RouteSecuritySnapshot {
   const findingsBySignal = findingIndex(findings);
   const issues = new Map<string, {
     entry: RouteSecurityComparisonEntry;
@@ -129,7 +136,7 @@ export function buildRouteSecuritySnapshot(
   let associations = 0;
   let omittedAssociations = 0;
 
-  for (const signal of report.signals) {
+  for (const signal of signals) {
     const presentation = ROUTE_SECURITY_RULES[signal.ruleId];
     const associatedFindings = findingsBySignal.get(signal.id);
     if (!presentation || !associatedFindings || associatedFindings.length === 0) continue;

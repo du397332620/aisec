@@ -174,6 +174,9 @@ export async function scanProject(
     disclaimer: "AIsec reports evidence found within executed coverage. no_blockers_found is not a guarantee, certification, or proof that the application is secure.",
   };
   if (baseline) report.comparison = compareReports(report, baseline);
+  const finalDecision = decide(findings, coverage, signals, policy, report.comparison);
+  report.decision = finalDecision.decision;
+  report.decisionReasons = finalDecision.reasons;
   validateScanReport(report);
   const storedAt = options.persist ? await saveReport(report) : undefined;
   return { report, storedAt };

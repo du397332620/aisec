@@ -308,6 +308,17 @@ detector coverage completed, while partial coverage and association bounds fail
 closed as not rechecked. Suppression changes release disposition but does not
 make detected route evidence appear resolved.
 
+An operator-owned `SecurityPolicy 1.1.0` can additionally enable an additive
+`routeSecurityBaseline` gate. It blocks newly observed open route/category
+issues at the configured severity without making unchanged lower-severity debt
+block through this gate. Approved suppressions remain visible but are excluded
+unless the existing `requireNoSuppressions` gate is enabled. A configured gate
+requires baseline evidence; its first scan can be retained as that baseline but
+returns `incomplete` until `rescan` supplies a comparison unless another
+confirmed finding already makes the decision `block`. With
+`requireComplete: true`, not-rechecked or bounded comparison evidence also
+fails closed as `incomplete`.
+
 ### Trusted release policy
 
 AIsec never discovers a release policy from the scanned repository. The
@@ -321,8 +332,9 @@ cp examples/security-policy.example.yml ../trusted/security-policy.yml
 aisec scan ../target --policy ../trusted/security-policy.yml
 ```
 
-The public [`SecurityPolicy 1.0.0` schema](schemas/security-policy.schema.json)
-is strict. Version 1 fixes the profile to `predeploy`, requires Gitleaks,
+The public [`SecurityPolicy 1.1.0` schema](schemas/security-policy.schema.json)
+is strict and continues to read legacy `1.0.0` policies only when the new field
+is absent. Version 1 fixes the profile to `predeploy`, requires Gitleaks,
 Opengrep and Trivy, and has no fields for disabling engines, rules or coverage.
 `gate.minimumSeverity` may retain `high` or strengthen it to `medium`, `low` or
 `info`; `includeInferred: true` is an additional strengthening. IDs in
@@ -332,6 +344,28 @@ Narrow fingerprint suppressions require both a reason and expiry. The policy
 itself also expires. A policy containing suppressions is rejected unless the
 operator separately passes `--confirm-policy-suppressions` after reviewing the
 exact file; the report records this approval.
+
+Policy version 1.1 adds the optional baseline gate:
+
+```yaml
+schemaVersion: 1.1.0
+# ...policy identity, engines, global gate and rules...
+routeSecurityBaseline:
+  minimumSeverity: high
+  includeInferred: false
+  requireComplete: true
+```
+
+This gate is additive: it cannot weaken the existing global finding gate. The
+first scan under this policy records an incomplete baseline-gate evaluation
+(or remains `block` when another confirmed gate already blocks). Retain its
+report or scan ID, then evaluate subsequent changes with the exact
+same policy digest:
+
+```bash
+aisec rescan ../target --baseline <scan-id-or-report.json> \
+  --policy ../trusted/security-policy.yml
+```
 
 A policy cannot be combined with `--profile native` or `--native-only`. Missing,
 partial or failed predeploy coverage remains `incomplete`. A target-owned
@@ -545,7 +579,7 @@ do not use a branch name as a security-tool pin. A full `predeploy` CI gate must
 also provision the exact three compatible engine versions, authenticate their
 binaries and prepare the Trivy database before scanning.
 
-`--format ci` emits the strict [`CiReport 1.3.0`](schemas/ci-report.schema.json)
+`--format ci` emits the strict [`CiReport 1.4.0`](schemas/ci-report.schema.json)
 JSON contract: decision and recommended exit code, open counts, required
 coverage gaps, effective policy, declarative rule-pack digests, baseline counts
 and bounded annotations. Baseline rescans add exact route/category comparison
@@ -813,17 +847,21 @@ as resolved, with no new high/critical finding.
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, CI
 reports, fix contracts, the rule catalog, declarative rule packs and their selector previews, trusted security policies, passive-web
 authorization, BOLA draft plans and BOLA authorization manifests in
-[`schemas/`](schemas/). `RulePack 1.1.0` adds bounded required-literal absence
+[`schemas/`](schemas/). `SecurityPolicy 1.1.0` adds the optional additive
+route-security baseline gate and strictly preserves legacy `1.0.0` policies.
+`RulePack 1.1.0` adds bounded required-literal absence
 assertions and continues to accept legacy `1.0.0` packs only when the new field
 is absent. `RulePackPreview 1.0.0` is the strict bounded output of the CLI,
-Node API and MCP selector-preview operation. The policy and other unchanged contracts remain at `1.0.0`.
+Node API and MCP selector-preview operation. Other unchanged contracts remain at `1.0.0`.
 `CiReport 1.1.0` added rule-pack records, `CiReport 1.2.0` added the required
-FastAPI route-attribution summary, and `CiReport 1.3.0` adds a required bounded
-route-security comparison whenever baseline counts are present. `ScanReport
+FastAPI route-attribution summary, `CiReport 1.3.0` added a required bounded
+route-security comparison whenever baseline counts are present, and `CiReport
+1.4.0` records the effective route-security baseline gate. `ScanReport
 1.1.0` added the required machine-readable policy record, `ScanReport 1.2.0`
-added the required rule-pack record array, and `ScanReport 1.3.0` adds complete
-bounded route-security comparison evidence whenever a baseline is present. The
-validators continue to accept legacy `1.0.0`-`1.2.0` inputs only when fields
+added the required rule-pack record array, `ScanReport 1.3.0` added complete
+bounded route-security comparison evidence whenever a baseline is present, and
+`ScanReport 1.4.0` records the effective route-security baseline gate. The
+validators continue to accept legacy `1.0.0`-`1.3.0` inputs only when fields
 introduced by later versions are absent. Contracts are validated at runtime when a report is generated,
 serialized, saved or loaded, when a rule-pack preview or fix contract is generated, and before
 authorization semantics are evaluated. Unknown fields, unsupported schema

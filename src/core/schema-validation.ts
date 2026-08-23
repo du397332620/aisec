@@ -4,6 +4,7 @@ import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.
 import addFormatsModule from "ajv-formats";
 import type { AuthorizationManifest, BolaAuthorizationManifest, BolaDraftPlan, CiReport, FixContract, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
 import { routeSecurityIssueKey } from "./route-security.js";
+import { evaluateRouteSecurityBaselineGate } from "./route-security-gate.js";
 import { safeRelativePath } from "../reporters/safety.js";
 
 type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaDraftPlan" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
@@ -74,7 +75,7 @@ function validateRouteSecurityComparison(report: ScanReport): void {
 }
 
 export function validateScanReport(value: unknown): ScanReport {
-  const report = assertSchema<ScanReport>("ScanReport", scanReportValidator, value, "1.3.0");
+  const report = assertSchema<ScanReport>("ScanReport", scanReportValidator, value, "1.4.0");
   validateRouteSecurityComparison(report);
   for (const signal of report.signals) {
     if (signal.engine !== "aisec-python" || !ROUTE_ATTRIBUTION_RULES.has(signal.ruleId)) continue;
@@ -127,6 +128,18 @@ export function validateScanReport(value: unknown): ScanReport {
     for (const ruleId of report.policy.requiredRuleIds) {
       if (!knownRules.has(ruleId)) throw new Error(`ScanReport operator policy references unknown shipped rule: ${ruleId}`);
     }
+    const routeGate = evaluateRouteSecurityBaselineGate(
+      report.signals,
+      report.findings,
+      report.comparison,
+      report.policy.routeSecurityBaseline,
+    );
+    if (routeGate.blockingEntries.length > 0 && report.decision !== "block") {
+      throw new Error("ScanReport route-security baseline blockers require a block decision");
+    }
+    if (routeGate.incompleteReason && !["block", "incomplete"].includes(report.decision)) {
+      throw new Error("ScanReport incomplete route-security baseline evaluation must fail closed");
+    }
   }
   if (report.policy?.source === "defaults") {
     if (report.policy.policyId || report.policy.digestSha256 || report.policy.expiresAt) throw new Error("ScanReport default policy record cannot claim operator policy identity");
@@ -134,6 +147,7 @@ export function validateScanReport(value: unknown): ScanReport {
       throw new Error("ScanReport default policy record cannot claim operator rules or suppressions");
     }
     if (report.policy.suppressionApproval !== "not_applicable") throw new Error("ScanReport default policy record cannot claim suppression approval");
+    if (report.policy.routeSecurityBaseline) throw new Error("ScanReport default policy record cannot claim an operator route-security baseline gate");
     if (report.policy.gate.minimumSeverity !== "high" || report.policy.gate.includeInferred || report.policy.gate.requireNoSuppressions) {
       throw new Error("ScanReport default policy record must retain the built-in gate");
     }
@@ -221,7 +235,7 @@ function ciPathIsSafe(path: string): boolean {
 }
 
 export function validateCiReport(value: unknown): CiReport {
-  const report = assertSchema<CiReport>("CiReport", ciReportValidator, value, "1.3.0");
+  const report = assertSchema<CiReport>("CiReport", ciReportValidator, value, "1.4.0");
   if (report.rulePacks) validateRulePackRecords(report.rulePacks, "CiReport");
   if (report.routeAttribution) {
     const attribution = report.routeAttribution;
@@ -279,11 +293,17 @@ export function validateCiReport(value: unknown): CiReport {
   if (report.requiredCoverage.total !== report.requiredCoverage.complete + report.requiredCoverage.gaps.length) {
     throw new Error("CiReport required coverage totals are inconsistent");
   }
-  if (report.decision === "incomplete" && report.requiredCoverage.gaps.length === 0) {
-    throw new Error("CiReport incomplete decision requires a required coverage gap");
+  const routeGateIncomplete = Boolean(report.policy.routeSecurityBaseline
+    && (!routeComparison?.recorded
+      || (report.policy.routeSecurityBaseline.requireComplete && routeComparison.recorded && !routeComparison.complete)));
+  if (report.decision === "incomplete" && report.requiredCoverage.gaps.length === 0 && !routeGateIncomplete) {
+    throw new Error("CiReport incomplete decision requires a required coverage gap or incomplete route-security baseline evaluation");
   }
   if (report.requiredCoverage.gaps.length > 0 && !["block", "incomplete"].includes(report.decision)) {
     throw new Error(`CiReport decision ${report.decision} cannot claim complete acceptance with required coverage gaps`);
+  }
+  if (routeGateIncomplete && !["block", "incomplete"].includes(report.decision)) {
+    throw new Error(`CiReport decision ${report.decision} cannot claim complete acceptance with an incomplete route-security baseline evaluation`);
   }
   const plainText = [report.disclaimer, ...report.decisionReasons];
   for (const gap of report.requiredCoverage.gaps) plainText.push(gap.domain, gap.engine, ...(gap.reason ? [gap.reason] : []));
@@ -340,7 +360,7 @@ export function validateCiReport(value: unknown): CiReport {
 
   const policy = report.policy;
   if (policy.source === "not_recorded") {
-    if (policy.targetConfiguration !== "not_recorded" || policy.policyId || policy.digestSha256 || policy.expiresAt || policy.gate || policy.requiredEngines.length > 0 || policy.suppressionCount !== 0 || policy.suppressionApproval !== "not_recorded" || policy.relaxations.length > 0) {
+    if (policy.targetConfiguration !== "not_recorded" || policy.policyId || policy.digestSha256 || policy.expiresAt || policy.gate || policy.routeSecurityBaseline || policy.requiredEngines.length > 0 || policy.suppressionCount !== 0 || policy.suppressionApproval !== "not_recorded" || policy.relaxations.length > 0) {
       throw new Error("CiReport legacy policy summary cannot claim recorded policy evidence");
     }
   } else {
@@ -355,6 +375,7 @@ export function validateCiReport(value: unknown): CiReport {
         throw new Error("CiReport default policy summary cannot claim operator identity or suppressions");
       }
       if (policy.gate.minimumSeverity !== "high" || policy.gate.includeInferred || policy.gate.requireNoSuppressions) throw new Error("CiReport default policy summary must retain the built-in gate");
+      if (policy.routeSecurityBaseline) throw new Error("CiReport default policy summary cannot claim an operator route-security baseline gate");
       const engines = new Set(policy.requiredEngines);
       const hasAllEngines = engines.size === 3 && ["gitleaks", "opengrep", "trivy"].every((engine) => engines.has(engine as "gitleaks" | "opengrep" | "trivy"));
       const hasNoEngines = engines.size === 0;
@@ -516,7 +537,7 @@ function catalogRuleIds(): Set<string> {
 }
 
 export function validateSecurityPolicy(value: unknown): SecurityPolicy {
-  const policy = assertSchema<SecurityPolicy>("SecurityPolicy", securityPolicyValidator, value);
+  const policy = assertSchema<SecurityPolicy>("SecurityPolicy", securityPolicyValidator, value, "1.1.0");
   const requiredEngines = new Set(policy.requiredEngines);
   for (const engine of ["gitleaks", "opengrep", "trivy"] as const) {
     if (!requiredEngines.has(engine)) throw new Error(`SecurityPolicy must retain required engine: ${engine}`);

@@ -13,6 +13,7 @@ import type {
 } from "../schema.js";
 import { CI_REPORT_SCHEMA_VERSION } from "../schema.js";
 import { SEVERITY_RANK } from "../core/constants.js";
+import { evaluateRouteSecurityBaselineGate } from "../core/route-security-gate.js";
 import { validateCiReport, validateScanReport } from "../core/schema-validation.js";
 import { githubData, githubProperty, markdownText, safeRelativePath, singleLine } from "./safety.js";
 import { buildRouteSecurityReview, ROUTE_ATTRIBUTION_GAP_LABELS, ROUTE_SECURITY_CATEGORY_LABELS } from "./route-security-cards.js";
@@ -50,6 +51,7 @@ function policySummary(policy: ScanPolicyRecord | undefined): CiPolicySummary {
     ...(policy.digestSha256 ? { digestSha256: policy.digestSha256 } : {}),
     ...(policy.expiresAt ? { expiresAt: policy.expiresAt } : {}),
     gate: { ...policy.gate },
+    ...(policy.routeSecurityBaseline ? { routeSecurityBaseline: { ...policy.routeSecurityBaseline } } : {}),
     requiredEngines: [...policy.requiredEngines],
     suppressionCount: policy.suppressionCount,
     suppressionApproval: policy.suppressionApproval,
@@ -62,10 +64,11 @@ function findingSignals(report: ScanReport, finding: Finding): Signal[] {
   return report.signals.filter((signal) => ids.has(signal.id));
 }
 
-function findingBlocksRelease(report: ScanReport, finding: Finding, signals: Signal[]): boolean {
+function findingBlocksRelease(report: ScanReport, finding: Finding, signals: Signal[], routeGateBlockers: ReadonlySet<string>): boolean {
   const policy = report.policy;
   const blockingRuleIds = new Set(policy?.blockingRuleIds ?? []);
   if (signals.some((signal) => blockingRuleIds.has(signal.ruleId))) return true;
+  if (routeGateBlockers.has(finding.fingerprint)) return true;
   if (finding.status === "suppressed") return policy?.gate.requireNoSuppressions === true;
   const gate = policy?.gate ?? DEFAULT_GATE;
   return SEVERITY_RANK[finding.severity] >= SEVERITY_RANK[gate.minimumSeverity]
@@ -78,12 +81,13 @@ function findingBaselineState(report: ScanReport, finding: Finding): CiBaselineS
   return undefined;
 }
 
-function findingAnnotation(report: ScanReport, finding: Finding): CiAnnotation {
+function findingAnnotation(report: ScanReport, finding: Finding, routeGateBlockers: ReadonlySet<string>): CiAnnotation {
   const signals = findingSignals(report, finding);
   const signal = signals[0];
   const location = signals.flatMap((item) => item.locations).find((item) => safeRelativePath(item.path));
   const path = safeRelativePath(location?.path);
-  const blocksRelease = findingBlocksRelease(report, finding, signals);
+  const blocksRelease = findingBlocksRelease(report, finding, signals, routeGateBlockers);
+  const routeBaselineBlocker = routeGateBlockers.has(finding.fingerprint);
   const level = blocksRelease ? "error" : SEVERITY_RANK[finding.severity] >= SEVERITY_RANK.medium ? "warning" : "notice";
   const ruleIds = [...new Set(signals.map((item) => item.ruleId))].slice(0, 5).join(", ");
   const description = signal?.description ?? report.attackPaths.find((item) => item.id === finding.attackPathId)?.summary ?? "Correlated security evidence";
@@ -91,7 +95,7 @@ function findingAnnotation(report: ScanReport, finding: Finding): CiAnnotation {
     kind: "finding",
     level,
     title: singleLine(finding.title, 200, "AIsec finding"),
-    message: singleLine(`${finding.severity}/${finding.evidenceLevel}/${finding.status}${ruleIds ? ` · ${ruleIds}` : ""} · ${description}`, 2000, "AIsec finding"),
+    message: singleLine(`${finding.severity}/${finding.evidenceLevel}/${finding.status}${routeBaselineBlocker ? " · newly observed route-security baseline issue" : ""}${ruleIds ? ` · ${ruleIds}` : ""} · ${description}`, 2000, "AIsec finding"),
     ...(path ? { path } : {}),
     ...(path && location?.line ? { startLine: location.line } : {}),
     ...(path && location?.column ? { startColumn: location.column } : {}),
@@ -106,9 +110,9 @@ function findingAnnotation(report: ScanReport, finding: Finding): CiAnnotation {
   };
 }
 
-function findingPriority(report: ScanReport, finding: Finding): [number, number, number, string] {
+function findingPriority(report: ScanReport, finding: Finding, routeGateBlockers: ReadonlySet<string>): [number, number, number, string] {
   const signals = findingSignals(report, finding);
-  const blocks = findingBlocksRelease(report, finding, signals) ? 1 : 0;
+  const blocks = findingBlocksRelease(report, finding, signals, routeGateBlockers) ? 1 : 0;
   const isNew = report.comparison?.new.includes(finding.fingerprint) ? 1 : 0;
   return [blocks, isNew, SEVERITY_RANK[finding.severity], finding.title];
 }
@@ -151,6 +155,13 @@ function routeSecurityComparisonSummary(comparison: RouteSecurityComparison | un
 export function buildCiReport(report: ScanReport): CiReport {
   validateScanReport(report);
   const routeSecurity = buildRouteSecurityReview(report);
+  const routeGate = evaluateRouteSecurityBaselineGate(
+    report.signals,
+    report.findings,
+    report.comparison,
+    report.policy?.routeSecurityBaseline,
+  );
+  const routeGateBlockers = new Set(routeGate.blockingFindingFingerprints);
   const requiredCoverage = report.coverage.filter((item) => item.required);
   const gaps = requiredCoverage.filter((item) => item.status !== "complete").map((item) => ({
     domain: singleLine(item.domain, 200, "unknown-domain"),
@@ -178,13 +189,13 @@ export function buildCiReport(report: ScanReport): CiReport {
   }
 
   const candidates = report.findings
-    .filter((finding) => finding.status === "open" || findingBlocksRelease(report, finding, findingSignals(report, finding)))
+    .filter((finding) => finding.status === "open" || findingBlocksRelease(report, finding, findingSignals(report, finding), routeGateBlockers))
     .sort((left, right) => {
-      const a = findingPriority(report, left);
-      const b = findingPriority(report, right);
+      const a = findingPriority(report, left, routeGateBlockers);
+      const b = findingPriority(report, right, routeGateBlockers);
       return b[0] - a[0] || b[1] - a[1] || b[2] - a[2] || a[3].localeCompare(b[3]);
     });
-  for (const finding of candidates.slice(0, MAX_FINDING_ANNOTATIONS)) annotations.push(findingAnnotation(report, finding));
+  for (const finding of candidates.slice(0, MAX_FINDING_ANNOTATIONS)) annotations.push(findingAnnotation(report, finding, routeGateBlockers));
 
   const ciReport: CiReport = {
     schemaVersion: CI_REPORT_SCHEMA_VERSION,
@@ -292,6 +303,10 @@ export function renderMarkdownSummary(report: CiReport): string {
     if (report.policy.gate) {
       lines.push(`- Gate: ${markdownText(report.policy.gate.minimumSeverity, 20)} or higher; inferred ${report.policy.gate.includeInferred ? "included" : "excluded"}; suppressions ${report.policy.gate.requireNoSuppressions ? "block" : "allowed"}`);
     }
+    if (report.policy.routeSecurityBaseline) {
+      const gate = report.policy.routeSecurityBaseline;
+      lines.push(`- Route-security baseline gate: ${markdownText(gate.minimumSeverity, 20)} or higher; inferred ${gate.includeInferred ? "included" : "excluded"}; complete comparison ${gate.requireComplete ? "required" : "not required"}`);
+    } else lines.push("- Route-security baseline gate: disabled");
     lines.push(`- Required engines: ${report.policy.requiredEngines.length > 0 ? report.policy.requiredEngines.map((item) => markdownText(item, 40)).join(", ") : "none"}`);
     lines.push(`- Suppressions: ${report.policy.suppressionCount} \(${markdownText(report.policy.suppressionApproval, 40)}\)`);
     if (report.policy.relaxations.length > 0) lines.push(`- Relaxations: ${report.policy.relaxations.map((item) => markdownText(item, 80)).join(", ")}`);

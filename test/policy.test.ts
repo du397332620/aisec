@@ -10,10 +10,14 @@ import type { SecurityPolicy } from "../src/schema.js";
 import { validateScanReport, validateSecurityPolicy } from "../src/core/schema-validation.js";
 import { loadTrustedPolicy, parseSecurityPolicy } from "../src/core/config.js";
 import { inspectOnly, scanProject } from "../src/core/scan.js";
+import { compareReports } from "../src/core/compare.js";
+import { decide } from "../src/core/findings.js";
+import { evaluateRouteSecurityBaselineGate } from "../src/core/route-security-gate.js";
 import { createFixContract } from "../src/core/contracts.js";
 import { renderTerminalReport } from "../src/reporters/terminal.js";
 import { renderHtml } from "../src/reporters/html.js";
 import { renderSarif } from "../src/reporters/sarif.js";
+import { buildCiReport, renderMarkdownSummary } from "../src/reporters/ci.js";
 
 const RULE_ID = "privacy.sensitive-logging";
 const here = dirname(fileURLToPath(import.meta.url));
@@ -50,6 +54,20 @@ async function withUnavailableEngines<T>(directory: string, operation: () => Pro
 test("security policy schema and catalog semantics reject weakening or ambiguous declarations", () => {
   const valid = policy();
   assert.equal(validateSecurityPolicy(valid), valid);
+
+  const routeGate = policy({
+    schemaVersion: "1.1.0",
+    routeSecurityBaseline: { minimumSeverity: "medium", includeInferred: false, requireComplete: true },
+  });
+  assert.equal(validateSecurityPolicy(routeGate), routeGate);
+  assert.throws(() => validateSecurityPolicy({
+    ...routeGate,
+    schemaVersion: "1.0.0",
+  }), /SecurityPolicy.*routeSecurityBaseline/);
+  assert.throws(() => validateSecurityPolicy({
+    ...routeGate,
+    routeSecurityBaseline: { ...routeGate.routeSecurityBaseline, minimumSeverity: "critical" },
+  }), /SecurityPolicy.*routeSecurityBaseline.*minimumSeverity/);
 
   assert.throws(() => validateSecurityPolicy({ ...valid, allowMissingCoverage: true }), /SecurityPolicy.*additional properties.*allowMissingCoverage/);
   assert.throws(() => validateSecurityPolicy({ ...valid, gate: { ...valid.gate, minimumSeverity: "critical" } }), /SecurityPolicy.*minimumSeverity/);
@@ -255,6 +273,157 @@ test("operator-policy baselines require the same explicit policy digest", async 
     const defaultBaselinePath = join(parent, "default-baseline.json");
     await writeFile(defaultBaselinePath, `${JSON.stringify(defaultBaseline)}\n`);
     await assert.rejects(() => scanProject(target, { policyPath: trustedPolicy, persist: false }, defaultBaselinePath), /did not use the same operator policy/);
+  } finally {
+    await rm(parent, { recursive: true, force: true });
+  }
+});
+
+test("operator route-security baseline gate blocks new eligible routes and fails incomplete evidence closed", async () => {
+  const parent = await mkdtemp(join(tmpdir(), "aisec-route-policy-gate-"));
+  try {
+    const target = join(parent, "target");
+    await mkdir(target);
+    const source = (route: string, handler: string) => `
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.get("${route}")
+async def ${handler}():
+    try:
+        return load_value()
+    except Exception as error:
+        return {"message": str(error)}
+`;
+    await writeFile(join(target, "main.py"), source("/legacy", "legacy"));
+    const trustedPolicy = join(parent, "trusted-policy.yml");
+    await writeFile(trustedPolicy, YAML.stringify(policy({
+      schemaVersion: "1.1.0",
+      routeSecurityBaseline: { minimumSeverity: "medium", includeInferred: false, requireComplete: true },
+    })));
+
+    const baseline = await withUnavailableEngines(parent, async () => (await scanProject(target, {
+      policyPath: trustedPolicy,
+      persist: false,
+    })).report);
+    assert.equal(baseline.decision, "incomplete");
+    assert.match(baseline.decisionReasons.join("\n"), /requires a baseline comparison/u);
+    assert.deepEqual(baseline.policy?.routeSecurityBaseline, {
+      minimumSeverity: "medium",
+      includeInferred: false,
+      requireComplete: true,
+    });
+    const routeOnlyIncomplete = structuredClone(baseline);
+    for (const coverage of routeOnlyIncomplete.coverage) {
+      if (!coverage.required) continue;
+      coverage.status = "complete";
+      delete coverage.reason;
+    }
+    const routeOnlyDecision = decide(
+      routeOnlyIncomplete.findings,
+      routeOnlyIncomplete.coverage,
+      routeOnlyIncomplete.signals,
+      routeOnlyIncomplete.policy,
+      routeOnlyIncomplete.comparison,
+    );
+    routeOnlyIncomplete.decision = routeOnlyDecision.decision;
+    routeOnlyIncomplete.decisionReasons = routeOnlyDecision.reasons;
+    assert.equal(validateScanReport(routeOnlyIncomplete), routeOnlyIncomplete);
+    const routeOnlyCi = buildCiReport(routeOnlyIncomplete);
+    assert.equal(routeOnlyCi.decision, "incomplete");
+    assert.equal(routeOnlyCi.recommendedExitCode, 2);
+    assert.equal(routeOnlyCi.requiredCoverage.gaps.length, 0);
+    assert.match(routeOnlyCi.decisionReasons.join("\n"), /requires a baseline comparison/u);
+    assert.equal(decide(routeOnlyIncomplete.findings, routeOnlyIncomplete.coverage, routeOnlyIncomplete.signals, {
+      ...routeOnlyIncomplete.policy!,
+      routeSecurityBaseline: { ...routeOnlyIncomplete.policy!.routeSecurityBaseline!, requireComplete: false },
+    }).decision, "incomplete", "best-effort comparison still requires a baseline to classify newly observed issues");
+    const baselinePath = join(parent, "baseline.json");
+    await writeFile(baselinePath, `${JSON.stringify(baseline)}\n`);
+
+    await writeFile(join(target, "main.py"), `${source("/legacy", "legacy")}\n${source("/new", "new_route").replace("from fastapi import FastAPI\n\napp = FastAPI()\n\n", "")}`);
+    const gated = await withUnavailableEngines(parent, async () => (await scanProject(target, {
+      policyPath: trustedPolicy,
+      persist: false,
+    }, baselinePath)).report);
+    assert.equal(gated.decision, "block");
+    assert.match(gated.decisionReasons[0] ?? "", /newly observed route-security issue.*severity medium/u);
+    assert.ok(gated.comparison?.routeSecurity?.new.some((entry) => entry.route === "GET /new"));
+
+    const evaluation = evaluateRouteSecurityBaselineGate(
+      gated.signals,
+      gated.findings,
+      gated.comparison,
+      gated.policy?.routeSecurityBaseline,
+    );
+    assert.ok(evaluation.blockingEntries.some((entry) => entry.route === "GET /new"));
+    assert.ok(evaluation.blockingFindingFingerprints.length > 0);
+    const ci = buildCiReport(gated);
+    assert.deepEqual(ci.policy.routeSecurityBaseline, gated.policy?.routeSecurityBaseline);
+    assert.ok(ci.annotations.some((annotation) => annotation.kind === "finding"
+      && annotation.blocksRelease
+      && evaluation.blockingFindingFingerprints.includes(annotation.fingerprint ?? "")
+      && /newly observed route-security baseline issue/u.test(annotation.message)));
+    assert.match(renderTerminalReport(gated), /Route-security baseline gate: medium\+/u);
+    assert.match(renderMarkdownSummary(ci), /Route-security baseline gate: medium or higher/u);
+    assert.match(renderHtml(gated), /Route-security baseline gate: minimum medium/u);
+    const sarif = renderSarif(gated) as { runs: Array<{ properties: { routeSecurityBaselineGate?: unknown } }> };
+    assert.deepEqual(sarif.runs[0]?.properties.routeSecurityBaselineGate, gated.policy?.routeSecurityBaseline);
+
+    const suppressedFindings = structuredClone(gated.findings);
+    for (const finding of suppressedFindings) {
+      if (evaluation.blockingFindingFingerprints.includes(finding.fingerprint)) finding.status = "suppressed";
+    }
+    assert.equal(evaluateRouteSecurityBaselineGate(
+      gated.signals,
+      suppressedFindings,
+      gated.comparison,
+      gated.policy?.routeSecurityBaseline,
+    ).blockingEntries.length, 0, "approved suppressions remain visible but do not block through the route gate");
+
+    const inferredFindings = structuredClone(gated.findings);
+    for (const finding of inferredFindings) {
+      if (evaluation.blockingFindingFingerprints.includes(finding.fingerprint)) finding.evidenceLevel = "inferred";
+    }
+    assert.equal(evaluateRouteSecurityBaselineGate(
+      gated.signals,
+      inferredFindings,
+      gated.comparison,
+      gated.policy?.routeSecurityBaseline,
+    ).blockingEntries.length, 0);
+    assert.ok(evaluateRouteSecurityBaselineGate(
+      gated.signals,
+      inferredFindings,
+      gated.comparison,
+      { ...gated.policy!.routeSecurityBaseline!, includeInferred: true },
+    ).blockingEntries.length > 0);
+
+    const gatedPath = join(parent, "gated-baseline.json");
+    await writeFile(gatedPath, `${JSON.stringify(gated)}\n`);
+    const unchanged = await withUnavailableEngines(parent, async () => (await scanProject(target, {
+      policyPath: trustedPolicy,
+      persist: false,
+    }, gatedPath)).report);
+    assert.equal(unchanged.comparison?.routeSecurity?.new.length, 0);
+    assert.doesNotMatch(unchanged.decisionReasons.join("\n"), /met baseline gate/u);
+
+    const completeCoverage = unchanged.coverage.map((item) => ({ ...item, status: "complete" as const, reason: undefined }));
+    const partialComparison = structuredClone(unchanged.comparison)!;
+    partialComparison.routeSecurity!.complete = false;
+    partialComparison.routeSecurity!.omittedAssociations = 1;
+    const partial = decide(unchanged.findings, completeCoverage, unchanged.signals, unchanged.policy, partialComparison);
+    assert.equal(partial.decision, "incomplete");
+    assert.match(partial.reasons.join("\n"), /baseline comparison is partial/u);
+    const bestEffort = decide(unchanged.findings, completeCoverage, unchanged.signals, {
+      ...unchanged.policy!,
+      routeSecurityBaseline: { ...unchanged.policy!.routeSecurityBaseline!, requireComplete: false },
+    }, partialComparison);
+    assert.notEqual(bestEffort.decision, "incomplete");
+
+    const forged = structuredClone(gated);
+    forged.decision = "review";
+    forged.decisionReasons = ["forged weaker outcome"];
+    assert.throws(() => validateScanReport(forged), /baseline blockers require a block decision/u);
   } finally {
     await rm(parent, { recursive: true, force: true });
   }

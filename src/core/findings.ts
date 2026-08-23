@@ -1,6 +1,7 @@
 import { DEFAULT_POLICY_GATE } from "./config.js";
-import type { AttackPath, CoverageRecord, Decision, Finding, PolicySuppression, ScanPolicyRecord, ScanSummary, Signal } from "../schema.js";
+import type { AttackPath, CoverageRecord, Decision, Finding, PolicySuppression, ScanComparison, ScanPolicyRecord, ScanSummary, Signal } from "../schema.js";
 import { SEVERITY_RANK } from "./constants.js";
+import { evaluateRouteSecurityBaselineGate } from "./route-security-gate.js";
 
 export function buildFindings(signals: Signal[], attackPaths: AttackPath[], suppressions: readonly PolicySuppression[] = []): Finding[] {
   const signalById = new Map(signals.map((signal) => [signal.id, signal]));
@@ -57,7 +58,13 @@ export function buildFindings(signals: Signal[], attackPaths: AttackPath[], supp
   return findings.sort((a, b) => SEVERITY_RANK[b.severity] - SEVERITY_RANK[a.severity] || a.title.localeCompare(b.title));
 }
 
-export function decide(findings: Finding[], coverage: CoverageRecord[], signals: Signal[] = [], policy?: ScanPolicyRecord): { decision: Decision; reasons: string[] } {
+export function decide(
+  findings: Finding[],
+  coverage: CoverageRecord[],
+  signals: Signal[] = [],
+  policy?: ScanPolicyRecord,
+  comparison?: ScanComparison,
+): { decision: Decision; reasons: string[] } {
   const signalById = new Map(signals.map((signal) => [signal.id, signal]));
   const blockingRuleIds = new Set(policy?.blockingRuleIds ?? []);
   const selectedRuleBlockers = blockingRuleIds.size === 0 ? [] : findings.filter((finding) => finding.signalIds.some((id) => {
@@ -81,8 +88,18 @@ export function decide(findings: Finding[], coverage: CoverageRecord[], signals:
       : `${blockers.length} high or critical evidence-backed finding(s)`;
     return { decision: "block", reasons: [reason] };
   }
+  const routeGate = evaluateRouteSecurityBaselineGate(signals, findings, comparison, policy?.routeSecurityBaseline);
+  if (routeGate.blockingEntries.length > 0) {
+    const gate = policy!.routeSecurityBaseline!;
+    return {
+      decision: "block",
+      reasons: [`${routeGate.blockingEntries.length} newly observed route-security issue(s) met baseline gate severity ${gate.minimumSeverity}${gate.includeInferred ? " including inferred evidence" : " with evidence-backed results only"}`],
+    };
+  }
   const incomplete = coverage.filter((item) => item.required && ["failed", "not_run", "partial"].includes(item.status));
-  if (incomplete.length > 0) return { decision: "incomplete", reasons: incomplete.map((item) => `${item.domain}: ${item.status}${item.reason ? ` (${item.reason})` : ""}`) };
+  const incompleteReasons = incomplete.map((item) => `${item.domain}: ${item.status}${item.reason ? ` (${item.reason})` : ""}`);
+  if (routeGate.incompleteReason) incompleteReasons.push(routeGate.incompleteReason);
+  if (incompleteReasons.length > 0) return { decision: "incomplete", reasons: incompleteReasons };
   const reviews = open.filter((finding) => SEVERITY_RANK[finding.severity] >= SEVERITY_RANK.medium);
   if (reviews.length > 0) return { decision: "review", reasons: [`${reviews.length} medium-risk or inferred finding(s) require review`] };
   return { decision: "no_blockers_found", reasons: ["No blocking findings were detected within the completed coverage"] };
