@@ -3,7 +3,9 @@ import type {
   CiBaselineState,
   CiPolicySummary,
   CiReport,
+  CiRouteSecurityComparisonSummary,
   Finding,
+  RouteSecurityComparison,
   ScanPolicyRecord,
   ScanReport,
   SecurityPolicyGate,
@@ -13,7 +15,7 @@ import { CI_REPORT_SCHEMA_VERSION } from "../schema.js";
 import { SEVERITY_RANK } from "../core/constants.js";
 import { validateCiReport, validateScanReport } from "../core/schema-validation.js";
 import { githubData, githubProperty, markdownText, safeRelativePath, singleLine } from "./safety.js";
-import { buildRouteSecurityReview, ROUTE_ATTRIBUTION_GAP_LABELS } from "./route-security-cards.js";
+import { buildRouteSecurityReview, ROUTE_ATTRIBUTION_GAP_LABELS, ROUTE_SECURITY_CATEGORY_LABELS } from "./route-security-cards.js";
 
 const DEFAULT_GATE: Readonly<SecurityPolicyGate> = {
   minimumSeverity: "high",
@@ -22,6 +24,7 @@ const DEFAULT_GATE: Readonly<SecurityPolicyGate> = {
 };
 const MAX_COVERAGE_ANNOTATIONS = 20;
 const MAX_FINDING_ANNOTATIONS = 50;
+const MAX_ROUTE_COMPARISON_ENTRIES = 200;
 
 function recommendedExitCode(decision: ScanReport["decision"]): 0 | 1 | 2 {
   if (decision === "block") return 1;
@@ -110,6 +113,41 @@ function findingPriority(report: ScanReport, finding: Finding): [number, number,
   return [blocks, isNew, SEVERITY_RANK[finding.severity], finding.title];
 }
 
+function routeSecurityComparisonSummary(comparison: RouteSecurityComparison | undefined): CiRouteSecurityComparisonSummary {
+  if (!comparison) {
+    return {
+      recorded: false,
+      complete: false,
+      new: 0,
+      remaining: 0,
+      resolved: 0,
+      notRechecked: 0,
+      omittedRouteAliases: 0,
+      omittedAssociations: 0,
+      entries: [],
+      omittedEntries: 0,
+    };
+  }
+  const allEntries = [
+    ...comparison.new.map((entry) => ({ ...entry, state: "new" as const })),
+    ...comparison.notRechecked.map((entry) => ({ ...entry, state: "not_rechecked" as const })),
+    ...comparison.resolved.map((entry) => ({ ...entry, state: "resolved" as const })),
+    ...comparison.remaining.map((entry) => ({ ...entry, state: "remaining" as const })),
+  ];
+  return {
+    recorded: true,
+    complete: comparison.complete,
+    new: comparison.new.length,
+    remaining: comparison.remaining.length,
+    resolved: comparison.resolved.length,
+    notRechecked: comparison.notRechecked.length,
+    omittedRouteAliases: comparison.omittedRouteAliases,
+    omittedAssociations: comparison.omittedAssociations,
+    entries: allEntries.slice(0, MAX_ROUTE_COMPARISON_ENTRIES),
+    omittedEntries: Math.max(0, allEntries.length - MAX_ROUTE_COMPARISON_ENTRIES),
+  };
+}
+
 export function buildCiReport(report: ScanReport): CiReport {
   validateScanReport(report);
   const routeSecurity = buildRouteSecurityReview(report);
@@ -181,6 +219,7 @@ export function buildCiReport(report: ScanReport): CiReport {
         remaining: report.comparison.remaining.length,
         resolved: report.comparison.resolved.length,
         notRechecked: report.comparison.notRechecked.length,
+        routeSecurity: routeSecurityComparisonSummary(report.comparison.routeSecurity),
       },
     } : {}),
     annotations,
@@ -267,6 +306,22 @@ export function renderMarkdownSummary(report: CiReport): string {
   }
   if (report.comparison) {
     lines.push("", "## Baseline comparison", "", `Baseline ${markdownText(report.comparison.baselineScanId, 100)}: ${report.comparison.new} new · ${report.comparison.remaining} remaining · ${report.comparison.resolved} resolved · ${report.comparison.notRechecked} not rechecked`);
+    const routeComparison = report.comparison.routeSecurity;
+    lines.push("", "### Route security comparison", "");
+    if (!routeComparison?.recorded) {
+      lines.push("Route-security comparison evidence was not recorded by this legacy report producer.");
+    } else {
+      lines.push(`${routeComparison.new} newly observed · ${routeComparison.remaining} remaining · ${routeComparison.resolved} resolved · ${routeComparison.notRechecked} not rechecked · ${routeComparison.complete ? "complete" : "partial"}`);
+      if (routeComparison.entries.length > 0) {
+        lines.push("", "| State | Risk | Framework | Route | Observed gap |", "| --- | --- | --- | --- | --- |");
+        for (const entry of routeComparison.entries) {
+          lines.push(`| ${markdownText(entry.state, 40)} | ${markdownText(entry.severity, 20)} | ${markdownText(entry.framework, 40)} | ${markdownText(entry.route, 512)} | ${markdownText(ROUTE_SECURITY_CATEGORY_LABELS[entry.category], 120)} |`);
+        }
+      }
+      if (routeComparison.omittedEntries > 0 || routeComparison.omittedRouteAliases > 0 || routeComparison.omittedAssociations > 0) {
+        lines.push("", `_Route comparison omissions: ${routeComparison.omittedEntries} CI entries · ${routeComparison.omittedRouteAliases} route aliases · ${routeComparison.omittedAssociations} associations._`);
+      }
+    }
   }
   const findings = report.annotations.filter((item) => item.kind === "finding");
   lines.push("", "## Findings", "");

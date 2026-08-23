@@ -1,6 +1,6 @@
 export const SCHEMA_VERSION = "1.0.0" as const;
-export const SCAN_REPORT_SCHEMA_VERSION = "1.2.0" as const;
-export const CI_REPORT_SCHEMA_VERSION = "1.2.0" as const;
+export const SCAN_REPORT_SCHEMA_VERSION = "1.3.0" as const;
+export const CI_REPORT_SCHEMA_VERSION = "1.3.0" as const;
 export const RULE_PACK_PREVIEW_SCHEMA_VERSION = "1.0.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
@@ -293,16 +293,46 @@ export interface ScanSummary {
   suppressed: number;
 }
 
+export type RouteSecurityCategory =
+  | "authentication"
+  | "object_authorization"
+  | "privileged_authorization"
+  | "sql_injection"
+  | "ssrf"
+  | "untrusted_file_path"
+  | "credential_forwarding"
+  | "exception_disclosure";
+
+export type RouteSecurityFramework = "FastAPI" | "Express" | "NestJS";
+
+export interface RouteSecurityComparisonEntry {
+  framework: RouteSecurityFramework;
+  route: string;
+  category: RouteSecurityCategory;
+  severity: Severity;
+}
+
+export interface RouteSecurityComparison {
+  complete: boolean;
+  omittedRouteAliases: number;
+  omittedAssociations: number;
+  new: RouteSecurityComparisonEntry[];
+  remaining: RouteSecurityComparisonEntry[];
+  resolved: RouteSecurityComparisonEntry[];
+  notRechecked: RouteSecurityComparisonEntry[];
+}
+
 export interface ScanComparison {
   baselineScanId: string;
   new: string[];
   remaining: string[];
   resolved: string[];
   notRechecked: string[];
+  routeSecurity?: RouteSecurityComparison;
 }
 
 export interface ScanReport {
-  schemaVersion: "1.0.0" | "1.1.0" | typeof SCAN_REPORT_SCHEMA_VERSION;
+  schemaVersion: "1.0.0" | "1.1.0" | "1.2.0" | typeof SCAN_REPORT_SCHEMA_VERSION;
   toolVersion: string;
   scanId: string;
   startedAt: string;
@@ -386,8 +416,27 @@ export interface CiRouteAttributionSummary {
   reasons: CiRouteAttributionReasonSummary[];
 }
 
+export type CiRouteSecurityComparisonState = "new" | "remaining" | "resolved" | "not_rechecked";
+
+export interface CiRouteSecurityComparisonEntry extends RouteSecurityComparisonEntry {
+  state: CiRouteSecurityComparisonState;
+}
+
+export interface CiRouteSecurityComparisonSummary {
+  recorded: boolean;
+  complete: boolean;
+  new: number;
+  remaining: number;
+  resolved: number;
+  notRechecked: number;
+  omittedRouteAliases: number;
+  omittedAssociations: number;
+  entries: CiRouteSecurityComparisonEntry[];
+  omittedEntries: number;
+}
+
 export interface CiReport {
-  schemaVersion: "1.0.0" | "1.1.0" | typeof CI_REPORT_SCHEMA_VERSION;
+  schemaVersion: "1.0.0" | "1.1.0" | "1.2.0" | typeof CI_REPORT_SCHEMA_VERSION;
   toolVersion: string;
   scanId: string;
   profileName: ScanReport["profileName"];
@@ -409,6 +458,7 @@ export interface CiReport {
     remaining: number;
     resolved: number;
     notRechecked: number;
+    routeSecurity?: CiRouteSecurityComparisonSummary;
   };
   annotations: CiAnnotation[];
   omitted: {

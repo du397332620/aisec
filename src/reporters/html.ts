@@ -8,6 +8,7 @@ const MAX_HTML_ROUTE_CARDS = 500;
 const MAX_HTML_ROUTE_EVIDENCE = 50;
 const MAX_HTML_DEPLOYMENT_CONTEXTS = 50;
 const MAX_HTML_ROUTE_ATTRIBUTION_GAPS = 200;
+const MAX_HTML_ROUTE_COMPARISON_ENTRIES = 500;
 
 function escape(value: unknown): string {
   return String(value ?? "")
@@ -31,6 +32,24 @@ function comparisonList(report: ScanReport, title: string, fingerprints: string[
   }).join("");
   const omitted = fingerprints.length > 20 ? `<li>${fingerprints.length - 20} additional entries omitted from this view</li>` : "";
   return `<section class="comparison-card"><h3>${escape(title)} <span>${fingerprints.length}</span></h3>${items || omitted ? `<ul>${items}${omitted}</ul>` : "<p>None</p>"}</section>`;
+}
+
+function routeSecurityComparisonHtml(report: ScanReport): string {
+  const comparison = report.comparison?.routeSecurity;
+  if (!report.comparison) return "";
+  if (!comparison) return "<h3>Route security comparison</h3><p>Not recorded by this legacy report producer.</p>";
+  const entries = [
+    ...comparison.new.map((entry) => ({ state: "newly observed", entry })),
+    ...comparison.notRechecked.map((entry) => ({ state: "not rechecked", entry })),
+    ...comparison.resolved.map((entry) => ({ state: "resolved", entry })),
+    ...comparison.remaining.map((entry) => ({ state: "remaining", entry })),
+  ];
+  const rows = entries.slice(0, MAX_HTML_ROUTE_COMPARISON_ENTRIES).map(({ state, entry }) => `<tr><td><strong>${escape(state)}</strong></td><td><span class="severity ${escape(entry.severity)}">${escape(entry.severity)}</span></td><td>${escape(entry.framework)}</td><td><code>${escape(entry.route)}</code></td><td>${escape(ROUTE_SECURITY_CATEGORY_LABELS[entry.category])}</td></tr>`).join("\n");
+  const omittedEntries = Math.max(0, entries.length - MAX_HTML_ROUTE_COMPARISON_ENTRIES);
+  const omissions = omittedEntries > 0 || comparison.omittedRouteAliases > 0 || comparison.omittedAssociations > 0
+    ? `<p><small>Omissions: ${omittedEntries} HTML entries, ${comparison.omittedRouteAliases} route aliases, and ${comparison.omittedAssociations} associations.</small></p>`
+    : "";
+  return `<h3>Route security comparison</h3><p>${comparison.new.length} newly observed · ${comparison.remaining.length} remaining · ${comparison.resolved.length} resolved · ${comparison.notRechecked.length} not rechecked · <strong>${comparison.complete ? "complete" : "partial"}</strong></p>${rows ? `<table><thead><tr><th>State</th><th>Risk</th><th>Framework</th><th>Route</th><th>Observed gap</th></tr></thead><tbody>${rows}</tbody></table>` : "<p>No route-security differences were recorded.</p>"}${omissions}`;
 }
 
 function findingRow(report: ScanReport, finding: Finding, signal?: Signal): string {
@@ -109,7 +128,7 @@ export function renderHtml(report: ScanReport): string {
   const coverageAlert = ci.requiredCoverage.gaps.length > 0
     ? `<section class="alert error"><h2>Required coverage gaps</h2><ul>${ci.requiredCoverage.gaps.map((gap) => `<li><strong>${escape(gap.domain)}</strong> (${escape(gap.engine)}): ${escape(gap.status)}${gap.reason ? ` — ${escape(gap.reason)}` : ""}</li>`).join("")}</ul></section>`
     : `<section class="alert success"><strong>Required coverage:</strong> all ${ci.requiredCoverage.total} records complete.</section>`;
-  const comparison = report.comparison ? `<section><h2>Baseline comparison</h2><p><code>${escape(report.comparison.baselineScanId)}</code></p><div class="comparison-grid">${comparisonList(report, "New", report.comparison.new)}${comparisonList(report, "Remaining", report.comparison.remaining)}${comparisonList(report, "Resolved", report.comparison.resolved)}${comparisonList(report, "Not rechecked", report.comparison.notRechecked)}</div></section>` : "";
+  const comparison = report.comparison ? `<section><h2>Baseline comparison</h2><p><code>${escape(report.comparison.baselineScanId)}</code></p><div class="comparison-grid">${comparisonList(report, "New", report.comparison.new)}${comparisonList(report, "Remaining", report.comparison.remaining)}${comparisonList(report, "Resolved", report.comparison.resolved)}${comparisonList(report, "Not rechecked", report.comparison.notRechecked)}</div>${routeSecurityComparisonHtml(report)}</section>` : "";
   const rulePacks = (report.rulePacks ?? []).length > 0
     ? `<ul>${(report.rulePacks ?? []).map((pack) => `<li><code>${escape(pack.packId)}</code> · SHA-256 <code>${escape(pack.digestSha256)}</code> · ${pack.ruleCount} rule(s)</li>`).join("")}</ul>`
     : "<p>None.</p>";

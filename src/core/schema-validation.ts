@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import type { AuthorizationManifest, BolaAuthorizationManifest, BolaDraftPlan, CiReport, FixContract, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
+import { routeSecurityIssueKey } from "./route-security.js";
 import { safeRelativePath } from "../reporters/safety.js";
 
 type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaDraftPlan" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
@@ -54,8 +55,27 @@ function assertSchema<T>(name: PublicSchemaName, validator: ValidateFunction, va
   throw new Error(`${name} does not match schema ${contractVersion}: ${details || "validation failed"}`);
 }
 
+function validateRouteSecurityComparison(report: ScanReport): void {
+  const comparison = report.comparison?.routeSecurity;
+  if (!comparison) return;
+  const entries = [
+    ...comparison.new,
+    ...comparison.remaining,
+    ...comparison.resolved,
+    ...comparison.notRechecked,
+  ];
+  const identities = new Set(entries.map(routeSecurityIssueKey));
+  if (identities.size !== entries.length) throw new Error("ScanReport route-security comparison identities must be unique across states");
+  if (comparison.complete && (comparison.notRechecked.length > 0
+    || comparison.omittedRouteAliases > 0
+    || comparison.omittedAssociations > 0)) {
+    throw new Error("ScanReport complete route-security comparison cannot contain unchecked or omitted evidence");
+  }
+}
+
 export function validateScanReport(value: unknown): ScanReport {
-  const report = assertSchema<ScanReport>("ScanReport", scanReportValidator, value, "1.2.0");
+  const report = assertSchema<ScanReport>("ScanReport", scanReportValidator, value, "1.3.0");
+  validateRouteSecurityComparison(report);
   for (const signal of report.signals) {
     if (signal.engine !== "aisec-python" || !ROUTE_ATTRIBUTION_RULES.has(signal.ruleId)) continue;
     const status = signal.metadata?.routeAttributionStatus;
@@ -201,7 +221,7 @@ function ciPathIsSafe(path: string): boolean {
 }
 
 export function validateCiReport(value: unknown): CiReport {
-  const report = assertSchema<CiReport>("CiReport", ciReportValidator, value, "1.2.0");
+  const report = assertSchema<CiReport>("CiReport", ciReportValidator, value, "1.3.0");
   if (report.rulePacks) validateRulePackRecords(report.rulePacks, "CiReport");
   if (report.routeAttribution) {
     const attribution = report.routeAttribution;
@@ -216,6 +236,40 @@ export function validateCiReport(value: unknown): CiReport {
     }
     if ((attribution.unattributedSignals === 0) !== (attribution.unattributedFindings === 0)) {
       throw new Error("CiReport route-attribution finding count is inconsistent");
+    }
+  }
+  const routeComparison = report.comparison?.routeSecurity;
+  if (routeComparison) {
+    const total = routeComparison.new + routeComparison.remaining + routeComparison.resolved + routeComparison.notRechecked;
+    if (routeComparison.entries.length + routeComparison.omittedEntries !== total) {
+      throw new Error("CiReport route-security comparison entry totals are inconsistent");
+    }
+    const stateCounts = new Map<string, number>();
+    const identities = new Set<string>();
+    for (const entry of routeComparison.entries) {
+      stateCounts.set(entry.state, (stateCounts.get(entry.state) ?? 0) + 1);
+      const identity = routeSecurityIssueKey(entry);
+      if (identities.has(identity)) throw new Error("CiReport route-security comparison identities must be unique across states");
+      identities.add(identity);
+    }
+    const expected = {
+      new: routeComparison.new,
+      remaining: routeComparison.remaining,
+      resolved: routeComparison.resolved,
+      not_rechecked: routeComparison.notRechecked,
+    };
+    for (const [state, count] of Object.entries(expected)) {
+      if ((stateCounts.get(state) ?? 0) > count) throw new Error("CiReport route-security comparison state counts are inconsistent");
+    }
+    if (!routeComparison.recorded && (routeComparison.complete || total > 0
+      || routeComparison.omittedRouteAliases > 0
+      || routeComparison.omittedAssociations > 0)) {
+      throw new Error("CiReport unrecorded route-security comparison cannot claim evidence");
+    }
+    if (routeComparison.complete && (routeComparison.notRechecked > 0
+      || routeComparison.omittedRouteAliases > 0
+      || routeComparison.omittedAssociations > 0)) {
+      throw new Error("CiReport complete route-security comparison cannot contain unchecked or omitted evidence");
     }
   }
   const expectedExitCode = report.decision === "block" ? 1 : report.decision === "incomplete" ? 2 : 0;

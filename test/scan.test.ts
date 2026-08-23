@@ -6,9 +6,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
+import type { RouteSecurityComparisonEntry } from "../src/schema.js";
 import { scanProject } from "../src/core/scan.js";
 import { createFixContract } from "../src/core/contracts.js";
 import { compareReports } from "../src/core/compare.js";
+import { buildRouteSecuritySnapshot, routeSecurityIssueKey } from "../src/core/route-security.js";
 import { validateAuthorization } from "../src/web/authorization.js";
 import { verifyWeb } from "../src/web/verify.js";
 import { serializeReport } from "../src/reporters/index.js";
@@ -6827,6 +6829,62 @@ test("partial coverage cannot close a baseline finding as resolved", async () =>
   } finally {
     await fixture.cleanup();
   }
+});
+
+test("route security baseline comparison is route/category stable and fails closed on missing coverage", async () => {
+  const { report: baseline } = await scanProject(join(fixtures, "corpus", "node-api", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const snapshot = buildRouteSecuritySnapshot(baseline);
+  const target = snapshot.issues[0];
+  assert.ok(target);
+  assert.ok(snapshot.issues.length > 2);
+  const targetKey = routeSecurityIssueKey(target.entry);
+  const includesTarget = (entries: RouteSecurityComparisonEntry[]): boolean => entries.some((entry) => routeSecurityIssueKey(entry) === targetKey);
+
+  const drifted = structuredClone(baseline);
+  const targetFinding = drifted.findings.find((finding) => finding.signalIds.some((signalId) => target.signalIds.includes(signalId)));
+  assert.ok(targetFinding);
+  targetFinding.fingerprint = "a".repeat(64);
+  const targetSignal = drifted.signals.find((signal) => target.signalIds.includes(signal.id));
+  assert.ok(targetSignal?.locations[0]);
+  targetSignal.locations[0].line = (targetSignal.locations[0].line ?? 1) + 100;
+  const driftedComparison = compareReports(drifted, baseline).routeSecurity;
+  assert.ok(driftedComparison);
+  assert.ok(includesTarget(driftedComparison.remaining), "line and finding-fingerprint drift must keep the route/category issue remaining");
+  assert.ok(!includesTarget(driftedComparison.new));
+
+  const suppressed = structuredClone(baseline);
+  for (const finding of suppressed.findings.filter((item) => item.signalIds.some((signalId) => target.signalIds.includes(signalId)))) {
+    finding.status = "suppressed";
+    finding.suppression = { reason: "synthetic accepted risk", expires: "2099-12-31" };
+  }
+  const suppressedComparison = compareReports(suppressed, baseline).routeSecurity;
+  assert.ok(suppressedComparison && includesTarget(suppressedComparison.remaining), "suppression must not claim that observed route evidence was resolved");
+
+  const missing = structuredClone(baseline);
+  missing.findings = missing.findings.filter((finding) => !finding.signalIds.some((signalId) => target.signalIds.includes(signalId)));
+  const partialComparison = compareReports(missing, baseline).routeSecurity;
+  assert.ok(partialComparison);
+  assert.ok(includesTarget(partialComparison.notRechecked));
+  assert.ok(!includesTarget(partialComparison.resolved));
+  assert.equal(partialComparison.complete, false);
+
+  const nodeCoverage = missing.coverage.find((item) => item.domain === "node-api-security");
+  assert.ok(nodeCoverage);
+  nodeCoverage.status = "complete";
+  delete nodeCoverage.reason;
+  const completeComparison = compareReports(missing, baseline).routeSecurity;
+  assert.ok(completeComparison);
+  assert.ok(includesTarget(completeComparison.resolved));
+  assert.ok(!includesTarget(completeComparison.notRechecked));
+
+  const baselineWithoutTarget = structuredClone(baseline);
+  baselineWithoutTarget.findings = baselineWithoutTarget.findings.filter((finding) => !finding.signalIds.some((signalId) => target.signalIds.includes(signalId)));
+  const newComparison = compareReports(baseline, baselineWithoutTarget).routeSecurity;
+  assert.ok(newComparison && includesTarget(newComparison.new), "current evidence absent from the bounded baseline snapshot is newly observed");
 });
 
 test("authorization manifests reject production, host drift and excessive requests", () => {

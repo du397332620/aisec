@@ -176,7 +176,7 @@ test("serialization and the CLI report command reject malformed reports", async 
   const [exitCode] = await once(child, "close");
   assert.equal(exitCode, 64);
   assert.equal(stdout, "");
-  assert.match(stderr, /aisec: ScanReport does not match schema 1\.2\.0.*decision/);
+  assert.match(stderr, /aisec: ScanReport does not match schema 1\.3\.0.*decision/);
 });
 
 test("authorization manifests use the public schema before semantic authorization checks", () => {
@@ -233,7 +233,7 @@ test("BOLA authorization manifests use a separate strict public schema", () => {
   assert.throws(() => validateBolaAuthorization({ ...manifest, destructiveOverride: true }), /BolaAuthorizationManifest.*additional properties/);
 });
 
-test("target-owned suppressions are ignored and recorded in the 1.2.0 report contract", async () => {
+test("target-owned suppressions are ignored and recorded in the 1.3.0 report contract", async () => {
   const fixture = await materializeFixture(join(fixtures, "vulnerable"), [{
     relativePath: ".env.example",
     placeholder: "__AISEC_SYNTHETIC_STRIPE_LIVE_KEY__",

@@ -6,8 +6,10 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { ScanReport } from "../src/schema.js";
+import { compareReports } from "../src/core/compare.js";
 import { scanProject } from "../src/core/scan.js";
-import { validateCiReport } from "../src/core/schema-validation.js";
+import { validateCiReport, validateScanReport } from "../src/core/schema-validation.js";
+import { buildRouteSecuritySnapshot, routeSecurityIssueKey } from "../src/core/route-security.js";
 import { buildCiReport, renderGithubAnnotations, renderMarkdownSummary } from "../src/reporters/ci.js";
 import { renderHtml } from "../src/reporters/html.js";
 import { buildRouteSecurityReview } from "../src/reporters/route-security-cards.js";
@@ -29,7 +31,7 @@ test("CiReport is a strict coverage-aware machine contract", async () => {
   const source = await vulnerableReport();
   const report = buildCiReport(source);
   assert.equal(validateCiReport(report), report);
-  assert.equal(report.schemaVersion, "1.2.0");
+  assert.equal(report.schemaVersion, "1.3.0");
   assert.equal(report.decision, "block");
   assert.equal(report.recommendedExitCode, 1);
   assert.equal(report.counts.open, report.counts.critical + report.counts.high + report.counts.medium + report.counts.low + report.counts.info);
@@ -46,7 +48,10 @@ test("CiReport is a strict coverage-aware machine contract", async () => {
     reasons: [],
   });
 
-  const legacy11 = structuredClone(report);
+  const legacy12 = structuredClone(report);
+  legacy12.schemaVersion = "1.2.0";
+  assert.equal(validateCiReport(legacy12), legacy12, "legacy CiReport 1.2.0 remains readable without route-security comparison records");
+  const legacy11 = structuredClone(legacy12);
   legacy11.schemaVersion = "1.1.0";
   delete legacy11.routeAttribution;
   assert.equal(validateCiReport(legacy11), legacy11, "legacy CiReport 1.1.0 remains readable without route-attribution records");
@@ -85,7 +90,25 @@ test("CiReport is a strict coverage-aware machine contract", async () => {
   encodedTraversal.annotations.find((item) => item.kind === "finding")!.path = "%2e%2e/outside.ts";
   assert.throws(() => validateCiReport(encodedTraversal), /not a safe relative path/);
   const impossibleBaseline = structuredClone(report);
-  impossibleBaseline.comparison = { baselineScanId: source.scanId, new: 0, remaining: 0, resolved: 0, notRechecked: 0 };
+  impossibleBaseline.comparison = {
+    baselineScanId: source.scanId,
+    new: 0,
+    remaining: 0,
+    resolved: 0,
+    notRechecked: 0,
+    routeSecurity: {
+      recorded: true,
+      complete: true,
+      new: 0,
+      remaining: 0,
+      resolved: 0,
+      notRechecked: 0,
+      omittedRouteAliases: 0,
+      omittedAssociations: 0,
+      entries: [],
+      omittedEntries: 0,
+    },
+  };
   impossibleBaseline.annotations.find((item) => item.kind === "finding")!.baselineState = "new";
   assert.throws(() => validateCiReport(impossibleBaseline), /baseline states exceed/);
   const weakenedDefaults = structuredClone(report);
@@ -347,6 +370,70 @@ test("route attribution gaps remain canonical evidence across CI, Markdown, term
   assert.throws(() => validateCiReport(inconsistent), /route-attribution totals are inconsistent/u);
 });
 
+test("route security baseline differences remain exact and bounded across report formats", async () => {
+  const { report: current } = await scanProject(join(fixtures, "corpus", "node-api", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const baseline = structuredClone(current);
+  const target = buildRouteSecuritySnapshot(current).issues[0];
+  assert.ok(target);
+  const targetKey = routeSecurityIssueKey(target.entry);
+  baseline.findings = baseline.findings.filter((finding) => !finding.signalIds.some((signalId) => target.signalIds.includes(signalId)));
+  current.comparison = compareReports(current, baseline);
+  assert.ok(current.comparison.routeSecurity?.new.some((entry) => routeSecurityIssueKey(entry) === targetKey));
+  assert.equal(validateScanReport(current), current);
+
+  const ci = buildCiReport(current);
+  assert.equal(ci.comparison?.routeSecurity?.recorded, true);
+  assert.ok((ci.comparison?.routeSecurity?.new ?? 0) > 0);
+  assert.ok(ci.comparison?.routeSecurity?.entries.some((entry) => entry.state === "new" && routeSecurityIssueKey(entry) === targetKey));
+  assert.match(renderMarkdownSummary(ci), /### Route security comparison[\s\S]*newly observed[\s\S]*Observed gap/u);
+  assert.match(renderTerminalReport(current), /Route security: [1-9][0-9]* newly observed[\s\S]*\[NEWLY OBSERVED\]/u);
+  assert.match(renderHtml(current), /Route security comparison[\s\S]*newly observed[\s\S]*Observed gap/u);
+
+  const legacyCi12 = structuredClone(ci);
+  legacyCi12.schemaVersion = "1.2.0";
+  delete legacyCi12.comparison!.routeSecurity;
+  assert.equal(validateCiReport(legacyCi12), legacyCi12);
+
+  const inconsistentCi = structuredClone(ci);
+  inconsistentCi.comparison!.routeSecurity!.new += 1;
+  assert.throws(() => validateCiReport(inconsistentCi), /route-security comparison entry totals are inconsistent/u);
+  const duplicateScan = structuredClone(current);
+  duplicateScan.comparison!.routeSecurity!.remaining.push(structuredClone(duplicateScan.comparison!.routeSecurity!.new[0]!));
+  assert.throws(() => validateScanReport(duplicateScan), /route-security comparison identities must be unique/u);
+  const missingCurrentComparison = structuredClone(current);
+  delete missingCurrentComparison.comparison!.routeSecurity;
+  assert.throws(() => validateScanReport(missingCurrentComparison), /routeSecurity/u);
+
+  const bounded = structuredClone(current);
+  bounded.comparison!.routeSecurity = {
+    complete: true,
+    omittedRouteAliases: 0,
+    omittedAssociations: 0,
+    new: Array.from({ length: 205 }, (_, index) => ({
+      ...target.entry,
+      route: `GET /synthetic-route-${index}`,
+    })),
+    remaining: [],
+    resolved: [],
+    notRechecked: [],
+  };
+  const boundedCi = buildCiReport(bounded);
+  assert.equal(boundedCi.comparison?.routeSecurity?.entries.length, 200);
+  assert.equal(boundedCi.comparison?.routeSecurity?.omittedEntries, 5);
+
+  const legacy = structuredClone(current);
+  legacy.schemaVersion = "1.2.0";
+  delete legacy.comparison!.routeSecurity;
+  assert.equal(validateScanReport(legacy), legacy);
+  const legacyCi = buildCiReport(legacy);
+  assert.equal(legacyCi.comparison?.routeSecurity?.recorded, false);
+  assert.match(renderMarkdownSummary(legacyCi), /not recorded by this legacy report producer/u);
+});
+
 test("scan and rescan retain decision exits with CI output formats", async () => {
   const source = await vulnerableReport();
   const temporary = await mkdtemp(join(tmpdir(), "aisec-ci-exits-"));
@@ -411,6 +498,7 @@ test("SARIF carries suppression, baseline, policy and coverage evidence", async 
     remaining: [],
     resolved: [],
     notRechecked: [],
+    routeSecurity: compareReports(source, source).routeSecurity,
   };
   const sarif = renderSarif(source) as {
     runs: Array<{
@@ -450,6 +538,7 @@ test("HTML and CLI formats expose decision, coverage and baseline summaries", as
     remaining: [],
     resolved: ["f".repeat(64)],
     notRechecked: ["e".repeat(64)],
+    routeSecurity: compareReports(source, source).routeSecurity,
   };
   const html = renderHtml(source);
   assert.match(html, /<h2>Decision reasons<\/h2>/u);

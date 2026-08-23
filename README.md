@@ -299,6 +299,15 @@ Reports are stored outside the scanned project. By default this is
 `$XDG_DATA_HOME/aisec` (or `~/.local/share/aisec`) on Linux. Override it with
 `AISEC_DATA_DIR` in tests or automation.
 
+`rescan` also compares the evidence-only interface audit by stable
+`framework + exact METHOD/path + category` identity. It reports route gaps as
+newly observed, remaining, resolved, or not rechecked. “Newly observed” means
+absent from the bounded baseline evidence; it does not prove when the
+vulnerability was introduced. A route gap is resolved only when its responsible
+detector coverage completed, while partial coverage and association bounds fail
+closed as not rechecked. Suppression changes release disposition but does not
+make detected route evidence appear resolved.
+
 ### Trusted release policy
 
 AIsec never discovers a release policy from the scanned repository. The
@@ -536,10 +545,11 @@ do not use a branch name as a security-tool pin. A full `predeploy` CI gate must
 also provision the exact three compatible engine versions, authenticate their
 binaries and prepare the Trivy database before scanning.
 
-`--format ci` emits the strict [`CiReport 1.2.0`](schemas/ci-report.schema.json)
+`--format ci` emits the strict [`CiReport 1.3.0`](schemas/ci-report.schema.json)
 JSON contract: decision and recommended exit code, open counts, required
 coverage gaps, effective policy, declarative rule-pack digests, baseline counts
-and bounded annotations. It also records FastAPI dangerous-dataflow route
+and bounded annotations. Baseline rescans add exact route/category comparison
+counts plus a bounded entry window with explicit omissions. It also records FastAPI dangerous-dataflow route
 attribution totals and stable fail-closed reason counts without changing the
 canonical findings or release decision.
 `--format github` converts that same contract to workflow commands, while
@@ -579,7 +589,7 @@ finding fingerprints and accepted suppressions for compatible consumers.
 | Static-to-active BOLA planning | `draft-bola` | Converts open static BOLA/IDOR signals into a non-executable review worksheet; mutation routes are excluded and object IDs/markers remain placeholders |
 | Two-account BOLA verification | `verify-bola` | Exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
 | Agent integration | stdio MCP | Local read-oriented inspection, bounded rule-pack selector previews, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
-| Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; terminal/HTML can group opted-in repeated evidence by file and derive exact-route security review cards while retaining canonical findings, and terminal/HTML/CI Markdown keep unattributed FastAPI dataflow visible with bounded reason summaries; deployment exposure stays explicitly project-level unless service-to-route ownership is proven; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
+| Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; terminal/HTML can group opted-in repeated evidence by file and derive exact-route security review cards while retaining canonical findings, terminal/HTML/CI Markdown keep unattributed FastAPI dataflow visible with bounded reason summaries, and rescans compare exact route/category gaps as newly observed, remaining, resolved or not rechecked without treating suppression as a fix; deployment exposure stays explicitly project-level unless service-to-route ownership is proven; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
 
 `--profile native` is the deterministic source-only first pass: external and
 artifact domains are non-required. The default `predeploy` profile is the
@@ -760,7 +770,9 @@ recognized FastAPI, Express and NestJS authentication, object-authorization,
 privileged-authorization and exception-disclosure gaps, plus FastAPI routes
 with proven SQL-injection, SSRF, untrusted-file-path or server-credential-
 forwarding flows. Cards join exact route aliases without changing canonical
-results; published-service evidence remains
+results. Baseline rescans compare each observed card category by framework and
+exact route; source-line or finding-fingerprint drift therefore does not create
+a false route regression. Published-service evidence remains
 project-level deployment context because static co-occurrence does not prove
 that a specific route is externally reachable. A category absent from a card is
 not a passed control. Single occurrences and all rules keep the normal finding
@@ -805,12 +817,14 @@ authorization, BOLA draft plans and BOLA authorization manifests in
 assertions and continues to accept legacy `1.0.0` packs only when the new field
 is absent. `RulePackPreview 1.0.0` is the strict bounded output of the CLI,
 Node API and MCP selector-preview operation. The policy and other unchanged contracts remain at `1.0.0`.
-`CiReport 1.1.0` added rule-pack records, and `CiReport 1.2.0` adds the required
-FastAPI route-attribution summary; the validator still accepts legacy `1.0.0`
-and `1.1.0` inputs only when their newer fields are absent. `ScanReport 1.1.0` added the required machine-readable
-policy record, and `ScanReport 1.2.0` adds the required rule-pack record array;
-the validator continues to accept legacy `1.0.0` and `1.1.0` reports only when
-their newer fields are absent. Contracts are validated at runtime when a report is generated,
+`CiReport 1.1.0` added rule-pack records, `CiReport 1.2.0` added the required
+FastAPI route-attribution summary, and `CiReport 1.3.0` adds a required bounded
+route-security comparison whenever baseline counts are present. `ScanReport
+1.1.0` added the required machine-readable policy record, `ScanReport 1.2.0`
+added the required rule-pack record array, and `ScanReport 1.3.0` adds complete
+bounded route-security comparison evidence whenever a baseline is present. The
+validators continue to accept legacy `1.0.0`-`1.2.0` inputs only when fields
+introduced by later versions are absent. Contracts are validated at runtime when a report is generated,
 serialized, saved or loaded, when a rule-pack preview or fix contract is generated, and before
 authorization semantics are evaluated. Unknown fields, unsupported schema
 versions and malformed nested values fail closed instead of flowing into CLI

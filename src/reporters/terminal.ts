@@ -10,6 +10,7 @@ const MAX_ROUTE_CARDS = 20;
 const MAX_ROUTE_EVIDENCE = 3;
 const MAX_DEPLOYMENT_CONTEXTS = 5;
 const MAX_ROUTE_ATTRIBUTION_GAPS = 20;
+const MAX_ROUTE_COMPARISON_ENTRIES = 20;
 
 export function renderTerminalReport(report: ScanReport): string {
   const stack = [...new Set([...report.profile.frameworks, ...report.profile.baas, ...report.profile.mobilePlatforms])];
@@ -143,6 +144,25 @@ export function renderTerminalReport(report: ScanReport): string {
   }
   if (report.comparison) {
     lines.push("", `Baseline ${report.comparison.baselineScanId}: ${report.comparison.new.length} new · ${report.comparison.remaining.length} remaining · ${report.comparison.resolved.length} resolved · ${report.comparison.notRechecked.length} not rechecked`);
+    const routeComparison = report.comparison.routeSecurity;
+    if (!routeComparison) {
+      lines.push("  Route security comparison: not recorded by this legacy report producer.");
+    } else {
+      lines.push(`  Route security: ${routeComparison.new.length} newly observed · ${routeComparison.remaining.length} remaining · ${routeComparison.resolved.length} resolved · ${routeComparison.notRechecked.length} not rechecked · ${routeComparison.complete ? "complete" : "partial"}`);
+      const entries = [
+        ...routeComparison.new.map((entry) => ({ state: "NEWLY OBSERVED", entry })),
+        ...routeComparison.notRechecked.map((entry) => ({ state: "NOT RECHECKED", entry })),
+        ...routeComparison.resolved.map((entry) => ({ state: "RESOLVED", entry })),
+        ...routeComparison.remaining.map((entry) => ({ state: "REMAINING", entry })),
+      ];
+      for (const { state, entry } of entries.slice(0, MAX_ROUTE_COMPARISON_ENTRIES)) {
+        lines.push(`    [${state}] [${ICON[entry.severity]}] ${entry.framework} · ${singleLine(entry.route, 500)} · ${ROUTE_SECURITY_CATEGORY_LABELS[entry.category]}`);
+      }
+      const omittedEntries = Math.max(0, entries.length - MAX_ROUTE_COMPARISON_ENTRIES);
+      if (omittedEntries > 0 || routeComparison.omittedRouteAliases > 0 || routeComparison.omittedAssociations > 0) {
+        lines.push(`    … omissions: ${omittedEntries} terminal entries · ${routeComparison.omittedRouteAliases} route aliases · ${routeComparison.omittedAssociations} associations.`);
+      }
+    }
   }
   lines.push("", `Decision: ${report.decision}`, ...report.decisionReasons.map((reason) => `  - ${reason}`), "", report.disclaimer);
   return lines.join("\n");

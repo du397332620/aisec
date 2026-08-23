@@ -1,15 +1,20 @@
 import { SEVERITY_RANK } from "../core/constants.js";
-import type { Finding, RouteAttributionGapReason, ScanReport, Severity, Signal } from "../schema.js";
+import {
+  ROUTE_SECURITY_CATEGORY_ORDER,
+  ROUTE_SECURITY_RULES,
+  routeSecurityAliases,
+} from "../core/route-security.js";
+import type {
+  Finding,
+  RouteAttributionGapReason,
+  RouteSecurityCategory,
+  RouteSecurityFramework,
+  ScanReport,
+  Severity,
+  Signal,
+} from "../schema.js";
 
-export type RouteSecurityCategory =
-  | "authentication"
-  | "object_authorization"
-  | "privileged_authorization"
-  | "sql_injection"
-  | "ssrf"
-  | "untrusted_file_path"
-  | "credential_forwarding"
-  | "exception_disclosure";
+export type { RouteSecurityCategory, RouteSecurityFramework } from "../schema.js";
 
 export const ROUTE_SECURITY_CATEGORY_LABELS: Record<RouteSecurityCategory, string> = {
   authentication: "authentication gap",
@@ -30,43 +35,6 @@ export const ROUTE_ATTRIBUTION_GAP_LABELS: Record<RouteAttributionGapReason, str
   not_recorded: "legacy reason not recorded",
 };
 
-export type RouteSecurityFramework = "FastAPI" | "Express" | "NestJS";
-
-interface RouteRulePresentation {
-  category: RouteSecurityCategory;
-  framework: RouteSecurityFramework;
-}
-
-const ROUTE_RULES: Readonly<Record<string, RouteRulePresentation>> = {
-  "fastapi.auth.whitelisted-sensitive-route": { category: "authentication", framework: "FastAPI" },
-  "fastapi.auth.sensitive-route-without-guard": { category: "authentication", framework: "FastAPI" },
-  "fastapi.authorization.object-without-ownership-check": { category: "object_authorization", framework: "FastAPI" },
-  "fastapi.config.route-raw-exception-response": { category: "exception_disclosure", framework: "FastAPI" },
-  "python.dataflow.sql-injection": { category: "sql_injection", framework: "FastAPI" },
-  "python.dataflow.ssrf": { category: "ssrf", framework: "FastAPI" },
-  "python.dataflow.untrusted-file-path": { category: "untrusted_file_path", framework: "FastAPI" },
-  "python.dataflow.client-url-with-server-secret": { category: "credential_forwarding", framework: "FastAPI" },
-  "express.auth.sensitive-route-without-guard": { category: "authentication", framework: "Express" },
-  "express.authorization.object-without-ownership-check": { category: "object_authorization", framework: "Express" },
-  "express.authorization.privileged-operation-without-role-check": { category: "privileged_authorization", framework: "Express" },
-  "nestjs.auth.sensitive-route-without-guard": { category: "authentication", framework: "NestJS" },
-  "nestjs.authorization.object-without-ownership-check": { category: "object_authorization", framework: "NestJS" },
-  "nestjs.authorization.privileged-operation-without-role-check": { category: "privileged_authorization", framework: "NestJS" },
-};
-
-const CATEGORY_ORDER: readonly RouteSecurityCategory[] = [
-  "authentication",
-  "object_authorization",
-  "privileged_authorization",
-  "sql_injection",
-  "ssrf",
-  "untrusted_file_path",
-  "credential_forwarding",
-  "exception_disclosure",
-];
-const CONTROL_CHARACTER = /[\u0000-\u001f\u007f]/u;
-const ROUTE_PATTERN = /^(CONNECT|DELETE|GET|HEAD|OPTIONS|PATCH|POST|PUT|TRACE|ALL) +(\/[^\s\u007f]{0,480})$/u;
-const MAX_ROUTE_ALIASES_PER_SIGNAL = 128;
 const MAX_ROUTE_ASSOCIATIONS = 10_000;
 const ROUTE_ATTRIBUTION_RULES = new Set([
   "python.dataflow.sql-injection",
@@ -145,27 +113,6 @@ function metadataStrings(value: unknown): string[] {
   return value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()));
 }
 
-function normalizedRoute(value: unknown): string | undefined {
-  if (typeof value !== "string" || CONTROL_CHARACTER.test(value) || [...value].length > 512) return undefined;
-  const match = ROUTE_PATTERN.exec(value.trim());
-  return match ? `${match[1]} ${match[2]}` : undefined;
-}
-
-function routeAliases(signal: Signal): { routes: string[]; omitted: number } {
-  const values = [signal.metadata?.route, ...metadataStrings(signal.metadata?.routes)];
-  const routes: string[] = [];
-  const seen = new Set<string>();
-  let omitted = 0;
-  for (const value of values) {
-    const route = normalizedRoute(value);
-    if (!route || seen.has(route)) continue;
-    seen.add(route);
-    if (routes.length < MAX_ROUTE_ALIASES_PER_SIGNAL) routes.push(route);
-    else omitted += 1;
-  }
-  return { routes, omitted };
-}
-
 function handlerFor(signal: Signal): string | undefined {
   const handler = metadataString(signal.metadata?.handler);
   return handler && [...handler].length <= 256 ? handler : undefined;
@@ -218,10 +165,10 @@ export function buildRouteSecurityReview(
   let omittedAssociations = 0;
 
   for (const signal of report.signals) {
-    const presentation = ROUTE_RULES[signal.ruleId];
+    const presentation = ROUTE_SECURITY_RULES[signal.ruleId];
     const associatedFindings = findingsBySignal.get(signal.id);
     if (!presentation || !associatedFindings || associatedFindings.length === 0) continue;
-    const aliases = routeAliases(signal);
+    const aliases = routeSecurityAliases(signal);
     omittedRouteAliases += aliases.omitted;
     if (ROUTE_ATTRIBUTION_RULES.has(signal.ruleId)) {
       eligibleSignals += 1;
@@ -266,8 +213,8 @@ export function buildRouteSecurityReview(
   const cards: RouteSecurityCard[] = [...cardsByKey.values()].map((card) => {
     const allFindings = [...new Map(card.evidence.flatMap((item) => item.findings).map((finding) => [finding.id, finding])).values()]
       .sort(compareFindings);
-    const categories = CATEGORY_ORDER.filter((category) => card.evidence.some((item) => item.category === category));
-    card.evidence.sort((left, right) => CATEGORY_ORDER.indexOf(left.category) - CATEGORY_ORDER.indexOf(right.category)
+    const categories = ROUTE_SECURITY_CATEGORY_ORDER.filter((category) => card.evidence.some((item) => item.category === category));
+    card.evidence.sort((left, right) => ROUTE_SECURITY_CATEGORY_ORDER.indexOf(left.category) - ROUTE_SECURITY_CATEGORY_ORDER.indexOf(right.category)
       || SEVERITY_RANK[highestSeverity(right.findings)] - SEVERITY_RANK[highestSeverity(left.findings)]
       || left.signal.ruleId.localeCompare(right.signal.ruleId)
       || left.signal.id.localeCompare(right.signal.id));
