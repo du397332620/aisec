@@ -46,6 +46,13 @@ test("verified real engines reject target-controlled suppressions and normalize 
       .every((signal) => !signal.locations.some((location) => location.path.startsWith(".venv/"))),
     "AIsec-owned inventory exclusions must keep third-party virtual environments out of Opengrep");
     assert.ok([...byEngine.keys()].some((key) => key.startsWith("trivy:CVE-")), "target trivy.yaml, .trivyignore and trivy-secret.yaml must not hide a known vulnerable dependency");
+    const vulnerableDependency = report.signals.find((signal) => signal.engine === "trivy" && signal.metadata?.package === "lodash");
+    assert.ok(vulnerableDependency, "the fixed vulnerable npm package must remain visible");
+    assert.equal(vulnerableDependency.metadata?.dependencyRelationship, "direct");
+    assert.equal(vulnerableDependency.metadata?.dependencyClass, "lang-pkgs");
+    assert.equal(vulnerableDependency.metadata?.dependencyEcosystem, "npm");
+    assert.equal(vulnerableDependency.metadata?.fixAvailable, true);
+    assert.ok(Number.isSafeInteger(vulnerableDependency.metadata?.packageLocationLine));
     assert.equal(report.decision, "block");
     assert.doesNotMatch(serializeReport(report, "json"), new RegExp(SYNTHETIC_EXTERNAL_STRIPE_LIVE_KEY));
   } finally {

@@ -3,12 +3,22 @@ import { buildCiReport } from "./ci.js";
 import { partitionFindingGroups } from "./finding-groups.js";
 import { buildRouteSecurityReview, ROUTE_ATTRIBUTION_GAP_LABELS, ROUTE_SECURITY_CATEGORY_LABELS, type RouteSecurityEvidence } from "./route-security-cards.js";
 import { safeRelativePath, singleLine } from "./safety.js";
+import { buildSupplyChainReview } from "./supply-chain-review.js";
 
 const MAX_HTML_ROUTE_CARDS = 500;
 const MAX_HTML_ROUTE_EVIDENCE = 50;
 const MAX_HTML_DEPLOYMENT_CONTEXTS = 50;
 const MAX_HTML_ROUTE_ATTRIBUTION_GAPS = 200;
 const MAX_HTML_ROUTE_COMPARISON_ENTRIES = 500;
+const MAX_HTML_DEPENDENCY_GROUPS = 200;
+const MAX_HTML_DEPENDENCY_ADVISORIES = 20;
+const MAX_HTML_DEPENDENCY_TARGETS = 10;
+const MAX_HTML_DEPENDENCY_FIXES = 20;
+const MAX_HTML_IAC_TYPES = 50;
+
+function countLabel(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
 
 function escape(value: unknown): string {
   return String(value ?? "")
@@ -77,6 +87,7 @@ function signalLocation(signal: Signal): string {
 
 export function renderHtml(report: ScanReport): string {
   const ci = buildCiReport(report);
+  const supplyChain = buildSupplyChainReview(report);
   const routeSecurity = buildRouteSecurityReview(report);
   const routeCards = routeSecurity.cards.slice(0, MAX_HTML_ROUTE_CARDS).map((card) => {
     const findingLabel = card.findingCount === 1 ? "finding" : "findings";
@@ -110,6 +121,22 @@ export function renderHtml(report: ScanReport): string {
     ? `<p><strong>Route attribution:</strong> ${routeSecurity.attribution.attributedSignals} of ${routeSecurity.attribution.eligibleSignals} eligible signals have proven routes; ${routeSecurity.attribution.unattributedSignals} signals across ${routeSecurity.attribution.unattributedFindings} findings remain unattributed.</p>`
     : "";
   const routeSecuritySection = routeCards || deploymentContexts || routeAttributionGaps ? `<section><h2>Route security review</h2><p><strong>Evidence-only view:</strong> shown categories are detected gaps. An absent category is not evidence that the control passed.</p>${routeAttributionSummary}${deploymentContexts ? `<h3>Project deployment context</h3><p>This evidence is not attributed to a specific route because static project co-occurrence does not prove service-to-route ownership.</p>${deploymentContexts}` : ""}${routeAttributionGaps ? `<h3>Unattributed FastAPI data-flow evidence</h3><p>These canonical findings remain reviewable, but static analysis did not prove an exact request route. Reasons describe the attribution boundary, not exploitability.</p><table><thead><tr><th>Reason</th><th>Observed gap</th><th>Function</th><th>Location</th><th>Canonical findings</th></tr></thead><tbody>${routeAttributionGaps}</tbody></table>` : ""}${routeCards ? `<h3>Route cards</h3>${routeCards}` : ""}${routePresentationBounds.length > 0 ? `<p><small>Presentation bounds omitted ${escape(routePresentationBounds.join(", "))}; canonical findings remain unchanged.</small></p>` : ""}</section>` : "";
+  const dependencyRows = supplyChain.dependencies.groups.slice(0, MAX_HTML_DEPENDENCY_GROUPS).map((group) => {
+    const advisories = group.advisoryIds.slice(0, MAX_HTML_DEPENDENCY_ADVISORIES);
+    const advisoryOmission = group.advisoryIds.length > MAX_HTML_DEPENDENCY_ADVISORIES ? ` (+${group.advisoryIds.length - MAX_HTML_DEPENDENCY_ADVISORIES} more)` : "";
+    const targets = group.targets.slice(0, MAX_HTML_DEPENDENCY_TARGETS);
+    const targetOmission = group.targets.length > MAX_HTML_DEPENDENCY_TARGETS ? ` (+${group.targets.length - MAX_HTML_DEPENDENCY_TARGETS} more)` : "";
+    const fixedVersions = group.fixedVersions.slice(0, MAX_HTML_DEPENDENCY_FIXES);
+    const fixOmission = group.fixedVersions.length > MAX_HTML_DEPENDENCY_FIXES ? ` (+${group.fixedVersions.length - MAX_HTML_DEPENDENCY_FIXES} more)` : "";
+    const fixes = fixedVersions.length > 0 ? `${fixedVersions.join(", ")}${fixOmission}` : group.fixAvailable ? "Fix available; version not recorded" : "No fix reported";
+    return `<tr class="${group.hasOpenFinding ? "finding-open" : "finding-suppressed"}"><td><span class="severity ${escape(group.severity)}">${escape(group.severity)}</span></td><td><strong>${escape(group.packageName)}</strong><br><small>${escape(group.installedVersion)}</small></td><td>${escape(group.relationship)}</td><td>${escape(group.ecosystem)} / ${escape(group.dependencyClass)}</td><td>${escape(advisories.join(", "))}${escape(advisoryOmission)}<br><small>${countLabel(group.advisoryIds.length, "advisory", "advisories")} · ${countLabel(group.signalCount, "signal")} · ${countLabel(group.findingCount, "finding")}</small></td><td>${escape(fixes)}</td><td><code>${escape(targets.join(", ") || "not recorded")}</code>${escape(targetOmission)}</td></tr>`;
+  }).join("\n");
+  const dependencyOmission = supplyChain.dependencies.groups.length > MAX_HTML_DEPENDENCY_GROUPS
+    ? `<p><small>${supplyChain.dependencies.groups.length - MAX_HTML_DEPENDENCY_GROUPS} additional dependency groups are omitted from this view; canonical findings remain unchanged.</small></p>`
+    : "";
+  const visibleIacTypes = supplyChain.iac.types.slice(0, MAX_HTML_IAC_TYPES);
+  const iacTypeOmission = supplyChain.iac.types.length > MAX_HTML_IAC_TYPES ? ` (+${supplyChain.iac.types.length - MAX_HTML_IAC_TYPES} more types)` : "";
+  const supplyChainSection = supplyChain.counts.trivySignals > 0 ? `<section><h2>Dependency and infrastructure review</h2><p><strong>Trivy evidence:</strong> ${countLabel(supplyChain.counts.dependencies, "dependency vulnerability", "dependency vulnerabilities")} · ${countLabel(supplyChain.counts.iac, "IaC misconfiguration")} · ${countLabel(supplyChain.counts.secrets, "redacted secret signal")}${supplyChain.counts.unclassified > 0 ? ` · ${countLabel(supplyChain.counts.unclassified, "unclassified signal")}` : ""}.</p>${supplyChain.counts.dependencies > 0 ? `<p><strong>Dependency priority:</strong> ${supplyChain.dependencies.relationships.direct} direct · ${supplyChain.dependencies.relationships.transitive} transitive · ${supplyChain.dependencies.relationships.unknown} unknown; ${supplyChain.dependencies.fixes.available} with reported fixes · ${supplyChain.dependencies.fixes.unavailable} without a reported fix. ${countLabel(supplyChain.dependencies.advisories, "advisory", "advisories")} affect ${countLabel(supplyChain.dependencies.packages, "package/version pair")}.</p><p>Package presence is not proof that vulnerable code is reachable or exploitable.</p><table><thead><tr><th>Risk</th><th>Package</th><th>Relationship</th><th>Ecosystem / class</th><th>Advisories</th><th>Reported fixes</th><th>Targets</th></tr></thead><tbody>${dependencyRows}</tbody></table>${dependencyOmission}` : ""}${supplyChain.counts.iac > 0 ? `<p><strong>Infrastructure:</strong> ${countLabel(supplyChain.iac.signals, "misconfiguration")} across ${countLabel(supplyChain.iac.targets, "target")}${visibleIacTypes.length > 0 ? ` · ${escape(visibleIacTypes.map((item) => `${item.type} ${item.signals}`).join(", "))}${escape(iacTypeOmission)}` : ""}. Filesystem scanning does not evaluate referenced base-image packages.</p>` : ""}${supplyChain.counts.secrets > 0 ? `<p><strong>Secrets:</strong> ${countLabel(supplyChain.secrets.signals, "redacted signal")} across ${countLabel(supplyChain.secrets.targets, "target")}; raw matches are never shown in this review.</p>` : ""}</section>` : "";
   const { groups: findingGroups, ungrouped: ungroupedFindings } = partitionFindingGroups(report);
   const findingRows = ungroupedFindings.map((finding) => findingRow(report, finding)).join("\n");
   const groupedFindingSections = findingGroups.map((group) => {
@@ -144,6 +171,6 @@ export function renderHtml(report: ScanReport): string {
 <h2>Summary</h2><div class="metrics"><div class="metric"><strong>${ci.counts.critical}</strong>critical</div><div class="metric"><strong>${ci.counts.high}</strong>high</div><div class="metric"><strong>${ci.counts.medium}</strong>medium</div><div class="metric"><strong>${ci.counts.open}</strong>open</div><div class="metric"><strong>${ci.counts.suppressed}</strong>suppressed</div><div class="metric"><strong>${ci.counts.attackPaths}</strong>attack paths</div></div>
 <h2>Policy</h2><p>${policy}</p><ul><li>Gate: ${gate}</li><li>Route-security baseline gate: ${routeBaselineGate}</li><li>Required engines: ${ci.policy.requiredEngines.length ? escape(ci.policy.requiredEngines.join(", ")) : "none recorded"}</li><li>Target configuration: ${escape(ci.policy.targetConfiguration)}</li><li>Suppressions: ${ci.policy.suppressionCount} (${escape(ci.policy.suppressionApproval)})</li><li>Relaxations: ${ci.policy.relaxations.length ? escape(ci.policy.relaxations.join(", ")) : "none"}</li></ul>
 <h2>Declarative rule packs</h2>${rulePacks}
-${comparison}${paths ? `<h2>Attack paths</h2>${paths}` : ""}${routeSecuritySection}${groupedFindingSections ? `<h2>Grouped findings</h2>${groupedFindingSections}` : ""}${findingRows ? `<h2>${groupedFindingSections ? "Other findings" : "Findings"}</h2><table><thead><tr><th>Risk</th><th>Finding</th><th>Status</th><th>Location</th><th>Evidence</th></tr></thead><tbody>${findingRows}</tbody></table>` : groupedFindingSections ? "" : "<h2>Findings</h2><p>No findings in the executed coverage.</p>"}
+${comparison}${paths ? `<h2>Attack paths</h2>${paths}` : ""}${supplyChainSection}${routeSecuritySection}${groupedFindingSections ? `<h2>Grouped findings</h2>${groupedFindingSections}` : ""}${findingRows ? `<h2>${groupedFindingSections ? "Other findings" : "Findings"}</h2><table><thead><tr><th>Risk</th><th>Finding</th><th>Status</th><th>Location</th><th>Evidence</th></tr></thead><tbody>${findingRows}</tbody></table>` : groupedFindingSections ? "" : "<h2>Findings</h2><p>No findings in the executed coverage.</p>"}
 <h2>Coverage</h2><table><thead><tr><th>Domain</th><th>Engine</th><th>Requirement</th><th>Status</th><th>Reason</th></tr></thead><tbody>${coverageRows}</tbody></table></body></html>`;
 }

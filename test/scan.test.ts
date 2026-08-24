@@ -18,6 +18,7 @@ import { engineStatus, installManagedEngine, resolveEngineCommand } from "../src
 import { sha256 } from "../src/core/utils.js";
 import { engineCompatibility, parseEngineVersion } from "../src/engines/compatibility.js";
 import { normalizeOpengrepRuleId, runOpengrep } from "../src/engines/opengrep.js";
+import { runTrivy } from "../src/engines/trivy.js";
 import { trivyDatabaseStatus } from "../src/engines/trivy-db.js";
 import { materializeFixture, SYNTHETIC_STRIPE_LIVE_KEY } from "./helpers/materialize-fixture.js";
 import { DEFAULT_EXCLUDES } from "../src/core/constants.js";
@@ -7201,6 +7202,115 @@ test("Trivy accepts its schema-v2 empty report with Results omitted", async () =
     if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
     if (oldDataDir === undefined) delete process.env.AISEC_DATA_DIR; else process.env.AISEC_DATA_DIR = oldDataDir;
     if (oldTrivy === undefined) delete process.env.AISEC_TRIVY_PATH; else process.env.AISEC_TRIVY_PATH = oldTrivy;
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("Trivy preserves bounded package relationship and result classification metadata", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-trivy-package-context-"));
+  const project = join(temporary, "project");
+  const command = join(temporary, "trivy");
+  const output = join(temporary, "trivy-report.json");
+  const oldPath = process.env.PATH;
+  const oldDataDir = process.env.AISEC_DATA_DIR;
+  const oldTrivy = process.env.AISEC_TRIVY_PATH;
+  const oldOutput = process.env.AISEC_TEST_TRIVY_REPORT_PATH;
+  const syntheticSecret = "fixture-secret-value-123456789";
+  try {
+    await mkdir(project);
+    await writeFile(join(project, "package-lock.json"), '{"name":"trivy-package-context","lockfileVersion":3}\n');
+    process.env.AISEC_DATA_DIR = join(temporary, "data");
+    const database = join(process.env.AISEC_DATA_DIR, "trivy-cache", "db");
+    await mkdir(database, { recursive: true });
+    await writeFile(join(database, "trivy.db"), "fixture database marker");
+    await writeFile(join(database, "metadata.json"), JSON.stringify({ Version: 2, NextUpdate: new Date(Date.now() + 60_000).toISOString() }));
+    const report = {
+      SchemaVersion: 2,
+      Results: [
+        {
+          Target: "package-lock.json",
+          Class: "lang-pkgs",
+          Type: "npm",
+          Packages: [
+            { ID: "direct-lib@1.0.0", Name: "direct-lib", Version: "1.0.0", Relationship: "direct", Locations: [{ StartLine: 12, EndLine: 14 }], Identifier: { PURL: "pkg:npm/direct-lib@1.0.0", UID: "direct-uid" } },
+            { ID: "nested-lib@2.0.0", Name: "nested-lib", Version: "2.0.0", Relationship: "indirect", Locations: [{ StartLine: 30 }], Identifier: { PURL: "pkg:npm/nested-lib@2.0.0", UID: "nested-uid" } },
+            { ID: "ambiguous-direct@4.0.0", Name: "ambiguous-lib", Version: "4.0.0", Relationship: "direct" },
+            { ID: "ambiguous-indirect@4.0.0", Name: "ambiguous-lib", Version: "4.0.0", Relationship: "indirect" },
+          ],
+          Vulnerabilities: [
+            { VulnerabilityID: "CVE-2099-0001", PkgName: "direct-lib", InstalledVersion: "1.0.0", FixedVersion: "1.1.0", Severity: "HIGH", PkgIdentifier: { PURL: "pkg:npm/direct-lib@1.0.0", UID: "direct-uid" } },
+            { VulnerabilityID: "CVE-2099-0002", PkgName: "nested-lib", InstalledVersion: "2.0.0", Severity: "MEDIUM", PkgIdentifier: { PURL: "pkg:npm/nested-lib@2.0.0", UID: "nested-uid" } },
+            { VulnerabilityID: "CVE-2099-0003", PkgName: "unmatched-lib", InstalledVersion: "3.0.0", FixedVersion: "3.1.0", Severity: "LOW" },
+            { VulnerabilityID: "CVE-2099-0004", PkgName: "ambiguous-lib", InstalledVersion: "4.0.0", FixedVersion: "4.1.0", Severity: "LOW" },
+          ],
+        },
+        {
+          Target: "Dockerfile",
+          Class: "config",
+          Type: "dockerfile",
+          Misconfigurations: [{ ID: "DS2099", Title: "Synthetic container configuration", Severity: "HIGH", CauseMetadata: { StartLine: 4 } }],
+        },
+        {
+          Target: "fixture.env",
+          Class: "secret",
+          Type: "unknown",
+          Secrets: [{ RuleID: "fixture-secret", Category: "fixture", Title: "Synthetic secret", Severity: "HIGH", StartLine: 1, Match: `api_key=${syntheticSecret}` }],
+        },
+      ],
+    };
+    await writeFile(output, JSON.stringify(report));
+    await writeFile(command, "#!/bin/sh\nif [ \"$1\" = \"--version\" ]; then printf 'Version: 0.73.0\\n'; exit 0; fi\nexec /bin/cat \"$AISEC_TEST_TRIVY_REPORT_PATH\"\n");
+    await chmod(command, 0o700);
+    process.env.PATH = "";
+    process.env.AISEC_TRIVY_PATH = command;
+    process.env.AISEC_TEST_TRIVY_REPORT_PATH = output;
+
+    const result = await runTrivy({
+      root: project,
+      inventory: { files: [], totalBytes: 0, skippedFiles: 0, skippedReasons: {} },
+      options: normalizeScanOptions({ persist: false }),
+    } as unknown as Parameters<typeof runTrivy>[0]);
+    assert.equal(result.coverage.status, "complete");
+    const direct = result.signals.find((signal) => signal.ruleId === "CVE-2099-0001");
+    const indirect = result.signals.find((signal) => signal.ruleId === "CVE-2099-0002");
+    const unmatched = result.signals.find((signal) => signal.ruleId === "CVE-2099-0003");
+    const ambiguous = result.signals.find((signal) => signal.ruleId === "CVE-2099-0004");
+    const iac = result.signals.find((signal) => signal.ruleId === "DS2099");
+    const secret = result.signals.find((signal) => signal.ruleId === "fixture-secret");
+    assert.deepEqual(direct?.metadata, {
+      package: "direct-lib",
+      installedVersion: "1.0.0",
+      fixedVersion: "1.1.0",
+      advisory: "",
+      trivyCategory: "dependency",
+      dependencyRelationship: "direct",
+      dependencyClass: "lang-pkgs",
+      dependencyEcosystem: "npm",
+      fixAvailable: true,
+      packageLocationLine: 12,
+    });
+    assert.equal(indirect?.metadata?.dependencyRelationship, "indirect");
+    assert.equal(indirect?.metadata?.fixAvailable, false);
+    assert.equal(unmatched?.metadata?.dependencyRelationship, "unknown");
+    assert.equal(ambiguous?.metadata?.dependencyRelationship, "unknown");
+    assert.deepEqual(iac?.metadata, { trivyCategory: "iac", trivyClass: "config", trivyType: "dockerfile" });
+    assert.deepEqual(secret?.metadata, { trivyCategory: "secret", trivyClass: "secret", trivyType: "unknown" });
+    assert.doesNotMatch(JSON.stringify(result.signals), new RegExp(syntheticSecret));
+
+    report.Results[0]!.Packages![0]!.Relationship = 42 as unknown as string;
+    await writeFile(output, JSON.stringify(report));
+    const malformed = await runTrivy({
+      root: project,
+      inventory: { files: [], totalBytes: 0, skippedFiles: 0, skippedReasons: {} },
+      options: normalizeScanOptions({ persist: false }),
+    } as unknown as Parameters<typeof runTrivy>[0]);
+    assert.equal(malformed.coverage.status, "failed");
+    assert.match(malformed.coverage.reason ?? "", /unexpected JSON schema/);
+  } finally {
+    if (oldPath === undefined) delete process.env.PATH; else process.env.PATH = oldPath;
+    if (oldDataDir === undefined) delete process.env.AISEC_DATA_DIR; else process.env.AISEC_DATA_DIR = oldDataDir;
+    if (oldTrivy === undefined) delete process.env.AISEC_TRIVY_PATH; else process.env.AISEC_TRIVY_PATH = oldTrivy;
+    if (oldOutput === undefined) delete process.env.AISEC_TEST_TRIVY_REPORT_PATH; else process.env.AISEC_TEST_TRIVY_REPORT_PATH = oldOutput;
     await rm(temporary, { recursive: true, force: true });
   }
 });

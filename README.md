@@ -543,6 +543,17 @@ deterministic inventory exclusions such as `.venv`, `node_modules` and build
 caches, so vendored/generated dependencies do not create unstable application
 findings; it never imports target `.gitignore` or `.semgrepignore` content.
 
+Trivy schema-v2 package records also feed a presentation-only dependency and
+infrastructure review. Terminal and HTML output distinguish dependency
+vulnerabilities, IaC misconfigurations and redacted secret signals; dependency
+entries retain Trivy's recorded direct/indirect relationship, ecosystem and
+fix availability, then group package/version context without merging canonical
+signals or findings. `indirect` is displayed as `transitive`; missing or
+ambiguous relationship data stays `unknown` instead of being guessed. Package
+presence does not establish reachability or exploitability. Filesystem mode can
+review Dockerfile/IaC configuration, but it does not download or evaluate the
+vulnerability set of a referenced base image.
+
 Opengrep is LGPL-2.1, Gitleaks is MIT, and Trivy is Apache-2.0. MobSF is GPL-3.0
 and remains a separately managed service; it is deliberately not bundled.
 
@@ -649,8 +660,10 @@ no network requests and upload nothing, so the example retains only
 decision after the non-gating `report` commands finish.
 
 HTML and SARIF now carry the same decision reasons, required-coverage gaps,
-effective policy and baseline comparison. SARIF additionally records stable
-finding fingerprints and accepted suppressions for compatible consumers.
+effective policy and baseline comparison. Terminal and HTML additionally derive
+a bounded Trivy dependency/infrastructure priority view while leaving canonical
+evidence and decisions unchanged. SARIF records stable finding fingerprints and
+accepted suppressions for compatible consumers.
 
 ## Beta capability matrix
 
@@ -670,13 +683,13 @@ finding fingerprints and accepted suppressions for compatible consumers.
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, global and broad route-local exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |
 | General SAST | Opengrep `1.26.0` | Required in pre-deploy mode; uses AIsec-owned rules, suppression controls and deterministic inventory exclusions while rejecting target ignore files |
-| Dependency, IaC and secondary secret checks | Trivy `0.73.0` | Required in pre-deploy mode; requires an explicitly prepared, fresh schema-v2 database and scans offline |
+| Dependency, IaC and secondary secret checks | Trivy `0.73.0` | Required in pre-deploy mode; requires an explicitly prepared, fresh schema-v2 database and scans offline; canonical metadata retains recorded direct/indirect/unknown dependency relationship, ecosystem/class and fix availability, while terminal/HTML derive bounded package/version priority groups without claiming reachability or base-image package coverage |
 | APK/IPA static resources | Native archive adapter | Optional input; required for pre-deploy mobile artifact coverage when a mobile project/artifact is expected; prioritizes app manifests/plists, DEX/resource tables, JS bundles and the iOS main executable, semantically decodes bounded binary plists, recovers bounded ASCII/UTF-16 strings in memory, and performs no installation, on-disk member extraction or runtime instrumentation |
 | Passive test/staging Web checks | `verify-web` | Explicit authorization plus `--confirm`; bounded GET/header/cookie checks only, no auth/IDOR/injection testing |
 | Static-to-active BOLA planning | `draft-bola` | Converts open static BOLA/IDOR signals into a non-executable review worksheet; mutation routes are excluded and object IDs/markers remain placeholders |
 | Two-account BOLA verification | `verify-bola` | Exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
 | Agent integration | stdio MCP | Local read-oriented inspection, bounded rule-pack selector previews, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
-| Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; terminal/HTML can group opted-in repeated evidence by file and derive exact-route security review cards while retaining canonical findings, terminal/HTML/CI Markdown keep unattributed FastAPI dataflow visible with bounded reason summaries, and rescans compare exact route/category gaps as newly observed, remaining, resolved or not rechecked without treating suppression as a fix; deployment exposure stays explicitly project-level unless service-to-route ownership is proven; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
+| Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; terminal/HTML can group opted-in repeated evidence, derive exact-route security cards and summarize Trivy dependency/IaC/secret evidence by recorded relationship and fix context while retaining every canonical finding; terminal/HTML/CI Markdown keep unattributed FastAPI dataflow visible with bounded reason summaries, and rescans compare exact route/category gaps as newly observed, remaining, resolved or not rechecked without treating suppression as a fix; deployment exposure stays explicitly project-level unless service-to-route ownership is proven; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
 
 `--profile native` is the deterministic source-only first pass: external and
 artifact domains are non-required. The default `predeploy` profile is the
@@ -978,6 +991,11 @@ boundary.
   Concrete environment-interpolation fallback findings retain only the variable
   name and a fully redacted placeholder; the fallback value is excluded from
   snippets, metadata and fingerprints.
+- The Trivy priority view consumes only canonical normalized signals. Package,
+  version, ecosystem, target and advisory text is single-line, escaped and
+  bounded at presentation time; raw secret matches are never included. Grouping
+  never removes a signal/finding or changes fingerprints, baseline state,
+  suppression, severity or the release decision.
 - CI, GitHub and Markdown renderers validate a strict bounded intermediate
   contract. Project-controlled text cannot create extra workflow commands,
   unsafe absolute/traversal paths cannot become annotations, and Markdown links

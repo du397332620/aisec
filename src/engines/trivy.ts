@@ -14,6 +14,7 @@ import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
 
 interface TrivyVulnerability {
   VulnerabilityID?: string;
+  PkgID?: string;
   PkgName?: string;
   InstalledVersion?: string;
   FixedVersion?: string;
@@ -21,6 +22,23 @@ interface TrivyVulnerability {
   Title?: string;
   Description?: string;
   PrimaryURL?: string;
+  PkgIdentifier?: TrivyPackageIdentifier;
+}
+interface TrivyPackageIdentifier {
+  PURL?: string;
+  UID?: string;
+}
+interface TrivyPackageLocation {
+  StartLine?: number;
+  EndLine?: number;
+}
+interface TrivyPackage {
+  ID?: string;
+  Name?: string;
+  Version?: string;
+  Relationship?: string;
+  Locations?: TrivyPackageLocation[];
+  Identifier?: TrivyPackageIdentifier;
 }
 interface TrivyMisconfiguration {
   ID?: string;
@@ -42,15 +60,32 @@ interface TrivySecret {
 }
 interface TrivyResult {
   Target?: string;
+  Class?: string;
+  Type?: string;
+  Packages?: TrivyPackage[];
   Vulnerabilities?: TrivyVulnerability[];
   Misconfigurations?: TrivyMisconfiguration[];
   Secrets?: TrivySecret[];
 }
 
+function isTrivyPackageIdentifier(value: unknown): value is TrivyPackageIdentifier {
+  return isRecord(value) && isOptionalString(value.PURL) && isOptionalString(value.UID);
+}
+
+function isTrivyPackage(value: unknown): value is TrivyPackage {
+  if (!isRecord(value)
+    || !["ID", "Name", "Version", "Relationship"].every((key) => isOptionalString(value[key]))) return false;
+  if (value.Identifier !== undefined && !isTrivyPackageIdentifier(value.Identifier)) return false;
+  return isOptionalArrayOf(value.Locations, (location): location is TrivyPackageLocation => isRecord(location)
+    && isOptionalFiniteNumber(location.StartLine)
+    && isOptionalFiniteNumber(location.EndLine));
+}
+
 function isTrivyVulnerability(value: unknown): value is TrivyVulnerability {
   if (!isRecord(value)) return false;
-  return ["VulnerabilityID", "PkgName", "InstalledVersion", "FixedVersion", "Severity", "Title", "Description", "PrimaryURL"]
-    .every((key) => isOptionalString(value[key]));
+  return ["VulnerabilityID", "PkgID", "PkgName", "InstalledVersion", "FixedVersion", "Severity", "Title", "Description", "PrimaryURL"]
+    .every((key) => isOptionalString(value[key]))
+    && (value.PkgIdentifier === undefined || isTrivyPackageIdentifier(value.PkgIdentifier));
 }
 
 function isTrivyMisconfiguration(value: unknown): value is TrivyMisconfiguration {
@@ -75,9 +110,81 @@ function isTrivySecret(value: unknown): value is TrivySecret {
 function isTrivyResult(value: unknown): value is TrivyResult {
   return isRecord(value)
     && isOptionalString(value.Target)
+    && isOptionalString(value.Class)
+    && isOptionalString(value.Type)
+    && isOptionalArrayOf(value.Packages, isTrivyPackage)
     && isOptionalArrayOf(value.Vulnerabilities, isTrivyVulnerability)
     && isOptionalArrayOf(value.Misconfigurations, isTrivyMisconfiguration)
     && isOptionalArrayOf(value.Secrets, isTrivySecret);
+}
+
+type DependencyRelationship = "direct" | "indirect" | "unknown";
+
+interface TrivyPackageIndex {
+  byUid: Map<string, TrivyPackage[]>;
+  byPurl: Map<string, TrivyPackage[]>;
+  byId: Map<string, TrivyPackage[]>;
+  byNameVersion: Map<string, TrivyPackage[]>;
+}
+
+function addPackage(index: Map<string, TrivyPackage[]>, key: string | undefined, value: TrivyPackage): void {
+  if (!key) return;
+  const existing = index.get(key);
+  if (existing) existing.push(value);
+  else index.set(key, [value]);
+}
+
+function packageIndex(packages: TrivyPackage[]): TrivyPackageIndex {
+  const result: TrivyPackageIndex = {
+    byUid: new Map(),
+    byPurl: new Map(),
+    byId: new Map(),
+    byNameVersion: new Map(),
+  };
+  for (const pkg of packages) {
+    addPackage(result.byUid, pkg.Identifier?.UID, pkg);
+    addPackage(result.byPurl, pkg.Identifier?.PURL, pkg);
+    addPackage(result.byId, pkg.ID, pkg);
+    addPackage(result.byNameVersion, pkg.Name && pkg.Version ? `${pkg.Name}\u0000${pkg.Version}` : undefined, pkg);
+  }
+  return result;
+}
+
+function indexedPackages(index: Map<string, TrivyPackage[]>, key: string | undefined): TrivyPackage[] | undefined {
+  return key ? index.get(key) : undefined;
+}
+
+function packageForVulnerability(index: TrivyPackageIndex, vulnerability: TrivyVulnerability): TrivyPackage | undefined {
+  const candidateSets = [
+    indexedPackages(index.byUid, vulnerability.PkgIdentifier?.UID),
+    indexedPackages(index.byPurl, vulnerability.PkgIdentifier?.PURL),
+    indexedPackages(index.byId, vulnerability.PkgID),
+    indexedPackages(index.byNameVersion, vulnerability.PkgName && vulnerability.InstalledVersion
+      ? `${vulnerability.PkgName}\u0000${vulnerability.InstalledVersion}`
+      : undefined),
+  ].filter((candidates): candidates is TrivyPackage[] => candidates !== undefined);
+  if (candidateSets.length === 0) return undefined;
+  let candidates = new Set(candidateSets[0]);
+  for (const candidateSet of candidateSets.slice(1)) {
+    const allowed = new Set(candidateSet);
+    candidates = new Set([...candidates].filter((candidate) => allowed.has(candidate)));
+  }
+  return candidates.size === 1 ? candidates.values().next().value : undefined;
+}
+
+function dependencyRelationship(value: string | undefined): DependencyRelationship {
+  const normalized = value?.trim().toLowerCase();
+  return normalized === "direct" || normalized === "indirect" ? normalized : "unknown";
+}
+
+function metadataToken(value: string | undefined): string {
+  const normalized = value?.trim() ?? "";
+  return /^[A-Za-z0-9][A-Za-z0-9._+-]{0,63}$/u.test(normalized) ? normalized : "unknown";
+}
+
+function packageLocationLine(pkg: TrivyPackage | undefined): number | undefined {
+  const line = pkg?.Locations?.find((location) => Number.isSafeInteger(location.StartLine) && (location.StartLine ?? 0) > 0)?.StartLine;
+  return line === undefined ? undefined : line;
 }
 
 export async function runTrivy(context: ScanContext): Promise<DetectorResult> {
@@ -135,12 +242,28 @@ export async function runTrivy(context: ScanContext): Promise<DetectorResult> {
   };
   targets: for (const target of parsed.Results ?? []) {
     const path = target.Target ? (isAbsolute(target.Target) ? normalizeRelative(context.root, target.Target) : target.Target) : ".";
+    const packages = packageIndex(target.Packages ?? []);
+    const resultClass = metadataToken(target.Class);
+    const resultType = metadataToken(target.Type);
     for (const vuln of target.Vulnerabilities ?? []) {
+      const pkg = packageForVulnerability(packages, vuln);
+      const locationLine = packageLocationLine(pkg);
       if (!add(externalSignal({
         engine: "trivy", ruleId: vuln.VulnerabilityID ?? "trivy.vulnerability", title: vuln.Title ?? `${vuln.VulnerabilityID ?? "Vulnerability"} in ${vuln.PkgName ?? "dependency"}`,
         description: vuln.Description ?? "A dependency matches a known vulnerability advisory.", severity: normalizeSeverity(vuln.Severity), locations: [{ path }],
         tags: ["sca", "dependency", vuln.PkgName ?? "unknown"], remediation: vuln.FixedVersion ? `Upgrade ${vuln.PkgName ?? "the package"} to ${vuln.FixedVersion} or later after compatibility testing.` : "Remove, isolate, or replace the dependency; no fixed version was reported.",
-        metadata: { package: vuln.PkgName ?? "unknown", installedVersion: vuln.InstalledVersion ?? "unknown", fixedVersion: vuln.FixedVersion ?? "unknown", advisory: vuln.PrimaryURL ?? "" },
+        metadata: {
+          package: vuln.PkgName ?? "unknown",
+          installedVersion: vuln.InstalledVersion ?? "unknown",
+          fixedVersion: vuln.FixedVersion ?? "unknown",
+          advisory: vuln.PrimaryURL ?? "",
+          trivyCategory: "dependency",
+          dependencyRelationship: dependencyRelationship(pkg?.Relationship),
+          dependencyClass: resultClass,
+          dependencyEcosystem: resultType,
+          fixAvailable: Boolean(vuln.FixedVersion?.trim()),
+          ...(locationLine === undefined ? {} : { packageLocationLine: locationLine }),
+        },
       }))) break targets;
     }
     for (const misconfig of target.Misconfigurations ?? []) {
@@ -149,6 +272,7 @@ export async function runTrivy(context: ScanContext): Promise<DetectorResult> {
         description: misconfig.Message ?? misconfig.Description ?? "Trivy detected an infrastructure configuration risk.", severity: normalizeSeverity(misconfig.Severity),
         locations: [{ path, line: misconfig.CauseMetadata?.StartLine, endLine: misconfig.CauseMetadata?.EndLine, snippet: redactSnippet((misconfig.CauseMetadata?.Code?.Lines ?? []).map((line) => line.Content ?? "").join("\n")) }],
         tags: ["iac", "misconfiguration"], remediation: misconfig.Resolution,
+        metadata: { trivyCategory: "iac", trivyClass: resultClass, trivyType: resultType },
       }))) break targets;
     }
     for (const secret of target.Secrets ?? []) {
@@ -157,6 +281,7 @@ export async function runTrivy(context: ScanContext): Promise<DetectorResult> {
         description: "Trivy detected credential-shaped material. AIsec redacts the raw value.", severity: normalizeSeverity(secret.Severity, "high"),
         locations: [{ path, line: secret.StartLine, endLine: secret.EndLine, snippet: secret.Match ? redactSnippet(secret.Match) : "[REDACTED]" }],
         cwe: ["CWE-798"], tags: ["secret", "trivy"], remediation: "Revoke the credential and move the replacement into an appropriate secret store.",
+        metadata: { trivyCategory: "secret", trivyClass: resultClass, trivyType: resultType },
       }))) break targets;
     }
   }

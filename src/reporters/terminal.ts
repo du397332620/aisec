@@ -2,6 +2,7 @@ import type { FixContract, ScanReport } from "../schema.js";
 import { partitionFindingGroups } from "./finding-groups.js";
 import { buildRouteSecurityReview, ROUTE_ATTRIBUTION_GAP_LABELS, ROUTE_SECURITY_CATEGORY_LABELS } from "./route-security-cards.js";
 import { safeRelativePath, singleLine } from "./safety.js";
+import { buildSupplyChainReview } from "./supply-chain-review.js";
 
 const ICON = { critical: "CRITICAL", high: "HIGH", medium: "MEDIUM", low: "LOW", info: "INFO" } as const;
 const MAX_GROUPS = 20;
@@ -11,6 +12,15 @@ const MAX_ROUTE_EVIDENCE = 3;
 const MAX_DEPLOYMENT_CONTEXTS = 5;
 const MAX_ROUTE_ATTRIBUTION_GAPS = 20;
 const MAX_ROUTE_COMPARISON_ENTRIES = 20;
+const MAX_DEPENDENCY_GROUPS = 20;
+const MAX_DEPENDENCY_TARGETS = 3;
+const MAX_DEPENDENCY_ADVISORIES = 5;
+const MAX_DEPENDENCY_FIXES = 5;
+const MAX_IAC_TYPES = 10;
+
+function countLabel(count: number, singular: string, plural = `${singular}s`): string {
+  return `${count} ${count === 1 ? singular : plural}`;
+}
 
 export function renderTerminalReport(report: ScanReport): string {
   const stack = [...new Set([...report.profile.frameworks, ...report.profile.baas, ...report.profile.mobilePlatforms])];
@@ -38,6 +48,44 @@ export function renderTerminalReport(report: ScanReport): string {
     for (const attackPath of report.attackPaths) {
       lines.push(`  [${ICON[attackPath.severity]}] ${attackPath.title} (${attackPath.evidenceLevel})`);
       lines.push(`    ${attackPath.summary}`);
+    }
+    lines.push("");
+  }
+  const supplyChain = buildSupplyChainReview(report);
+  if (supplyChain.counts.trivySignals > 0) {
+    lines.push("Dependency and infrastructure review");
+    lines.push(`  Trivy evidence: ${countLabel(supplyChain.counts.dependencies, "dependency vulnerability", "dependency vulnerabilities")} · ${countLabel(supplyChain.counts.iac, "IaC misconfiguration")} · ${countLabel(supplyChain.counts.secrets, "redacted secret signal")}${supplyChain.counts.unclassified > 0 ? ` · ${countLabel(supplyChain.counts.unclassified, "unclassified signal")}` : ""}.`);
+    if (supplyChain.counts.dependencies > 0) {
+      const { relationships, fixes } = supplyChain.dependencies;
+      lines.push(`  Dependencies: ${countLabel(supplyChain.dependencies.advisories, "advisory", "advisories")} across ${countLabel(supplyChain.dependencies.packages, "package/version pair")}; ${relationships.direct} direct · ${relationships.transitive} transitive · ${relationships.unknown} unknown; ${fixes.available} with reported fixes · ${fixes.unavailable} without a reported fix.`);
+      lines.push("  Package presence is not proof that vulnerable code is reachable or exploitable.");
+      lines.push("  Priority dependency groups");
+      for (const group of supplyChain.dependencies.groups.slice(0, MAX_DEPENDENCY_GROUPS)) {
+        const fixedVersions = group.fixedVersions.slice(0, MAX_DEPENDENCY_FIXES);
+        const fixOmission = group.fixedVersions.length > MAX_DEPENDENCY_FIXES ? ` (+${group.fixedVersions.length - MAX_DEPENDENCY_FIXES} more)` : "";
+        const fixes = fixedVersions.length > 0
+          ? `reported fixes ${singleLine(fixedVersions.join(", "), 240)}${fixOmission}`
+          : group.fixAvailable ? "fix available; version not recorded" : "no fix reported";
+        const targets = group.targets.slice(0, MAX_DEPENDENCY_TARGETS);
+        const targetSummary = targets.length > 0 ? singleLine(targets.join(", "), 360) : "target not recorded";
+        const targetOmission = group.targets.length > MAX_DEPENDENCY_TARGETS ? ` (+${group.targets.length - MAX_DEPENDENCY_TARGETS} more)` : "";
+        const advisories = group.advisoryIds.slice(0, MAX_DEPENDENCY_ADVISORIES);
+        const advisoryOmission = group.advisoryIds.length > MAX_DEPENDENCY_ADVISORIES ? ` (+${group.advisoryIds.length - MAX_DEPENDENCY_ADVISORIES} more)` : "";
+        lines.push(`    [${ICON[group.severity]}] ${group.relationship} · ${singleLine(group.packageName, 200)} ${singleLine(group.installedVersion, 120)} → ${fixes}`);
+        lines.push(`      ${countLabel(group.advisoryIds.length, "advisory", "advisories")} · ${countLabel(group.signalCount, "signal")} · ${countLabel(group.findingCount, "finding")} · ${singleLine(group.ecosystem, 64)}/${singleLine(group.dependencyClass, 64)} · ${group.hasOpenFinding ? "open" : "suppressed"}`);
+        lines.push(`      ${singleLine(advisories.join(", "), 360)}${advisoryOmission} · ${targetSummary}${targetOmission}`);
+      }
+      if (supplyChain.dependencies.groups.length > MAX_DEPENDENCY_GROUPS) {
+        lines.push(`    … ${supplyChain.dependencies.groups.length - MAX_DEPENDENCY_GROUPS} additional dependency groups are omitted here; canonical JSON retains every signal and HTML applies its own larger bound.`);
+      }
+    }
+    if (supplyChain.counts.iac > 0) {
+      const types = supplyChain.iac.types.slice(0, MAX_IAC_TYPES).map((item) => `${singleLine(item.type, 64)} ${item.signals}`).join(", ");
+      const typeOmission = supplyChain.iac.types.length > MAX_IAC_TYPES ? ` (+${supplyChain.iac.types.length - MAX_IAC_TYPES} more types)` : "";
+      lines.push(`  Infrastructure: ${countLabel(supplyChain.iac.signals, "misconfiguration")} across ${countLabel(supplyChain.iac.targets, "target")}${types ? ` · ${types}${typeOmission}` : ""}. Filesystem scanning does not evaluate referenced base-image packages.`);
+    }
+    if (supplyChain.counts.secrets > 0) {
+      lines.push(`  Secrets: ${countLabel(supplyChain.secrets.signals, "redacted signal")} across ${countLabel(supplyChain.secrets.targets, "target")}; raw matches are never shown in this review.`);
     }
     lines.push("");
   }

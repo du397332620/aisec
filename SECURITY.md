@@ -80,6 +80,12 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   an AIsec-owned temporary ignore containing only the same deterministic
   dependency, virtual-environment, cache and build-directory exclusions as the
   native inventory; target ignore content is never imported.
+- Trivy dependency relationship and fix context is copied only from validated
+  schema-v2 package data. Missing or ambiguous relationships remain unknown;
+  the bounded terminal/HTML grouping is presentation-only and cannot merge
+  canonical evidence, change the gate or establish runtime reachability.
+  Dockerfile/IaC inspection does not imply that packages inside a referenced
+  base image were downloaded or vulnerability-scanned.
 - A release policy is never discovered from the target. AIsec resolves its real
   path, rejects files or symlinks inside the scan root, validates a strict
   versioned schema and expiry, and records the applied SHA-256 digest. A target

@@ -65,6 +65,8 @@ try {
     "never advanced automatically",
     "does not accept `--output`",
     "deterministic inventory exclusions",
+    "presentation-only dependency and",
+    "does not download or evaluate the\nvulnerability set of a referenced base image",
     "stable machine-readable reasons",
     "also makes every active pack's required scan coverage `partial`",
     "emitWhen: absent",

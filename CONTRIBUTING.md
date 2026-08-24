@@ -46,6 +46,12 @@ preserving AIsec's deterministic inventory exclusions. Add both a captured
 adapter-input regression and a verified real-engine fixture when target
 selection semantics change.
 
+Trivy package-context changes must use schema-v2 `Packages` evidence and keep an
+unmatched or ambiguous relationship `unknown`; never infer directness from a
+manifest name. Add direct, indirect, unknown, malformed-record, fix/no-fix and
+real-engine cases, plus proof that presentation grouping leaves canonical
+signals, findings, fingerprints and decisions unchanged.
+
 Declarative rule-pack changes must preserve the non-executable extension
 boundary. Packs are explicit operator-owned files outside the target and may
 only add bounded literal findings and required coverage. Do not add dynamic

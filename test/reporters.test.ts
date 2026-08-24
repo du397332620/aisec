@@ -7,7 +7,9 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { ScanReport } from "../src/schema.js";
 import { compareReports } from "../src/core/compare.js";
+import { buildFindings, decide, summarize } from "../src/core/findings.js";
 import { scanProject } from "../src/core/scan.js";
+import { createSignal } from "../src/core/utils.js";
 import { validateCiReport, validateScanReport } from "../src/core/schema-validation.js";
 import { buildRouteSecuritySnapshot, routeSecurityIssueKey } from "../src/core/route-security.js";
 import { buildCiReport, renderGithubAnnotations, renderMarkdownSummary } from "../src/reporters/ci.js";
@@ -15,6 +17,7 @@ import { renderHtml } from "../src/reporters/html.js";
 import { buildRouteSecurityReview } from "../src/reporters/route-security-cards.js";
 import { renderSarif } from "../src/reporters/sarif.js";
 import { renderTerminalReport } from "../src/reporters/terminal.js";
+import { buildSupplyChainReview } from "../src/reporters/supply-chain-review.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "..", "..", "test", "fixtures");
@@ -264,6 +267,218 @@ test("terminal and HTML group repeated FastAPI exception findings without changi
   assert.match(html, /&lt;script&gt; ::error::owned&lt;\/script&gt;/u);
   for (const finding of findings) assert.match(html, new RegExp(finding.id, "u"));
   assert.deepEqual(report, reportBeforeRendering, "presentation-only route cards must not mutate canonical evidence");
+});
+
+test("terminal and HTML render a bounded actionable Trivy review without changing canonical evidence", async () => {
+  const report = structuredClone(await vulnerableReport());
+  const trivySignals = [
+    createSignal({
+      engine: "trivy",
+      ruleId: "CVE-2099-0002",
+      title: "Second synthetic advisory",
+      description: "Synthetic dependency evidence.",
+      severity: "critical",
+      evidenceLevel: "static_confirmed",
+      confidence: "high",
+      locations: [{ path: "package-lock.json" }],
+      tags: ["sca", "dependency", "direct-lib"],
+      metadata: { package: "direct-lib<script>\n::error::owned", installedVersion: "1.0.0", fixedVersion: "1.2.0", trivyCategory: "dependency", dependencyRelationship: "direct", dependencyClass: "lang-pkgs", dependencyEcosystem: "npm", fixAvailable: true },
+    }),
+    createSignal({
+      engine: "trivy",
+      ruleId: "CVE-2099-0001",
+      title: "First synthetic advisory",
+      description: "Synthetic dependency evidence.",
+      severity: "high",
+      evidenceLevel: "static_confirmed",
+      confidence: "high",
+      locations: [{ path: "frontend/package-lock.json" }],
+      tags: ["sca", "dependency", "direct-lib"],
+      metadata: { package: "direct-lib<script>\n::error::owned", installedVersion: "1.0.0", fixedVersion: "1.1.0", trivyCategory: "dependency", dependencyRelationship: "direct", dependencyClass: "lang-pkgs", dependencyEcosystem: "npm", fixAvailable: true },
+    }),
+    createSignal({
+      engine: "trivy",
+      ruleId: "CVE-2099-0003",
+      title: "Transitive synthetic advisory",
+      description: "Synthetic dependency evidence.",
+      severity: "medium",
+      evidenceLevel: "static_confirmed",
+      confidence: "high",
+      locations: [{ path: "uv.lock" }],
+      tags: ["sca", "dependency", "nested-lib"],
+      metadata: { package: "nested-lib", installedVersion: "2.0.0", fixedVersion: "unknown", trivyCategory: "dependency", dependencyRelationship: "indirect", dependencyClass: "lang-pkgs", dependencyEcosystem: "uv", fixAvailable: false },
+    }),
+    createSignal({
+      engine: "trivy",
+      ruleId: "CVE-2099-0004",
+      title: "Direct advisory without a reported fix",
+      description: "Synthetic dependency evidence.",
+      severity: "high",
+      evidenceLevel: "static_confirmed",
+      confidence: "high",
+      locations: [{ path: "package-lock.json" }],
+      tags: ["sca", "dependency", "direct-lib"],
+      metadata: { package: "direct-lib<script>\n::error::owned", installedVersion: "1.0.0", fixedVersion: "unknown", trivyCategory: "dependency", dependencyRelationship: "direct", dependencyClass: "lang-pkgs", dependencyEcosystem: "npm", fixAvailable: false },
+    }),
+    createSignal({
+      engine: "trivy",
+      ruleId: "DS2099",
+      title: "Synthetic Dockerfile configuration",
+      description: "Synthetic IaC evidence.",
+      severity: "high",
+      evidenceLevel: "static_confirmed",
+      confidence: "high",
+      locations: [{ path: "docker/Dockerfile" }],
+      tags: ["iac", "misconfiguration"],
+      metadata: { trivyCategory: "iac", trivyClass: "config", trivyType: "dockerfile" },
+    }),
+    createSignal({
+      engine: "trivy",
+      ruleId: "synthetic-secret",
+      title: "Synthetic redacted secret",
+      description: "Secret content stays redacted.",
+      severity: "high",
+      evidenceLevel: "static_confirmed",
+      confidence: "high",
+      locations: [{ path: "fixture.env", snippet: "[REDACTED]" }],
+      tags: ["secret", "trivy"],
+      metadata: { trivyCategory: "secret", trivyClass: "secret", trivyType: "unknown" },
+    }),
+  ];
+  report.signals.push(...trivySignals);
+  report.findings = buildFindings(report.signals, report.attackPaths);
+  report.summary = summarize(report.findings, report.attackPaths);
+  const decision = decide(report.findings, report.coverage, report.signals, report.policy);
+  report.decision = decision.decision;
+  report.decisionReasons = decision.reasons;
+
+  const beforeReview = structuredClone(report);
+  const review = buildSupplyChainReview(report);
+  assert.deepEqual(review.counts, { trivySignals: 6, dependencies: 4, iac: 1, secrets: 1, unclassified: 0 });
+  assert.deepEqual(review.dependencies.relationships, { direct: 3, transitive: 1, unknown: 0 });
+  assert.deepEqual(review.dependencies.fixes, { available: 2, unavailable: 2 });
+  assert.equal(review.dependencies.advisories, 4);
+  assert.equal(review.dependencies.groups.length, 3);
+  const direct = review.dependencies.groups.find((group) => group.relationship === "direct" && group.fixAvailable);
+  assert.ok(direct);
+  assert.equal(direct.signalCount, 2);
+  assert.equal(direct.findingCount, 2);
+  assert.deepEqual(direct.advisoryIds, ["CVE-2099-0001", "CVE-2099-0002"]);
+  assert.deepEqual(direct.fixedVersions, ["1.1.0", "1.2.0"]);
+  assert.deepEqual(direct.targets, ["frontend/package-lock.json", "package-lock.json"]);
+  const directWithoutFix = review.dependencies.groups.find((group) => group.relationship === "direct" && !group.fixAvailable);
+  assert.ok(directWithoutFix, "fix/no-fix evidence for the same package must remain separate presentation groups");
+  assert.equal(directWithoutFix.packageName, direct.packageName);
+  assert.deepEqual(directWithoutFix.fixedVersions, []);
+  assert.deepEqual(report, beforeReview, "presentation-only supply-chain review must not mutate canonical evidence");
+
+  const terminal = renderTerminalReport(report);
+  assert.match(terminal, /Dependency and infrastructure review/u);
+  assert.match(terminal, /4 dependency vulnerabilities · 1 IaC misconfiguration · 1 redacted secret signal/u);
+  assert.match(terminal, /3 direct · 1 transitive · 0 unknown/u);
+  assert.match(terminal, /2 with reported fixes · 2 without a reported fix/u);
+  assert.match(terminal, /CVE-2099-0001, CVE-2099-0002/u);
+  assert.match(terminal, /Filesystem scanning does not evaluate referenced base-image packages/u);
+  assert.doesNotMatch(terminal, /\n::error::owned/u);
+
+  const html = renderHtml(report);
+  assert.match(html, /<h2>Dependency and infrastructure review<\/h2>/u);
+  assert.match(html, /4 dependency vulnerabilities/u);
+  assert.match(html, /3 direct/u);
+  assert.match(html, /reported fixes/u);
+  assert.match(html, /CVE-2099-0001/u);
+  assert.match(html, /Filesystem scanning does not evaluate referenced base-image packages/u);
+  assert.doesNotMatch(html, /<script>/u);
+  assert.match(html, /direct-lib&lt;script&gt; ::error::owned/u);
+  assert.deepEqual(report, beforeReview, "renderers must not mutate supply-chain evidence");
+});
+
+test("Trivy dependency presentation bounds remain explicit for large reports", async () => {
+  const report = structuredClone(await vulnerableReport());
+  const sharedGroup = Array.from({ length: 25 }, (_, index) => createSignal({
+    engine: "trivy",
+    ruleId: `CVE-BOUND-${String(index).padStart(4, "0")}`,
+    title: `Bounded advisory ${index}`,
+    description: "Synthetic dependency evidence for presentation-bound testing.",
+    severity: "critical",
+    evidenceLevel: "static_confirmed",
+    confidence: "high",
+    locations: [{ path: `locks/target-${index % 12}.lock` }],
+    tags: ["sca", "dependency", "priority-lib"],
+    metadata: {
+      package: "priority-lib",
+      installedVersion: "1.0.0",
+      fixedVersion: `2.${String(index).padStart(2, "0")}.0`,
+      trivyCategory: "dependency",
+      dependencyRelationship: "direct",
+      dependencyClass: "lang-pkgs",
+      dependencyEcosystem: "npm",
+      fixAvailable: true,
+    },
+  }));
+  const additionalGroups = Array.from({ length: 204 }, (_, index) => createSignal({
+    engine: "trivy",
+    ruleId: `CVE-GROUP-${String(index).padStart(4, "0")}`,
+    title: `Additional dependency group ${index}`,
+    description: "Synthetic dependency evidence for presentation-bound testing.",
+    severity: "low",
+    evidenceLevel: "static_confirmed",
+    confidence: "high",
+    locations: [{ path: `locks/group-${index}.lock` }],
+    tags: ["sca", "dependency", `bounded-lib-${index}`],
+    metadata: {
+      package: `bounded-lib-${String(index).padStart(4, "0")}`,
+      installedVersion: "1.0.0",
+      fixedVersion: "unknown",
+      trivyCategory: "dependency",
+      dependencyRelationship: "indirect",
+      dependencyClass: "lang-pkgs",
+      dependencyEcosystem: "npm",
+      fixAvailable: false,
+    },
+  }));
+  const iacTypes = Array.from({ length: 55 }, (_, index) => createSignal({
+    engine: "trivy",
+    ruleId: `IAC-BOUND-${String(index).padStart(3, "0")}`,
+    title: `Additional IaC type ${index}`,
+    description: "Synthetic IaC evidence for presentation-bound testing.",
+    severity: "low",
+    evidenceLevel: "static_confirmed",
+    confidence: "high",
+    locations: [{ path: `iac/config-${index}.yaml` }],
+    tags: ["iac", "misconfiguration"],
+    metadata: { trivyCategory: "iac", trivyClass: "config", trivyType: `iac-${String(index).padStart(3, "0")}` },
+  }));
+  report.signals.push(...sharedGroup, ...additionalGroups, ...iacTypes);
+  report.findings = buildFindings(report.signals, report.attackPaths);
+  report.summary = summarize(report.findings, report.attackPaths);
+  const decision = decide(report.findings, report.coverage, report.signals, report.policy);
+  report.decision = decision.decision;
+  report.decisionReasons = decision.reasons;
+
+  const review = buildSupplyChainReview(report);
+  assert.equal(review.dependencies.groups.length, 205);
+  assert.equal(review.dependencies.groups[0]?.packageName, "priority-lib");
+  assert.equal(review.dependencies.groups[0]?.advisoryIds.length, 25);
+  assert.equal(review.dependencies.groups[0]?.fixedVersions.length, 25);
+  assert.equal(review.dependencies.groups[0]?.targets.length, 12);
+  assert.equal(review.iac.types.length, 55);
+  const beforeRendering = structuredClone(report);
+
+  const terminal = renderTerminalReport(report);
+  assert.match(terminal, /reported fixes 2\.00\.0, 2\.01\.0, 2\.02\.0, 2\.03\.0, 2\.04\.0 \(\+20 more\)/u);
+  assert.match(terminal, /CVE-BOUND-0000, CVE-BOUND-0001, CVE-BOUND-0002, CVE-BOUND-0003, CVE-BOUND-0004 \(\+20 more\)/u);
+  assert.match(terminal, /\(\+9 more\)/u);
+  assert.match(terminal, /185 additional dependency groups are omitted here; canonical JSON retains every signal and HTML applies its own larger bound/u);
+  assert.match(terminal, /\(\+45 more types\)/u);
+
+  const html = renderHtml(report);
+  assert.match(html, /CVE-BOUND-0019 \(\+5 more\)/u);
+  assert.match(html, /2\.19\.0 \(\+5 more\)/u);
+  assert.match(html, /\(\+2 more\)/u);
+  assert.match(html, /5 additional dependency groups are omitted from this view/u);
+  assert.match(html, /\(\+5 more types\)/u);
+  assert.deepEqual(report, beforeRendering, "bounded renderers must not mutate canonical evidence");
 });
 
 test("route security cards separate frameworks and reject multiline route metadata", async () => {
