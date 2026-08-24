@@ -2,10 +2,12 @@ import type {
   BolaAuthorizationCheck,
   BolaAuthorizationManifest,
   BolaAuthorizationTemplate,
+  BolaAuthorizationTemplateBindingCheck,
   BolaAuthorizationTemplateCase,
   BolaDraftCandidate,
   BolaDraftEvidenceMode,
   BolaDraftPlan,
+  BolaVerificationCase,
 } from "../schema.js";
 import {
   BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION,
@@ -32,7 +34,7 @@ const TEMPLATE_REVIEW_CHECKLIST = [
   "Create two distinct low-privilege accounts and pre-created synthetic owner fixtures; never enumerate identifiers.",
   "Replace every target, login, fixture, route/body and response-evidence placeholder after reviewing each binding.",
   "Confirm every case is read-only and ownerIdentity evidence is server-derived rather than request-echoed.",
-  "Copy only the completed manifest object to a separate file and run check-bola before any active verification.",
+  "Keep this wrapper unchanged and run check-bola with both the completed manifest and this same template before any active verification.",
 ] as const;
 
 const CHECK_REVIEW_REQUIREMENTS = [
@@ -170,7 +172,7 @@ export function createBolaAuthorizationTemplate(value: unknown): BolaAuthorizati
     },
     bindings,
     reviewChecklist: [...TEMPLATE_REVIEW_CHECKLIST],
-    nextCommand: "aisec check-bola --authorization <completed-manifest.yml>",
+    nextCommand: "aisec check-bola --authorization <completed-manifest.yml> --template <same-template.json>",
     disclaimer: "This template contains unresolved instructions and is intentionally not executable. It performs no network requests and does not grant authorization or prove a vulnerability.",
   };
   return validateBolaAuthorizationTemplate({
@@ -202,6 +204,21 @@ export async function prepareBola(path: string): Promise<BolaAuthorizationTempla
   return createBolaAuthorizationTemplate(await loadSelectedBolaDraft(path));
 }
 
+export async function loadBolaAuthorizationTemplate(path: string): Promise<BolaAuthorizationTemplate> {
+  const text = await readBoundedUtf8File(
+    path,
+    MAX_BOLA_PREFLIGHT_DOCUMENT_BYTES,
+    "BOLA authorization template",
+  );
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error("BOLA authorization template must be valid JSON");
+  }
+  return validateBolaAuthorizationTemplate(parsed);
+}
+
 function canonicalJson(value: unknown): string {
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
@@ -211,13 +228,221 @@ function canonicalJson(value: unknown): string {
     .join(",")}}`;
 }
 
-export function checkBolaAuthorization(value: unknown): BolaAuthorizationCheck {
+const ROUTE_PLACEHOLDER = /^(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|:([A-Za-z_][A-Za-z0-9_]*)|\[([A-Za-z_][A-Za-z0-9_]*)\]|\*([A-Za-z_][A-Za-z0-9_]*))$/u;
+const POSSIBLE_ROUTE_PLACEHOLDER = /^(?:\{|:|\[|\*)/u;
+
+function routePlaceholderName(value: string): string | undefined {
+  const match = ROUTE_PLACEHOLDER.exec(value);
+  return match?.slice(1).find((item): item is string => item !== undefined);
+}
+
+function concreteRouteValue(value: string, index: number): string {
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(value);
+  } catch {
+    throw new Error(`BOLA template binding route contains invalid percent encoding at case index ${index}`);
+  }
+  if (!decoded || decoded === "." || decoded === ".." || decoded.length > 512
+    || decoded.includes("/") || decoded.includes("\\") || /[\u0000-\u001f\u007f]/u.test(decoded)
+    || POSSIBLE_ROUTE_PLACEHOLDER.test(decoded)) {
+    throw new Error(`BOLA template binding route has an invalid concrete object identifier at case index ${index}`);
+  }
+  return decoded;
+}
+
+function recordRouteValue(
+  values: Map<string, string>,
+  name: string,
+  value: string,
+  index: number,
+): void {
+  const previous = values.get(name);
+  if (previous !== undefined && previous !== value) {
+    throw new Error(`BOLA template binding repeats an object identifier with different values at case index ${index}`);
+  }
+  values.set(name, value);
+}
+
+function splitRoute(value: string, index: number, source: "template" | "manifest"): {
+  pathname: string;
+  query: Array<[string, string]>;
+} {
+  if (value.includes("#")) {
+    throw new Error(`BOLA template binding ${source} route contains a fragment at case index ${index}`);
+  }
+  const separator = value.indexOf("?");
+  const pathname = separator === -1 ? value : value.slice(0, separator);
+  const queryText = separator === -1 ? "" : value.slice(separator + 1);
+  return { pathname, query: [...new URLSearchParams(queryText).entries()] };
+}
+
+function matchRouteTemplate(templatePath: string, manifestPath: string, index: number): Map<string, string> {
+  const template = splitRoute(templatePath, index, "template");
+  const manifest = splitRoute(manifestPath, index, "manifest");
+  const templateSegments = template.pathname.split("/");
+  const manifestSegments = manifest.pathname.split("/");
+  if (templateSegments.length !== manifestSegments.length || template.query.length !== manifest.query.length) {
+    throw new Error(`BOLA template binding route structure differs at case index ${index}`);
+  }
+
+  const values = new Map<string, string>();
+  for (let part = 0; part < templateSegments.length; part += 1) {
+    const expected = templateSegments[part]!;
+    const actual = manifestSegments[part]!;
+    const name = routePlaceholderName(expected);
+    if (name) {
+      recordRouteValue(values, name, concreteRouteValue(actual, index), index);
+    } else if (POSSIBLE_ROUTE_PLACEHOLDER.test(expected)) {
+      throw new Error(`BOLA template binding contains an unsupported route placeholder at case index ${index}`);
+    } else if (expected !== actual) {
+      throw new Error(`BOLA template binding static route differs at case index ${index}`);
+    }
+  }
+
+  for (let part = 0; part < template.query.length; part += 1) {
+    const [expectedKey, expectedValue] = template.query[part]!;
+    const [actualKey, actualValue] = manifest.query[part]!;
+    if (expectedKey !== actualKey || POSSIBLE_ROUTE_PLACEHOLDER.test(expectedKey)) {
+      throw new Error(`BOLA template binding query structure differs at case index ${index}`);
+    }
+    const name = routePlaceholderName(expectedValue);
+    if (name) {
+      recordRouteValue(values, name, concreteRouteValue(actualValue, index), index);
+    } else if (POSSIBLE_ROUTE_PLACEHOLDER.test(expectedValue)) {
+      throw new Error(`BOLA template binding contains an unsupported query placeholder at case index ${index}`);
+    } else if (expectedValue !== actualValue) {
+      throw new Error(`BOLA template binding static query differs at case index ${index}`);
+    }
+  }
+  return values;
+}
+
+function evidenceModeForCase(value: BolaVerificationCase): BolaDraftEvidenceMode {
+  return value.expected.match === "ownerIdentity" ? "ownerIdentity" : "testDataLabel";
+}
+
+function concreteObjectId(value: unknown): value is string | number {
+  return (typeof value === "string" && value.trim().length > 0)
+    || (typeof value === "number" && Number.isFinite(value));
+}
+
+function sameStrings(left: readonly string[], right: readonly string[]): boolean {
+  return left.length === right.length && left.every((item, index) => item === right[index]);
+}
+
+function assertManifestTemplateBinding(
+  manifest: BolaAuthorizationManifest,
+  template: BolaAuthorizationTemplate,
+): void {
+  if (manifest.cases.length !== template.manifest.cases.length
+    || manifest.maxRequests !== template.manifest.maxRequests) {
+    throw new Error("BOLA template binding case count or request budget differs");
+  }
+
+  for (let index = 0; index < template.bindings.length; index += 1) {
+    const expected = template.manifest.cases[index]!;
+    const binding = template.bindings[index]!;
+    const actual = manifest.cases[index]!;
+    if (actual.id !== expected.id || binding.caseId !== expected.id) {
+      throw new Error(`BOLA template binding case order or ID differs at case index ${index}`);
+    }
+    if (actual.method !== expected.method || actual.readOnly !== expected.readOnly) {
+      throw new Error(`BOLA template binding method or read-only declaration differs at case index ${index}`);
+    }
+    if (actual.ownerAccount !== expected.ownerAccount || actual.otherAccount !== expected.otherAccount) {
+      throw new Error(`BOLA template binding account roles differ at case index ${index}`);
+    }
+    if (evidenceModeForCase(actual) !== binding.evidenceMode) {
+      throw new Error(`BOLA template binding evidence mode differs at case index ${index}`);
+    }
+    if (!sameStrings(actual.expected.statusCodes.map(String), expected.expected.statusCodes.map(String))) {
+      throw new Error(`BOLA template binding response status codes differ at case index ${index}`);
+    }
+
+    const routeValues = matchRouteTemplate(expected.path, actual.path, index);
+    const fields = [...binding.objectIdFields].sort();
+    const routeFields = [...routeValues.keys()].sort();
+    if (routeFields.some((field) => !fields.includes(field))) {
+      throw new Error(`BOLA template binding route uses an undeclared object-ID field at case index ${index}`);
+    }
+
+    if (actual.method === "GET") {
+      if (!sameStrings(routeFields, fields) || actual.body !== undefined) {
+        throw new Error(`BOLA template binding GET object-ID fields differ at case index ${index}`);
+      }
+      continue;
+    }
+
+    const body = actual.body;
+    const bodyFields = body ? Object.keys(body).sort() : [];
+    if (!body || !sameStrings(bodyFields, fields)) {
+      throw new Error(`BOLA template binding POST object-ID fields differ at case index ${index}`);
+    }
+    for (const field of fields) {
+      const value = body[field];
+      if (!concreteObjectId(value)) {
+        throw new Error(`BOLA template binding POST object identifier is not concrete at case index ${index}`);
+      }
+      const routeValue = routeValues.get(field);
+      if (routeValue !== undefined && routeValue !== String(value)) {
+        throw new Error(`BOLA template binding route/body object identifiers differ at case index ${index}`);
+      }
+    }
+  }
+}
+
+function templateBindingCheck(
+  template: BolaAuthorizationTemplate,
+  templateDigestSha256: string,
+): BolaAuthorizationTemplateBindingCheck {
+  return {
+    status: "verified",
+    templateId: template.templateId,
+    templateDigestSha256,
+    draftId: template.draftId,
+    scanId: template.scanId,
+    projectId: template.projectId,
+    queueId: template.selection.queueId,
+    queueCoverage: template.selection.queueCoverage,
+    queueCoverageScope: template.selection.queueCoverageScope,
+    matchedCases: template.bindings.length,
+    exactCaseOrder: true,
+    exactRequestBudget: true,
+    exactMethods: true,
+    exactAccountRoles: true,
+    routeTemplatesMatched: true,
+    exactObjectIdFields: true,
+    concreteObjectIds: true,
+    exactEvidenceModes: true,
+    exactStatusCodes: true,
+  };
+}
+
+export function checkBolaAuthorization(value: unknown, templateValue?: unknown): BolaAuthorizationCheck {
   const manifest: BolaAuthorizationManifest = validateBolaAuthorization(value);
+  const template = templateValue === undefined ? undefined : validateBolaAuthorizationTemplate(templateValue);
+  if (template) assertManifestTemplateBinding(manifest, template);
   const manifestDigestSha256 = sha256(canonicalJson(manifest));
+  const templateDigestSha256 = template ? sha256(canonicalJson(template)) : undefined;
   const cases = manifest.cases.length;
   const check: BolaAuthorizationCheck = {
-    schemaVersion: BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION,
-    checkId: stableId("bola_check", manifestDigestSha256),
+    schemaVersion: template ? BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION : SCHEMA_VERSION,
+    checkId: template
+      ? stableId(
+          "bola_check",
+          manifestDigestSha256,
+          template.templateId,
+          templateDigestSha256!,
+          template.draftId,
+          template.scanId,
+          template.projectId,
+          template.selection.queueId,
+          template.selection.queueCoverage,
+          template.selection.queueCoverageScope,
+          String(template.bindings.length),
+        )
+      : stableId("bola_check", manifestDigestSha256),
     checkedAt: new Date().toISOString(),
     status: "valid_review_required",
     manifestDigestSha256,
@@ -232,6 +457,9 @@ export function checkBolaAuthorization(value: unknown): BolaAuthorizationCheck {
       ownerIdentityCases: manifest.cases.filter((item) => item.expected.match === "ownerIdentity").length,
     },
     caseIds: manifest.cases.map((item) => item.id),
+    ...(template && templateDigestSha256
+      ? { templateBinding: templateBindingCheck(template, templateDigestSha256) }
+      : {}),
     networkRequests: 0,
     environmentValuesRead: 0,
     dnsLookups: 0,
@@ -242,6 +470,11 @@ export function checkBolaAuthorization(value: unknown): BolaAuthorizationCheck {
   return validateBolaAuthorizationCheck(check);
 }
 
-export async function checkBola(path: string): Promise<BolaAuthorizationCheck> {
-  return checkBolaAuthorization(await loadBolaAuthorization(path));
+export async function checkBola(path: string, templatePath?: string): Promise<BolaAuthorizationCheck> {
+  if (templatePath === undefined) return checkBolaAuthorization(await loadBolaAuthorization(path));
+  const [manifest, template] = await Promise.all([
+    loadBolaAuthorization(path),
+    loadBolaAuthorizationTemplate(templatePath),
+  ]);
+  return checkBolaAuthorization(manifest, template);
 }

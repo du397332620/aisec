@@ -141,11 +141,17 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   therefore cannot be executed. It reads no credentials, resolves no DNS and
   sends no request.
 - `check-bola` applies the normal strict BOLA manifest schema and semantic policy
-  offline to a file of at most 1 MiB. It rejects residual instruction markers
-  and framework route parameters before any credential lookup; its strict
-  output omits targets, routes, bodies, object IDs, evidence values and
-  credential names/values. A valid check remains `review_required`, not proof
-  of authorization, reachability, protection or vulnerability.
+  offline to a file of at most 1 MiB. An optional unchanged template is a
+  second, independently bounded 1 MiB JSON input. When supplied, exact case
+  order/IDs, fixed request budget, method, route structure, object-ID fields,
+  account roles, status codes and evidence modes are required; concrete dynamic route/body IDs may be
+  filled, but template drift fails without falling back to an unbound result.
+  Residual instruction markers and framework route parameters fail before any
+  credential lookup. The strict output omits targets, concrete routes, bodies,
+  object IDs, evidence values and credential names/values. A valid check remains
+  `review_required`, not proof of authorization, reachability, protection or a
+  vulnerability. Template IDs and digests provide local integrity evidence, not
+  origin authentication or a signature; keep the template operator-owned.
 - Passive web requests pin a validated DNS answer to the socket and redirects
   must retain the exact authorized origin. Local verification is deliberately
   allowed to reach private addresses; staging/test verification is not.

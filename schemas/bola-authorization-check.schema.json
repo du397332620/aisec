@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://aisec.dev/schemas/bola-authorization-check-1.0.0.json",
-  "title": "AIsec BOLA Authorization Check 1.0.0",
+  "$id": "https://aisec.dev/schemas/bola-authorization-check-1.1.0.json",
+  "title": "AIsec BOLA Authorization Check 1.1.0",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "checkId", "checkedAt", "status", "manifestDigestSha256", "environment", "summary", "caseIds", "networkRequests", "environmentValuesRead", "dnsLookups", "reviewRequired", "nextCommand", "disclaimer"],
   "properties": {
-    "schemaVersion": { "const": "1.0.0" },
+    "schemaVersion": { "enum": ["1.0.0", "1.1.0"] },
     "checkId": { "type": "string", "pattern": "^bola_check_[0-9a-f]{16}$" },
     "checkedAt": { "type": "string", "format": "date-time" },
     "status": { "const": "valid_review_required" },
@@ -33,6 +33,7 @@
       "uniqueItems": true,
       "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$" }
     },
+    "templateBinding": { "$ref": "#/$defs/templateBinding" },
     "networkRequests": { "const": 0 },
     "environmentValuesRead": { "const": 0 },
     "dnsLookups": { "const": 0 },
@@ -47,5 +48,43 @@
     },
     "nextCommand": { "const": "aisec verify-bola --authorization <same-reviewed-manifest.yml> --confirm" },
     "disclaimer": { "const": "This offline check validates manifest structure and declared safety constraints only. It performs no environment-value reads, DNS lookups or network requests and does not prove authorization, reachability, protection or vulnerability." }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schemaVersion": { "const": "1.0.0" } },
+        "required": ["schemaVersion"]
+      },
+      "then": { "properties": { "templateBinding": false } },
+      "else": { "required": ["templateBinding"] }
+    }
+  ],
+  "$defs": {
+    "templateBinding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "templateId", "templateDigestSha256", "draftId", "scanId", "projectId", "queueId", "queueCoverage", "queueCoverageScope", "matchedCases", "exactCaseOrder", "exactRequestBudget", "exactMethods", "exactAccountRoles", "routeTemplatesMatched", "exactObjectIdFields", "concreteObjectIds", "exactEvidenceModes", "exactStatusCodes"],
+      "properties": {
+        "status": { "const": "verified" },
+        "templateId": { "type": "string", "pattern": "^bola_template_[0-9a-f]{16}$" },
+        "templateDigestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "draftId": { "type": "string", "pattern": "^bola_draft_[0-9a-f]{16}$" },
+        "scanId": { "type": "string", "pattern": "^scan_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+        "projectId": { "type": "string", "pattern": "^project_[0-9a-f]{16}$" },
+        "queueId": { "type": "string", "pattern": "^interface_queue_[0-9a-f]{16}$" },
+        "queueCoverage": { "enum": ["complete", "partial"] },
+        "queueCoverageScope": { "const": "observed_route_cards_only" },
+        "matchedCases": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "exactCaseOrder": { "const": true },
+        "exactRequestBudget": { "const": true },
+        "exactMethods": { "const": true },
+        "exactAccountRoles": { "const": true },
+        "routeTemplatesMatched": { "const": true },
+        "exactObjectIdFields": { "const": true },
+        "concreteObjectIds": { "const": true },
+        "exactEvidenceModes": { "const": true },
+        "exactStatusCodes": { "const": true }
+      }
+    }
   }
 }

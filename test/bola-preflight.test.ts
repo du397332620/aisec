@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import type { BolaAuthorizationManifest, ScanReport } from "../src/schema.js";
+import type { BolaAuthorizationManifest, BolaAuthorizationTemplate, ScanReport } from "../src/schema.js";
 import {
   validateBolaAuthorizationCheck,
   validateBolaAuthorizationTemplate,
@@ -21,6 +21,7 @@ import {
   checkBola,
   checkBolaAuthorization,
   createBolaAuthorizationTemplate,
+  loadBolaAuthorizationTemplate,
   prepareBola,
 } from "../src/web/bola-preflight.js";
 
@@ -67,6 +68,99 @@ const authorizationManifest: BolaAuthorizationManifest = {
   acknowledgment: "I am authorized to test this non-production target with two low-privilege accounts and pre-created test data",
 };
 
+const LEGACY_TEMPLATE_REVIEW_CHECKLIST = [
+  "Confirm the exact non-production target and written authorization with the named owner.",
+  "Create two distinct low-privilege accounts and pre-created synthetic owner fixtures; never enumerate identifiers.",
+  "Replace every target, login, fixture, route/body and response-evidence placeholder after reviewing each binding.",
+  "Confirm every case is read-only and ownerIdentity evidence is server-derived rather than request-echoed.",
+  "Copy only the completed manifest object to a separate file and run check-bola before any active verification.",
+];
+
+function legacyTemplate(value: BolaAuthorizationTemplate): BolaAuthorizationTemplate {
+  const legacy = structuredClone(value);
+  legacy.schemaVersion = "1.0.0";
+  legacy.reviewChecklist = [...LEGACY_TEMPLATE_REVIEW_CHECKLIST];
+  legacy.nextCommand = "aisec check-bola --authorization <completed-manifest.yml>";
+  return legacy;
+}
+
+function completedPath(
+  path: string,
+  objectValues: ReadonlyMap<string, string>,
+): string {
+  let completed = path;
+  for (const [field, value] of objectValues) {
+    completed = completed
+      .replaceAll(`{${field}}`, encodeURIComponent(value))
+      .replaceAll(`[${field}]`, encodeURIComponent(value))
+      .replaceAll(`*${field}`, encodeURIComponent(value));
+    completed = completed.replace(
+      new RegExp(`:${field}(?=/|\\?|$)`, "gu"),
+      encodeURIComponent(value),
+    );
+  }
+  return completed;
+}
+
+function completedManifest(template: BolaAuthorizationTemplate): BolaAuthorizationManifest {
+  const dataPrefix = "aisec-binding";
+  return {
+    schemaVersion: "1.0.0",
+    targetBaseUrl: "https://staging.binding.invalid/",
+    environment: "staging",
+    ownedBy: "AIsec template binding tests",
+    allowedHosts: ["staging.binding.invalid"],
+    dataPrefix,
+    maxRequests: template.manifest.maxRequests,
+    accounts: [
+      { label: "owner", usernameEnv: "AISEC_BOLA_BINDING_OWNER_USERNAME", passwordEnv: "AISEC_BOLA_BINDING_OWNER_PASSWORD" },
+      { label: "other", usernameEnv: "AISEC_BOLA_BINDING_OTHER_USERNAME", passwordEnv: "AISEC_BOLA_BINDING_OTHER_PASSWORD" },
+    ],
+    login: {
+      path: "/auth/login",
+      usernameField: "username",
+      passwordField: "password",
+      successStatusCodes: [200],
+      tokenJsonPath: "data.access_token",
+      identityJsonPath: "data.user_id",
+      tokenPrefix: "Bearer",
+    },
+    cases: template.manifest.cases.map((item, index) => {
+      const binding = template.bindings[index]!;
+      const objectValues = new Map(binding.objectIdFields.map((field, fieldIndex) => [
+        field,
+        String(910_000 + index * 100 + fieldIndex),
+      ]));
+      const testDataLabel = `${dataPrefix}-case-${index + 1}`;
+      return {
+        id: item.id,
+        method: item.method,
+        path: completedPath(item.path, objectValues),
+        readOnly: true as const,
+        testDataLabel,
+        ownerAccount: "owner",
+        otherAccount: "other",
+        ...(item.method === "POST"
+          ? { body: Object.fromEntries([...objectValues].map(([field, value]) => [field, Number(value)])) }
+          : {}),
+        expected: binding.evidenceMode === "ownerIdentity"
+          ? {
+              match: "ownerIdentity" as const,
+              statusCodes: [200],
+              jsonPath: "data.fixture_owner",
+            }
+          : {
+              match: "testDataLabel" as const,
+              statusCodes: [200],
+              jsonPath: "data.object_label",
+              value: testDataLabel,
+            },
+      };
+    }),
+    acknowledgment: "I am authorized to test this non-production target with two low-privilege accounts and pre-created test data",
+  };
+}
+
 async function fastApiReport(): Promise<ScanReport> {
   return (await scanProject(join(fixtures, "corpus", "fastapi-authorization", "positive-read"), {
     profile: "native",
@@ -82,6 +176,16 @@ async function selectedDraft(): Promise<ReturnType<typeof createSelectedBolaDraf
   return createSelectedBolaDraftPlan(report, [candidate.id]);
 }
 
+async function templateForRoute(route: string): Promise<BolaAuthorizationTemplate> {
+  const report = await fastApiReport();
+  const signal = report.signals.find((item) => item.ruleId === "fastapi.authorization.object-without-ownership-check");
+  assert.ok(signal?.metadata);
+  signal.metadata.routes = [String(signal.metadata.route), route];
+  const candidate = createInterfaceVerificationQueue(report).candidates.find((item) => item.route === route);
+  assert.ok(candidate, `expected an interface candidate for ${route}`);
+  return createBolaAuthorizationTemplate(createSelectedBolaDraftPlan(report, [candidate.id]));
+}
+
 test("prepare-bola converts a selected draft into a bound non-executable template without requests", async () => {
   const draft = await selectedDraft();
   const before = structuredClone(draft);
@@ -94,11 +198,15 @@ test("prepare-bola converts a selected draft into a bound non-executable templat
   try {
     const template = createBolaAuthorizationTemplate(draft);
     assert.equal(fetchCalls, 0);
-    assert.equal(template.schemaVersion, "1.0.0");
+    assert.equal(template.schemaVersion, "1.1.0");
     assert.match(template.templateId, /^bola_template_[0-9a-f]{16}$/u);
     assert.equal(template.draftId, draft.draftId);
     assert.equal(template.status, "placeholders_required");
     assert.equal(template.networkRequests, 0);
+    assert.equal(
+      template.nextCommand,
+      "aisec check-bola --authorization <completed-manifest.yml> --template <same-template.json>",
+    );
     assert.deepEqual(template.selection, {
       mode: "interface_queue",
       queueId: draft.selection!.queueId,
@@ -146,6 +254,15 @@ test("prepare-bola preserves GET route provenance and fails closed for legacy or
   assert.equal(new Set(twoRoutes.bindings.map((binding) => binding.signalId)).size, 1);
   assert.doesNotThrow(() => validateBolaAuthorizationTemplate(twoRoutes));
 
+  const compatibleLegacy = legacyTemplate(template);
+  assert.doesNotThrow(() => validateBolaAuthorizationTemplate(compatibleLegacy));
+  const falselyLegacy = structuredClone(template);
+  falselyLegacy.schemaVersion = "1.0.0";
+  assert.throws(() => validateBolaAuthorizationTemplate(falselyLegacy), /BolaAuthorizationTemplate/u);
+  const falselyCurrent = legacyTemplate(template);
+  falselyCurrent.schemaVersion = "1.1.0";
+  assert.throws(() => validateBolaAuthorizationTemplate(falselyCurrent), /BolaAuthorizationTemplate/u);
+
   assert.throws(() => createBolaAuthorizationTemplate(createBolaDraftPlan(report)), /selected BolaDraftPlan 1\.1\.0/u);
   const forgedRoute = structuredClone(template);
   forgedRoute.bindings[0]!.route = "GET /forged";
@@ -183,6 +300,18 @@ test("preflight document loading is JSON-only for drafts and bounded before pars
   await writeFile(oversized, "x".repeat(MAX_BOLA_PREFLIGHT_DOCUMENT_BYTES + 1));
   await assert.rejects(() => prepareBola(oversized), /exceeds 1048576 bytes/u);
   await assert.rejects(() => prepareBola(temporary), /regular file/u);
+
+  const template = createBolaAuthorizationTemplate(draft);
+  const templatePath = join(temporary, "template.json");
+  await writeFile(templatePath, `${JSON.stringify(template)}\n`);
+  assert.deepEqual(await loadBolaAuthorizationTemplate(templatePath), template);
+  const templateYaml = join(temporary, "template.yml");
+  await writeFile(templateYaml, "schemaVersion: 1.1.0\n");
+  await assert.rejects(() => loadBolaAuthorizationTemplate(templateYaml), /valid JSON/u);
+  const oversizedTemplate = join(temporary, "oversized-template.json");
+  await writeFile(oversizedTemplate, "x".repeat(MAX_BOLA_PREFLIGHT_DOCUMENT_BYTES + 1));
+  await assert.rejects(() => loadBolaAuthorizationTemplate(oversizedTemplate), /exceeds 1048576 bytes/u);
+  await assert.rejects(() => loadBolaAuthorizationTemplate(temporary), /regular file/u);
 });
 
 test("check-bola validates a completed manifest without reading credentials, DNS or HTTP", async () => {
@@ -255,6 +384,183 @@ test("check-bola validates a completed manifest without reading credentials, DNS
     process.env = originalEnvironment;
     globalThis.fetch = originalFetch;
   }
+});
+
+test("check-bola binds a completed manifest to template provenance without credentials, DNS or HTTP", async () => {
+  const template = createBolaAuthorizationTemplate(await selectedDraft());
+  const manifest = completedManifest(template);
+  const originalEnvironment = process.env;
+  const originalFetch = globalThis.fetch;
+  let fetchCalls = 0;
+  process.env = new Proxy(originalEnvironment, {
+    get(target, property, receiver) {
+      if (typeof property === "string" && property.startsWith("AISEC_BOLA_BINDING_")) {
+        throw new Error(`credential environment value was read: ${property}`);
+      }
+      return Reflect.get(target, property, receiver) as unknown;
+    },
+  });
+  globalThis.fetch = (() => {
+    fetchCalls += 1;
+    throw new Error("bound check-bola must never call fetch");
+  }) as typeof fetch;
+  try {
+    const first = checkBolaAuthorization(manifest, template);
+    const second = checkBolaAuthorization(structuredClone(manifest), structuredClone(template));
+    assert.equal(fetchCalls, 0);
+    assert.equal(first.schemaVersion, "1.1.0");
+    assert.equal(first.status, "valid_review_required");
+    assert.equal(first.networkRequests, 0);
+    assert.equal(first.environmentValuesRead, 0);
+    assert.equal(first.dnsLookups, 0);
+    assert.equal(first.checkId, second.checkId);
+    assert.equal(first.templateBinding?.status, "verified");
+    assert.equal(first.templateBinding?.templateId, template.templateId);
+    assert.equal(first.templateBinding?.matchedCases, template.bindings.length);
+    assert.equal(first.templateBinding?.queueId, template.selection.queueId);
+    assert.equal(first.templateBinding?.exactCaseOrder, true);
+    assert.equal(first.templateBinding?.exactRequestBudget, true);
+    assert.equal(first.templateBinding?.routeTemplatesMatched, true);
+    assert.equal(first.templateBinding?.concreteObjectIds, true);
+    assert.match(first.templateBinding?.templateDigestSha256 ?? "", /^[0-9a-f]{64}$/u);
+    assert.doesNotThrow(() => validateBolaAuthorizationCheck(first));
+
+    const forgedTotal = structuredClone(first);
+    forgedTotal.templateBinding!.matchedCases += 1;
+    assert.throws(() => validateBolaAuthorizationCheck(forgedTotal), /template binding totals are inconsistent/u);
+    const forgedId = structuredClone(first);
+    forgedId.checkId = "bola_check_0000000000000000";
+    assert.throws(() => validateBolaAuthorizationCheck(forgedId), /stable check ID is inconsistent/u);
+    const forgedSource = structuredClone(first);
+    forgedSource.templateBinding!.projectId = "project_0000000000000000";
+    assert.throws(() => validateBolaAuthorizationCheck(forgedSource), /stable check ID is inconsistent/u);
+    const falselyLegacy = structuredClone(first);
+    falselyLegacy.schemaVersion = "1.0.0";
+    assert.throws(() => validateBolaAuthorizationCheck(falselyLegacy), /BolaAuthorizationCheck/u);
+    const missingBinding = structuredClone(first);
+    delete missingBinding.templateBinding;
+    assert.throws(() => validateBolaAuthorizationCheck(missingBinding), /BolaAuthorizationCheck/u);
+
+    const serialized = JSON.stringify(first);
+    for (const forbidden of [
+      "staging.binding.invalid",
+      "/document/detail",
+      "910000",
+      "aisec-binding-case-1",
+      "AISEC_BOLA_BINDING_OWNER_USERNAME",
+      "data.fixture_owner",
+      "report_id",
+    ]) assert.ok(!serialized.includes(forbidden), `bound check output leaked ${forbidden}`);
+
+    const legacyBound = checkBolaAuthorization(manifest, legacyTemplate(template));
+    assert.equal(legacyBound.schemaVersion, "1.1.0");
+    assert.equal(legacyBound.templateBinding?.templateId, template.templateId);
+    assert.notEqual(legacyBound.checkId, first.checkId, "template digest must bind exact template version/content");
+  } finally {
+    process.env = originalEnvironment;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("template binding accepts concrete GET route forms and rejects ambiguous route changes", async () => {
+  for (const route of [
+    "GET /document/{report_id}",
+    "GET /document/:report_id",
+    "GET /document/[report_id]",
+    "GET /document/*report_id",
+    "GET /document/detail?scope=owner&report_id={report_id}",
+  ]) {
+    const template = await templateForRoute(route);
+    const manifest = completedManifest(template);
+    const check = checkBolaAuthorization(manifest, template);
+    assert.equal(check.templateBinding?.routeTemplatesMatched, true, route);
+  }
+
+  const repeatedTemplate = await templateForRoute("GET /document/{report_id}/detail/{report_id}");
+  const repeatedManifest = completedManifest(repeatedTemplate);
+  assert.doesNotThrow(() => checkBolaAuthorization(repeatedManifest, repeatedTemplate));
+  repeatedManifest.cases[0]!.path = repeatedManifest.cases[0]!.path.replace(/\/detail\/[^/]+$/u, "/detail/999999");
+  assert.throws(
+    () => checkBolaAuthorization(repeatedManifest, repeatedTemplate),
+    /repeats an object identifier with different values/u,
+  );
+
+  const getTemplate = await templateForRoute("GET /document/{report_id}");
+  const extraSegment = completedManifest(getTemplate);
+  extraSegment.cases[0]!.path += "/extra";
+  assert.throws(() => checkBolaAuthorization(extraSegment, getTemplate), /route structure differs/u);
+  const extraQuery = completedManifest(getTemplate);
+  extraQuery.cases[0]!.path += "?scope=other";
+  assert.throws(() => checkBolaAuthorization(extraQuery, getTemplate), /route structure differs/u);
+
+  const unboundGetTemplate = await templateForRoute("GET /document/detail");
+  assert.throws(
+    () => checkBolaAuthorization(completedManifest(unboundGetTemplate), unboundGetTemplate),
+    /GET object-ID fields differ/u,
+    "a GET route without an object-ID placeholder cannot claim exact binding",
+  );
+});
+
+test("template binding fails closed for case, method, route, object, evidence and budget drift", async () => {
+  const template = createBolaAuthorizationTemplate(await selectedDraft());
+  const base = completedManifest(template);
+
+  const changedId = structuredClone(base);
+  changedId.cases[0]!.id = "case_aaaaaaaaaaaaaaaa";
+  assert.throws(() => checkBolaAuthorization(changedId, template), /case order or ID differs/u);
+
+  const changedMethod = structuredClone(base);
+  changedMethod.cases[0]!.method = "GET";
+  delete changedMethod.cases[0]!.body;
+  assert.throws(() => checkBolaAuthorization(changedMethod, template), /method or read-only declaration differs/u);
+
+  const changedRoute = structuredClone(base);
+  changedRoute.cases[0]!.path = "/document/query";
+  assert.doesNotThrow(() => checkBolaAuthorization(changedRoute));
+  assert.throws(() => checkBolaAuthorization(changedRoute, template), /static route differs/u);
+
+  const changedBodyField = structuredClone(base);
+  changedBodyField.cases[0]!.body = { other_id: 910_000 };
+  assert.throws(() => checkBolaAuthorization(changedBodyField, template), /POST object-ID fields differ/u);
+  const structuredObjectId = structuredClone(base);
+  structuredObjectId.cases[0]!.body = { report_id: { value: 910_000 } };
+  assert.throws(() => checkBolaAuthorization(structuredObjectId, template), /object identifier is not concrete/u);
+
+  const changedEvidence = structuredClone(base);
+  changedEvidence.cases[0]!.expected = {
+    match: "testDataLabel",
+    statusCodes: [200],
+    jsonPath: "data.object_label",
+    value: changedEvidence.cases[0]!.testDataLabel,
+  };
+  assert.throws(() => checkBolaAuthorization(changedEvidence, template), /evidence mode differs/u);
+
+  const changedStatus = structuredClone(base);
+  changedStatus.cases[0]!.expected.statusCodes = [201];
+  assert.throws(() => checkBolaAuthorization(changedStatus, template), /status codes differ/u);
+  const changedBudget = structuredClone(base);
+  changedBudget.maxRequests += 1;
+  assert.throws(() => checkBolaAuthorization(changedBudget, template), /request budget differs/u);
+  const changedRoles = structuredClone(base);
+  changedRoles.cases[0]!.ownerAccount = "other";
+  changedRoles.cases[0]!.otherAccount = "owner";
+  assert.throws(() => checkBolaAuthorization(changedRoles, template), /account roles differ/u);
+
+  const report = await fastApiReport();
+  const signal = report.signals.find((item) => item.ruleId === "fastapi.authorization.object-without-ownership-check");
+  assert.ok(signal?.metadata);
+  signal.metadata.routes = [String(signal.metadata.route), "GET /document/{report_id}"];
+  const queue = createInterfaceVerificationQueue(report);
+  const multiTemplate = createBolaAuthorizationTemplate(
+    createSelectedBolaDraftPlan(report, queue.candidates.map((candidate) => candidate.id)),
+  );
+  const reordered = completedManifest(multiTemplate);
+  reordered.cases.reverse();
+  assert.throws(() => checkBolaAuthorization(reordered, multiTemplate), /case order or ID differs/u);
+
+  const forgedTemplate = structuredClone(template);
+  forgedTemplate.bindings[0]!.route = "POST /document/query";
+  assert.throws(() => checkBolaAuthorization(base, forgedTemplate), /binding route is inconsistent/u);
 });
 
 test("check-bola rejects residual placeholders, route templates and malformed manifests", async (context) => {
@@ -336,7 +642,8 @@ test("prepare-bola and check-bola CLI return strict JSON without confirmation or
   context.after(() => rm(temporary, { recursive: true, force: true }));
   const draftPath = join(temporary, "draft.json");
   const manifestPath = join(temporary, "authorization.json");
-  await writeFile(draftPath, `${JSON.stringify(await selectedDraft())}\n`);
+  const draft = await selectedDraft();
+  await writeFile(draftPath, `${JSON.stringify(draft)}\n`);
   await writeFile(manifestPath, `${JSON.stringify(authorizationManifest)}\n`);
   const cli = join(here, "..", "src", "cli.js");
 
@@ -357,10 +664,53 @@ test("prepare-bola and check-bola CLI return strict JSON without confirmation or
 
   const prepared = await run(["prepare-bola", "--draft", draftPath]);
   assert.equal(prepared.code, 0, prepared.stderr);
-  assert.equal(JSON.parse(prepared.stdout).status, "placeholders_required");
+  const template = JSON.parse(prepared.stdout) as BolaAuthorizationTemplate;
+  assert.equal(template.status, "placeholders_required");
+  assert.equal(template.schemaVersion, "1.1.0");
   const checked = await run(["check-bola", "--authorization", manifestPath]);
   assert.equal(checked.code, 0, checked.stderr);
+  assert.equal(JSON.parse(checked.stdout).schemaVersion, "1.0.0");
   assert.equal(JSON.parse(checked.stdout).status, "valid_review_required");
+
+  const templatePath = join(temporary, "template.json");
+  const boundManifestPath = join(temporary, "bound-authorization.json");
+  await writeFile(templatePath, `${JSON.stringify(template)}\n`);
+  await writeFile(boundManifestPath, `${JSON.stringify(completedManifest(template))}\n`);
+  const bound = await run([
+    "check-bola",
+    "--authorization",
+    boundManifestPath,
+    "--template",
+    templatePath,
+  ]);
+  assert.equal(bound.code, 0, bound.stderr);
+  assert.equal(JSON.parse(bound.stdout).schemaVersion, "1.1.0");
+  assert.equal(JSON.parse(bound.stdout).templateBinding.status, "verified");
+
+  const mismatch = await run([
+    "check-bola",
+    "--authorization",
+    manifestPath,
+    "--template",
+    templatePath,
+  ]);
+  assert.equal(mismatch.code, 64);
+  assert.equal(mismatch.stdout, "");
+  assert.match(mismatch.stderr, /template binding/u);
+  const duplicateTemplate = await run([
+    "check-bola",
+    "--authorization",
+    boundManifestPath,
+    "--template",
+    templatePath,
+    "--template",
+    templatePath,
+  ]);
+  assert.equal(duplicateTemplate.code, 64);
+  assert.match(duplicateTemplate.stderr, /accepts --template at most once/u);
+  const missingTemplatePath = await run(["check-bola", "--authorization", boundManifestPath, "--template"]);
+  assert.equal(missingTemplatePath.code, 64);
+  assert.match(missingTemplatePath.stderr, /--template requires a file path/u);
   const unsupportedConfirmation = await run(["check-bola", "--authorization", manifestPath, "--confirm"]);
   assert.equal(unsupportedConfirmation.code, 64);
   assert.equal(unsupportedConfirmation.stdout, "");

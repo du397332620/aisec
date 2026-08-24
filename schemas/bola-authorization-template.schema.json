@@ -1,12 +1,12 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://aisec.dev/schemas/bola-authorization-template-1.0.0.json",
-  "title": "AIsec BOLA Authorization Template 1.0.0",
+  "$id": "https://aisec.dev/schemas/bola-authorization-template-1.1.0.json",
+  "title": "AIsec BOLA Authorization Template 1.1.0",
   "type": "object",
   "additionalProperties": false,
   "required": ["schemaVersion", "templateId", "draftId", "scanId", "projectId", "generatedAt", "status", "networkRequests", "selection", "manifest", "bindings", "reviewChecklist", "nextCommand", "disclaimer"],
   "properties": {
-    "schemaVersion": { "const": "1.0.0" },
+    "schemaVersion": { "enum": ["1.0.0", "1.1.0"] },
     "templateId": { "type": "string", "pattern": "^bola_template_[0-9a-f]{16}$" },
     "draftId": { "type": "string", "pattern": "^bola_draft_[0-9a-f]{16}$" },
     "scanId": { "type": "string", "pattern": "^scan_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
@@ -23,17 +23,71 @@
       "items": { "$ref": "#/$defs/binding" }
     },
     "reviewChecklist": {
-      "const": [
-        "Confirm the exact non-production target and written authorization with the named owner.",
-        "Create two distinct low-privilege accounts and pre-created synthetic owner fixtures; never enumerate identifiers.",
-        "Replace every target, login, fixture, route/body and response-evidence placeholder after reviewing each binding.",
-        "Confirm every case is read-only and ownerIdentity evidence is server-derived rather than request-echoed.",
-        "Copy only the completed manifest object to a separate file and run check-bola before any active verification."
+      "oneOf": [
+        {
+          "const": [
+            "Confirm the exact non-production target and written authorization with the named owner.",
+            "Create two distinct low-privilege accounts and pre-created synthetic owner fixtures; never enumerate identifiers.",
+            "Replace every target, login, fixture, route/body and response-evidence placeholder after reviewing each binding.",
+            "Confirm every case is read-only and ownerIdentity evidence is server-derived rather than request-echoed.",
+            "Copy only the completed manifest object to a separate file and run check-bola before any active verification."
+          ]
+        },
+        {
+          "const": [
+            "Confirm the exact non-production target and written authorization with the named owner.",
+            "Create two distinct low-privilege accounts and pre-created synthetic owner fixtures; never enumerate identifiers.",
+            "Replace every target, login, fixture, route/body and response-evidence placeholder after reviewing each binding.",
+            "Confirm every case is read-only and ownerIdentity evidence is server-derived rather than request-echoed.",
+            "Keep this wrapper unchanged and run check-bola with both the completed manifest and this same template before any active verification."
+          ]
+        }
       ]
     },
-    "nextCommand": { "const": "aisec check-bola --authorization <completed-manifest.yml>" },
+    "nextCommand": {
+      "enum": [
+        "aisec check-bola --authorization <completed-manifest.yml>",
+        "aisec check-bola --authorization <completed-manifest.yml> --template <same-template.json>"
+      ]
+    },
     "disclaimer": { "const": "This template contains unresolved instructions and is intentionally not executable. It performs no network requests and does not grant authorization or prove a vulnerability." }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schemaVersion": { "const": "1.0.0" } },
+        "required": ["schemaVersion"]
+      },
+      "then": {
+        "properties": {
+          "reviewChecklist": {
+            "const": [
+              "Confirm the exact non-production target and written authorization with the named owner.",
+              "Create two distinct low-privilege accounts and pre-created synthetic owner fixtures; never enumerate identifiers.",
+              "Replace every target, login, fixture, route/body and response-evidence placeholder after reviewing each binding.",
+              "Confirm every case is read-only and ownerIdentity evidence is server-derived rather than request-echoed.",
+              "Copy only the completed manifest object to a separate file and run check-bola before any active verification."
+            ]
+          },
+          "nextCommand": { "const": "aisec check-bola --authorization <completed-manifest.yml>" }
+        }
+      },
+      "else": {
+        "properties": {
+          "reviewChecklist": {
+            "const": [
+              "Confirm the exact non-production target and written authorization with the named owner.",
+              "Create two distinct low-privilege accounts and pre-created synthetic owner fixtures; never enumerate identifiers.",
+              "Replace every target, login, fixture, route/body and response-evidence placeholder after reviewing each binding.",
+              "Confirm every case is read-only and ownerIdentity evidence is server-derived rather than request-echoed.",
+              "Keep this wrapper unchanged and run check-bola with both the completed manifest and this same template before any active verification."
+            ]
+          },
+          "nextCommand": { "const": "aisec check-bola --authorization <completed-manifest.yml> --template <same-template.json>" }
+        }
+      }
+    }
+  ],
   "$defs": {
     "selection": {
       "type": "object",

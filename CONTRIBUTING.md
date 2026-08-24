@@ -93,6 +93,10 @@ offline. The template must remain invalid as an active manifest until every
 critical instruction is replaced, retain one exact binding per selected case,
 and accept only bounded selected 1.1 JSON. The checker may inspect declared
 environment-variable names but must never read their values, resolve DNS, open
-a socket or invoke the requester. Its output must stay sanitized and explicitly
-review-required. Update both public schemas, placeholder/route rejection tests,
-CLI/API docs and installed-package smoke together.
+a socket or invoke the requester. If a template is supplied, every case must
+remain bound to its order, ID, fixed request budget, method, route structure,
+object-ID fields, account roles, status codes and evidence mode; mismatch must fail rather than
+fall back to an unbound check. Its output must stay sanitized and explicitly
+review-required. Keep strict template/check 1.0 compatibility and update both
+public schemas, placeholder/route rejection tests, CLI/API docs and
+installed-package smoke together.

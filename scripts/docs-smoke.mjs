@@ -43,6 +43,65 @@ function report(result, label) {
   }
 }
 
+function completedBolaManifest(template) {
+  const dataPrefix = "aisec-binding-smoke";
+  const cases = template.manifest.cases.map((item, index) => {
+    const binding = template.bindings[index];
+    const objectValues = new Map(binding.objectIdFields.map((field, fieldIndex) => [
+      field,
+      String(920_000 + index * 100 + fieldIndex),
+    ]));
+    let path = item.path;
+    for (const [field, value] of objectValues) {
+      path = path
+        .replaceAll(`{${field}}`, encodeURIComponent(value))
+        .replaceAll(`[${field}]`, encodeURIComponent(value))
+        .replaceAll(`*${field}`, encodeURIComponent(value))
+        .replace(new RegExp(`:${field}(?=/|\\?|$)`, "gu"), encodeURIComponent(value));
+    }
+    const testDataLabel = `${dataPrefix}-case-${index + 1}`;
+    return {
+      id: item.id,
+      method: item.method,
+      path,
+      readOnly: true,
+      testDataLabel,
+      ownerAccount: "owner",
+      otherAccount: "other",
+      ...(item.method === "POST"
+        ? { body: Object.fromEntries([...objectValues].map(([field, value]) => [field, Number(value)])) }
+        : {}),
+      expected: binding.evidenceMode === "ownerIdentity"
+        ? { match: "ownerIdentity", statusCodes: [200], jsonPath: "data.fixture_owner" }
+        : { match: "testDataLabel", statusCodes: [200], jsonPath: "data.object_label", value: testDataLabel },
+    };
+  });
+  return {
+    schemaVersion: "1.0.0",
+    targetBaseUrl: "http://127.0.0.1:65535/",
+    environment: "local",
+    ownedBy: "AIsec offline binding smoke",
+    allowedHosts: ["127.0.0.1"],
+    dataPrefix,
+    maxRequests: template.manifest.maxRequests,
+    accounts: [
+      { label: "owner", usernameEnv: "AISEC_BOLA_SMOKE_OWNER_USERNAME", passwordEnv: "AISEC_BOLA_SMOKE_OWNER_PASSWORD" },
+      { label: "other", usernameEnv: "AISEC_BOLA_SMOKE_OTHER_USERNAME", passwordEnv: "AISEC_BOLA_SMOKE_OTHER_PASSWORD" },
+    ],
+    login: {
+      path: "/auth/login",
+      usernameField: "username",
+      passwordField: "password",
+      successStatusCodes: [200],
+      tokenJsonPath: "data.access_token",
+      identityJsonPath: "data.user_id",
+      tokenPrefix: "Bearer",
+    },
+    cases,
+    acknowledgment: "I am authorized to test this non-production target with two low-privilege accounts and pre-created test data",
+  };
+}
+
 try {
   const readme = await readFile(join(repositoryRoot, "README.md"), "utf8");
   for (const required of [
@@ -61,8 +120,9 @@ try {
     "BolaDraftPlan 1.1.0",
     "aisec prepare-bola",
     "aisec check-bola",
-    "BolaAuthorizationTemplate 1.0.0",
-    "BolaAuthorizationCheck 1.0.0",
+    "BolaAuthorizationTemplate 1.1.0",
+    "BolaAuthorizationCheck 1.1.0",
+    "--template bola-authorization-template.json",
     "RulePack 1.1.0",
     "RulePackPreview 1.0.0",
     "SecurityPolicy 1.1.0",
@@ -107,6 +167,7 @@ try {
   assert.match(help, /draft-bola --scan <scan-id\|report\.json>.*--candidate interface-candidate-id/);
   assert.match(help, /prepare-bola --draft <selected-bola-draft\.json>/);
   assert.match(help, /check-bola --authorization <completed-manifest\.yml>/);
+  assert.match(help, /--template same-template\.json/);
   const doctor = report(run(["doctor", "--json"]), "doctor");
   assert.equal(doctor.node, process.version);
   assert.deepEqual(doctor.engines.map((item) => item.source), ["invalid", "invalid", "invalid"]);
@@ -191,21 +252,38 @@ try {
     selectedDraftPath,
   ]), "BOLA authorization template");
   assert.equal(authorizationTemplate.status, "placeholders_required");
+  assert.equal(authorizationTemplate.schemaVersion, "1.1.0");
   assert.equal(authorizationTemplate.networkRequests, 0);
   assert.equal(authorizationTemplate.selection.queueId, selectedQueue.queueId);
   assert.equal(authorizationTemplate.bindings[0].route, selectedQueue.candidates[0].route);
   assert.equal(authorizationTemplate.manifest.targetBaseUrl, "<SET_AUTHORIZED_BASE_URL>");
 
+  const authorizationTemplatePath = join(temporary, "bola-authorization-template.json");
+  const completedAuthorizationPath = join(temporary, "completed-bola-authorization.json");
+  await writeFile(authorizationTemplatePath, `${JSON.stringify(authorizationTemplate)}\n`);
+  await writeFile(completedAuthorizationPath, `${JSON.stringify(completedBolaManifest(authorizationTemplate))}\n`);
   const authorizationCheck = report(run([
     "check-bola",
     "--authorization",
-    "examples/authorization.bola.local.yml",
+    completedAuthorizationPath,
+    "--template",
+    authorizationTemplatePath,
   ]), "offline BOLA authorization check");
+  assert.equal(authorizationCheck.schemaVersion, "1.1.0");
   assert.equal(authorizationCheck.status, "valid_review_required");
+  assert.equal(authorizationCheck.templateBinding.status, "verified");
+  assert.equal(authorizationCheck.templateBinding.templateId, authorizationTemplate.templateId);
   assert.equal(authorizationCheck.networkRequests, 0);
   assert.equal(authorizationCheck.environmentValuesRead, 0);
   assert.equal(authorizationCheck.dnsLookups, 0);
   assert.doesNotMatch(JSON.stringify(authorizationCheck), /127\.0\.0\.1|\/project\/detail|project_id/u);
+  const legacyAuthorizationCheck = report(run([
+    "check-bola",
+    "--authorization",
+    "examples/authorization.bola.local.yml",
+  ]), "legacy unbound BOLA authorization check");
+  assert.equal(legacyAuthorizationCheck.schemaVersion, "1.0.0");
+  assert.ok(!("templateBinding" in legacyAuthorizationCheck));
   const duplicateSelection = run([
     "draft-bola",
     "--scan",

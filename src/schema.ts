@@ -4,8 +4,8 @@ export const CI_REPORT_SCHEMA_VERSION = "1.4.0" as const;
 export const RULE_PACK_PREVIEW_SCHEMA_VERSION = "1.0.0" as const;
 export const INTERFACE_VERIFICATION_QUEUE_SCHEMA_VERSION = "1.0.0" as const;
 export const BOLA_DRAFT_SCHEMA_VERSION = "1.1.0" as const;
-export const BOLA_AUTHORIZATION_TEMPLATE_SCHEMA_VERSION = "1.0.0" as const;
-export const BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION = "1.0.0" as const;
+export const BOLA_AUTHORIZATION_TEMPLATE_SCHEMA_VERSION = "1.1.0" as const;
+export const BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION = "1.1.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type EvidenceLevel = "verified" | "static_confirmed" | "inferred";
@@ -811,7 +811,7 @@ export interface BolaAuthorizationTemplateCase {
 }
 
 export interface BolaAuthorizationTemplate {
-  schemaVersion: typeof BOLA_AUTHORIZATION_TEMPLATE_SCHEMA_VERSION;
+  schemaVersion: typeof SCHEMA_VERSION | typeof BOLA_AUTHORIZATION_TEMPLATE_SCHEMA_VERSION;
   templateId: string;
   draftId: string;
   scanId: string;
@@ -865,12 +865,36 @@ export interface BolaAuthorizationTemplate {
     };
   }>;
   reviewChecklist: string[];
-  nextCommand: "aisec check-bola --authorization <completed-manifest.yml>";
+  nextCommand:
+    | "aisec check-bola --authorization <completed-manifest.yml>"
+    | "aisec check-bola --authorization <completed-manifest.yml> --template <same-template.json>";
   disclaimer: string;
 }
 
+export interface BolaAuthorizationTemplateBindingCheck {
+  status: "verified";
+  templateId: string;
+  templateDigestSha256: string;
+  draftId: string;
+  scanId: string;
+  projectId: string;
+  queueId: string;
+  queueCoverage: "complete" | "partial";
+  queueCoverageScope: "observed_route_cards_only";
+  matchedCases: number;
+  exactCaseOrder: true;
+  exactRequestBudget: true;
+  exactMethods: true;
+  exactAccountRoles: true;
+  routeTemplatesMatched: true;
+  exactObjectIdFields: true;
+  concreteObjectIds: true;
+  exactEvidenceModes: true;
+  exactStatusCodes: true;
+}
+
 export interface BolaAuthorizationCheck {
-  schemaVersion: typeof BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION;
+  schemaVersion: typeof SCHEMA_VERSION | typeof BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION;
   checkId: string;
   checkedAt: string;
   status: "valid_review_required";
@@ -886,6 +910,7 @@ export interface BolaAuthorizationCheck {
     ownerIdentityCases: number;
   };
   caseIds: string[];
+  templateBinding?: BolaAuthorizationTemplateBindingCheck;
   networkRequests: 0;
   environmentValuesRead: 0;
   dnsLookups: 0;

@@ -434,6 +434,7 @@ export function validateBolaAuthorizationTemplate(value: unknown): BolaAuthoriza
     "BolaAuthorizationTemplate",
     bolaAuthorizationTemplateValidator,
     value,
+    "1.1.0",
   );
   const total = template.manifest.cases.length;
   if (total < 1 || total > 9
@@ -506,6 +507,7 @@ export function validateBolaAuthorizationCheck(value: unknown): BolaAuthorizatio
     "BolaAuthorizationCheck",
     bolaAuthorizationCheckValidator,
     value,
+    "1.1.0",
   );
   const summary = check.summary;
   if (check.caseIds.length !== summary.cases
@@ -515,7 +517,25 @@ export function validateBolaAuthorizationCheck(value: unknown): BolaAuthorizatio
     || summary.testDataLabelCases + summary.ownerIdentityCases !== summary.cases) {
     throw new Error("BolaAuthorizationCheck summary totals are inconsistent");
   }
-  if (check.checkId !== stableId("bola_check", check.manifestDigestSha256)) {
+  if (check.templateBinding && check.templateBinding.matchedCases !== summary.cases) {
+    throw new Error("BolaAuthorizationCheck template binding totals are inconsistent");
+  }
+  const expectedCheckId = check.templateBinding
+    ? stableId(
+        "bola_check",
+        check.manifestDigestSha256,
+        check.templateBinding.templateId,
+        check.templateBinding.templateDigestSha256,
+        check.templateBinding.draftId,
+        check.templateBinding.scanId,
+        check.templateBinding.projectId,
+        check.templateBinding.queueId,
+        check.templateBinding.queueCoverage,
+        check.templateBinding.queueCoverageScope,
+        String(check.templateBinding.matchedCases),
+      )
+    : stableId("bola_check", check.manifestDigestSha256);
+  if (check.checkId !== expectedCheckId) {
     throw new Error("BolaAuthorizationCheck stable check ID is inconsistent");
   }
   return check;
