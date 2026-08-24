@@ -52,6 +52,7 @@ Scan safety:
   prepare-bola and every BOLA manifest/template/check input accept at most 1 MiB.
   Preflight reads no credential values, resolves no DNS and sends no requests.
   verify-bola recomputes the saved bound check before crossing that boundary.
+  Its strict 1.1 result binds sanitized receipt/template provenance to case order.
 
 Scan options:
   --profile predeploy|native  Acceptance scan (default) or source-only first pass

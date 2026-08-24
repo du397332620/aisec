@@ -1,13 +1,17 @@
 import type {
+  BolaAuthorizationCheck,
   BolaAuthorizationManifest,
+  BolaAuthorizationTemplate,
   BolaCaseResult,
   BolaVerificationCase,
+  BolaVerificationProvenance,
   BolaVerificationReport,
   JsonValue,
   Signal,
 } from "../schema.js";
-import { SCHEMA_VERSION } from "../schema.js";
+import { BOLA_VERIFICATION_REPORT_SCHEMA_VERSION, SCHEMA_VERSION } from "../schema.js";
 import { createSignal, newId } from "../core/utils.js";
+import { validateBolaVerificationReport } from "../core/schema-validation.js";
 import { assertAllowedResponseUrl, loadBolaAuthorization } from "./authorization.js";
 import {
   assertBolaVerificationPreflight,
@@ -233,8 +237,8 @@ export async function executeBolaVerification(
       countRequest();
       ownerResponse = await requester(caseRequest(manifest, item, ownerToken));
       assertAllowedResponseUrl(manifest, ownerResponse.url);
-    } catch (error) {
-      cases.push({ ...base, status: "inconclusive", reason: `owner request failed: ${error instanceof Error ? error.message : String(error)}` });
+    } catch {
+      cases.push({ ...base, status: "inconclusive", reason: "owner request failed before a response could be safely evaluated" });
       continue;
     }
     const owner = evaluateOwner(item, ownerResponse, ownerIdentity);
@@ -247,8 +251,8 @@ export async function executeBolaVerification(
       countRequest();
       otherResponse = await requester(caseRequest(manifest, item, otherToken));
       assertAllowedResponseUrl(manifest, otherResponse.url);
-    } catch (error) {
-      cases.push({ ...base, status: "inconclusive", ownerStatus: ownerResponse.status, reason: `cross-account request failed: ${error instanceof Error ? error.message : String(error)}` });
+    } catch {
+      cases.push({ ...base, status: "inconclusive", ownerStatus: ownerResponse.status, reason: "cross-account request failed before a response could be safely evaluated" });
       continue;
     }
     const outcome = evaluateOther(item, otherResponse, ownerIdentity);
@@ -257,7 +261,7 @@ export async function executeBolaVerification(
   }
 
   const incomplete = cases.some((item) => item.status === "inconclusive" || item.status === "not_run");
-  return {
+  return validateBolaVerificationReport({
     schemaVersion: SCHEMA_VERSION,
     verificationId: newId("bola"),
     target: manifest.targetBaseUrl,
@@ -270,7 +274,9 @@ export async function executeBolaVerification(
       engine: "aisec-bola-verifier",
       status: incomplete ? "partial" : "complete",
       required: true,
-      reason: incomplete ? "At least one configured case lacked a valid owner baseline or a conclusive cross-account response" : undefined,
+      ...(incomplete
+        ? { reason: "At least one configured case lacked a valid owner baseline or a conclusive cross-account response" }
+        : {}),
     }],
     signals,
     cases,
@@ -281,6 +287,36 @@ export async function executeBolaVerification(
       "Credentials and bearer tokens are read from environment variables and are never included in the report.",
       "The verifier cannot independently prove that the declared accounts are low privilege; account role and fixture isolation remain the operator's responsibility.",
     ],
+  });
+}
+
+function createVerificationProvenance(
+  manifest: BolaAuthorizationManifest,
+  template: BolaAuthorizationTemplate,
+  check: BolaAuthorizationCheck,
+): BolaVerificationProvenance {
+  const binding = check.templateBinding;
+  if (!binding) throw new Error("BOLA verification report provenance requires a template-bound authorization check");
+  return {
+    status: "preflight_verified",
+    receipt: {
+      schemaVersion: check.schemaVersion as BolaVerificationProvenance["receipt"]["schemaVersion"],
+      checkId: check.checkId,
+      checkedAt: check.checkedAt,
+    },
+    manifest: {
+      schemaVersion: manifest.schemaVersion,
+      digestSha256: check.manifestDigestSha256,
+      environment: check.environment,
+    },
+    template: {
+      schemaVersion: template.schemaVersion,
+      ...binding,
+    },
+    authorization: {
+      summary: { ...check.summary },
+      caseIds: [...check.caseIds],
+    },
   };
 }
 
@@ -296,10 +332,15 @@ export async function verifyBola(
     loadBolaAuthorizationTemplate(options.templatePath),
     loadBolaAuthorizationCheck(options.checkPath),
   ]);
-  assertBolaVerificationPreflight(manifest, template, check);
-  return executeBolaVerification(
+  const receipt = assertBolaVerificationPreflight(manifest, template, check);
+  const report = await executeBolaVerification(
     manifest,
     options.environment ?? process.env,
     options.requester ?? boundedHttpRequest,
   );
+  return validateBolaVerificationReport({
+    ...report,
+    schemaVersion: BOLA_VERIFICATION_REPORT_SCHEMA_VERSION,
+    provenance: createVerificationProvenance(manifest, template, receipt),
+  });
 }

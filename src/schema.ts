@@ -7,6 +7,7 @@ export const BOLA_DRAFT_SCHEMA_VERSION = "1.1.0" as const;
 export const BOLA_AUTHORIZATION_TEMPLATE_SCHEMA_VERSION = "1.1.0" as const;
 export const BOLA_AUTHORIZATION_CHECK_LEGACY_BOUND_SCHEMA_VERSION = "1.1.0" as const;
 export const BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION = "1.2.0" as const;
+export const BOLA_VERIFICATION_REPORT_SCHEMA_VERSION = "1.1.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type EvidenceLevel = "verified" | "static_confirmed" | "inferred";
@@ -706,8 +707,35 @@ export interface BolaCaseResult {
   reason: string;
 }
 
+export interface BolaVerificationProvenance {
+  status: "preflight_verified";
+  receipt: {
+    schemaVersion:
+      | typeof BOLA_AUTHORIZATION_CHECK_LEGACY_BOUND_SCHEMA_VERSION
+      | typeof BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION;
+    checkId: string;
+    checkedAt: string;
+  };
+  manifest: {
+    schemaVersion: typeof SCHEMA_VERSION;
+    digestSha256: string;
+    environment: "local" | "test" | "staging";
+  };
+  template: BolaAuthorizationTemplateBindingCheck & {
+    schemaVersion:
+      | typeof SCHEMA_VERSION
+      | typeof BOLA_AUTHORIZATION_TEMPLATE_SCHEMA_VERSION;
+  };
+  authorization: {
+    summary: BolaAuthorizationCheck["summary"];
+    caseIds: string[];
+  };
+}
+
 export interface BolaVerificationReport {
-  schemaVersion: typeof SCHEMA_VERSION;
+  schemaVersion:
+    | typeof SCHEMA_VERSION
+    | typeof BOLA_VERIFICATION_REPORT_SCHEMA_VERSION;
   verificationId: string;
   target: string;
   startedAt: string;
@@ -718,6 +746,7 @@ export interface BolaVerificationReport {
   signals: Signal[];
   cases: BolaCaseResult[];
   limitations: string[];
+  provenance?: BolaVerificationProvenance;
 }
 
 export type BolaDraftClassification = "read_candidate" | "mutation_excluded" | "manual_review";

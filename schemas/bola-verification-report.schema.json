@@ -1,0 +1,271 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/bola-verification-report-1.1.0.json",
+  "title": "AIsec BOLA Verification Report 1.1.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "verificationId", "target", "startedAt", "completedAt",
+    "requestCount", "accounts", "coverage", "signals", "cases", "limitations"
+  ],
+  "properties": {
+    "schemaVersion": { "enum": ["1.0.0", "1.1.0"] },
+    "verificationId": {
+      "type": "string",
+      "pattern": "^bola_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "target": { "type": "string", "format": "uri", "pattern": "^https?://", "maxLength": 2048 },
+    "startedAt": { "$ref": "#/$defs/dateTime" },
+    "completedAt": { "$ref": "#/$defs/dateTime" },
+    "requestCount": { "type": "integer", "minimum": 0, "maximum": 20 },
+    "accounts": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/accountLabel" }
+    },
+    "coverage": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 1,
+      "items": { "$ref": "#/$defs/coverage" }
+    },
+    "signals": {
+      "type": "array",
+      "maxItems": 9,
+      "items": { "$ref": "#/$defs/signal" }
+    },
+    "cases": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 9,
+      "items": { "$ref": "#/$defs/caseResult" }
+    },
+    "limitations": {
+      "const": [
+        "Only the exact preconfigured login and object-read requests were sent; object identifiers were not enumerated or mutated.",
+        "Each cross-account request was sent only after the owner account returned the configured object evidence: either the exact synthetic marker or an owner field matching the authenticated owner identity.",
+        "This verifies only listed cases and does not establish that other routes, roles, tenants or object types enforce authorization.",
+        "Credentials and bearer tokens are read from environment variables and are never included in the report.",
+        "The verifier cannot independently prove that the declared accounts are low privilege; account role and fixture isolation remain the operator's responsibility."
+      ]
+    },
+    "provenance": { "$ref": "#/$defs/provenance" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schemaVersion": { "const": "1.0.0" } },
+        "required": ["schemaVersion"]
+      },
+      "then": { "properties": { "provenance": false } },
+      "else": { "required": ["provenance"] }
+    }
+  ],
+  "$defs": {
+    "dateTime": { "type": "string", "format": "date-time" },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "caseId": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$" },
+    "accountLabel": { "type": "string", "minLength": 1, "maxLength": 100, "pattern": "\\S" },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "cases", "requiredRequests", "maxRequests", "getCases", "postCases",
+        "testDataLabelCases", "ownerIdentityCases"
+      ],
+      "properties": {
+        "cases": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "requiredRequests": { "type": "integer", "minimum": 4, "maximum": 20 },
+        "maxRequests": { "type": "integer", "minimum": 4, "maximum": 20 },
+        "getCases": { "type": "integer", "minimum": 0, "maximum": 9 },
+        "postCases": { "type": "integer", "minimum": 0, "maximum": 9 },
+        "testDataLabelCases": { "type": "integer", "minimum": 0, "maximum": 9 },
+        "ownerIdentityCases": { "type": "integer", "minimum": 0, "maximum": 9 }
+      }
+    },
+    "templateProvenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "status", "templateId", "templateDigestSha256", "draftId",
+        "scanId", "projectId", "queueId", "queueCoverage", "queueCoverageScope",
+        "matchedCases", "exactCaseOrder", "exactRequestBudget", "exactMethods",
+        "exactAccountRoles", "routeTemplatesMatched", "exactObjectIdFields",
+        "concreteObjectIds", "exactEvidenceModes", "exactStatusCodes"
+      ],
+      "properties": {
+        "schemaVersion": { "enum": ["1.0.0", "1.1.0"] },
+        "status": { "const": "verified" },
+        "templateId": { "type": "string", "pattern": "^bola_template_[0-9a-f]{16}$" },
+        "templateDigestSha256": { "$ref": "#/$defs/digest" },
+        "draftId": { "type": "string", "pattern": "^bola_draft_[0-9a-f]{16}$" },
+        "scanId": {
+          "type": "string",
+          "pattern": "^scan_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "projectId": { "type": "string", "pattern": "^project_[0-9a-f]{16}$" },
+        "queueId": { "type": "string", "pattern": "^interface_queue_[0-9a-f]{16}$" },
+        "queueCoverage": { "enum": ["complete", "partial"] },
+        "queueCoverageScope": { "const": "observed_route_cards_only" },
+        "matchedCases": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "exactCaseOrder": { "const": true },
+        "exactRequestBudget": { "const": true },
+        "exactMethods": { "const": true },
+        "exactAccountRoles": { "const": true },
+        "routeTemplatesMatched": { "const": true },
+        "exactObjectIdFields": { "const": true },
+        "concreteObjectIds": { "const": true },
+        "exactEvidenceModes": { "const": true },
+        "exactStatusCodes": { "const": true }
+      }
+    },
+    "provenance": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "receipt", "manifest", "template", "authorization"],
+      "properties": {
+        "status": { "const": "preflight_verified" },
+        "receipt": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schemaVersion", "checkId", "checkedAt"],
+          "properties": {
+            "schemaVersion": { "enum": ["1.1.0", "1.2.0"] },
+            "checkId": { "type": "string", "pattern": "^bola_check_[0-9a-f]{16}$" },
+            "checkedAt": { "$ref": "#/$defs/dateTime" }
+          }
+        },
+        "manifest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["schemaVersion", "digestSha256", "environment"],
+          "properties": {
+            "schemaVersion": { "const": "1.0.0" },
+            "digestSha256": { "$ref": "#/$defs/digest" },
+            "environment": { "enum": ["local", "test", "staging"] }
+          }
+        },
+        "template": { "$ref": "#/$defs/templateProvenance" },
+        "authorization": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["summary", "caseIds"],
+          "properties": {
+            "summary": { "$ref": "#/$defs/summary" },
+            "caseIds": {
+              "type": "array",
+              "minItems": 1,
+              "maxItems": 9,
+              "uniqueItems": true,
+              "items": { "$ref": "#/$defs/caseId" }
+            }
+          }
+        }
+      }
+    },
+    "coverage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["domain", "engine", "status", "required"],
+      "properties": {
+        "domain": { "const": "active-bola-verification" },
+        "engine": { "const": "aisec-bola-verifier" },
+        "status": { "enum": ["complete", "partial"] },
+        "required": { "const": true },
+        "reason": {
+          "const": "At least one configured case lacked a valid owner baseline or a conclusive cross-account response"
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "status": { "const": "partial" } },
+            "required": ["status"]
+          },
+          "then": {
+            "properties": {
+              "reason": {
+                "const": "At least one configured case lacked a valid owner baseline or a conclusive cross-account response"
+              }
+            },
+            "required": ["reason"]
+          },
+          "else": { "properties": { "reason": false } }
+        }
+      ]
+    },
+    "caseResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "caseId", "method", "path", "testDataLabel", "ownerAccount",
+        "otherAccount", "status", "reason"
+      ],
+      "properties": {
+        "caseId": { "$ref": "#/$defs/caseId" },
+        "method": { "enum": ["GET", "POST"] },
+        "path": { "type": "string", "minLength": 2, "maxLength": 2048, "pattern": "^/[^/]" },
+        "testDataLabel": { "type": "string", "pattern": "^aisec[-_][A-Za-z0-9_-]{3,100}$" },
+        "ownerAccount": { "$ref": "#/$defs/accountLabel" },
+        "otherAccount": { "$ref": "#/$defs/accountLabel" },
+        "status": { "enum": ["vulnerable", "protected", "inconclusive", "not_run"] },
+        "ownerStatus": { "type": "integer", "minimum": 0, "maximum": 599 },
+        "otherStatus": { "type": "integer", "minimum": 0, "maximum": 599 },
+        "reason": { "type": "string", "minLength": 1, "maxLength": 1000 }
+      }
+    },
+    "sourceLocation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "format": "uri", "pattern": "^https?://", "maxLength": 4096 },
+        "snippet": { "type": "string", "maxLength": 1000 }
+      }
+    },
+    "signal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "fingerprint", "engine", "ruleId", "title", "description",
+        "severity", "evidenceLevel", "confidence", "locations", "cwe", "owasp",
+        "tags", "remediation", "metadata"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^sig_[0-9a-f]{16}$" },
+        "fingerprint": { "$ref": "#/$defs/digest" },
+        "engine": { "const": "aisec-bola-verifier" },
+        "ruleId": { "const": "web.bola.cross-account-object-access" },
+        "title": { "const": "A second account can read another account's object" },
+        "description": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "severity": { "const": "high" },
+        "evidenceLevel": { "const": "verified" },
+        "confidence": { "const": "high" },
+        "locations": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": { "$ref": "#/$defs/sourceLocation" }
+        },
+        "cwe": { "const": ["CWE-639"] },
+        "owasp": { "const": ["A01:2021-Broken Access Control", "API1:2023-Broken Object Level Authorization"] },
+        "tags": { "const": ["web", "api", "authorization", "bola", "idor", "active-authorized"] },
+        "remediation": { "type": "string", "minLength": 1, "maxLength": 2000 },
+        "metadata": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["caseId", "method", "ownerAccount", "otherAccount", "testDataLabel"],
+          "properties": {
+            "caseId": { "$ref": "#/$defs/caseId" },
+            "method": { "enum": ["GET", "POST"] },
+            "ownerAccount": { "$ref": "#/$defs/accountLabel" },
+            "otherAccount": { "$ref": "#/$defs/accountLabel" },
+            "testDataLabel": { "type": "string", "pattern": "^aisec[-_][A-Za-z0-9_-]{3,100}$" }
+          }
+        }
+      }
+    }
+  }
+}

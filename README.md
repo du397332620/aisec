@@ -692,7 +692,7 @@ accepted suppressions for compatible consumers.
 | Interface verification queue | `interface-queue` | Converts exact route-security cards into a strict bounded zero-request plan; only open object-authorization routes with proven source, recorded object IDs and BOLA-compatible read semantics become candidates, while every other reviewed route gets machine-readable exclusion reasons |
 | Static-to-active BOLA planning | `draft-bola` | Legacy mode converts all open static BOLA/IDOR signals into a non-executable 1.0 worksheet; selected 1.1 mode accepts one to nine same-report interface candidate IDs and binds queue, exact route, source signal and BOLA candidate. Both keep object IDs/markers as placeholders and send no requests |
 | BOLA authorization preflight | `prepare-bola` / `check-bola` | Converts only a selected 1.1 worksheet into a strict, deliberately non-executable template, then validates a separately completed manifest offline. Passing that unchanged template back to `check-bola` proves exact case order, method, route-template, object-field and evidence-mode binding and produces a saved 1.2 receipt. Each input is limited to 1 MiB; no credential values are read and no DNS or requests occur |
-| Two-account BOLA verification | `verify-bola` | Requires the same manifest, unchanged template, matching bound 1.1/1.2 receipt and explicit confirmation before credential access or networking; exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
+| Two-account BOLA verification | `verify-bola` | Requires the same manifest, unchanged template, matching bound 1.1/1.2 receipt and explicit confirmation before credential access or networking; emits a strict `BolaVerificationReport 1.1.0` bound to sanitized receipt/template provenance and ordered cases; exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
 | Agent integration | stdio MCP | Local read-oriented inspection, bounded rule-pack selector previews, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
 | Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; terminal/HTML can group opted-in repeated evidence, derive exact-route security cards and summarize Trivy dependency/IaC/secret evidence by recorded relationship and fix context while retaining every canonical finding; terminal/HTML/CI Markdown keep unattributed FastAPI dataflow visible with bounded reason summaries, and rescans compare exact route/category gaps as newly observed, remaining, resolved or not rechecked without treating suppression as a fix; deployment exposure stays explicitly project-level unless service-to-route ownership is proven; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
 
@@ -974,9 +974,26 @@ aisec verify-bola \
 Exit `1` means verified cross-account access, exit `2` means at least one case
 was inconclusive, exit `0` means every listed case was conclusively protected,
 and exit `64` means the manifest/template/check handoff, credentials or login
-setup was invalid. The
-report contains account labels and case outcomes, but never usernames,
-passwords, bearer tokens or response bodies.
+setup was invalid. The active path emits a strict `BolaVerificationReport
+1.1.0`. Its `provenance` record binds the result to the accepted receipt ID and
+time, canonical manifest digest/environment, template version/ID/digest,
+draft/scan/project/queue IDs, fixed binding assertions, authorization summary
+and ordered case IDs. The record intentionally omits artifact paths, target and
+route values, request bodies, object IDs, fixture values, credential environment
+names/values, login identities, bearer tokens, response bodies and response
+evidence values. The surrounding report retains the authorized target, account
+labels and case outcomes needed for operator review, but never usernames,
+passwords, bearer tokens or response bodies. Arbitrary requester error text is
+also replaced with a fixed safe outcome reason.
+
+The internal low-level executor emits a validated legacy
+`BolaVerificationReport 1.0.0` without `provenance`, because it does not consume
+the operator-owned manifest/template/receipt handoff. It is deliberately not
+exported from the package root. Only the public `verifyBola` API and the matching CLI path can emit 1.1 and
+claim `preflight_verified`. The validator recomputes the receipt identity and
+checks case order, counts, methods, request budget, coverage and verified-signal
+relationships. These IDs and digests are consistency evidence, not a signature,
+freshness proof or author/origin authentication.
 
 ## Findings, suppressions and fixes
 
@@ -1039,7 +1056,7 @@ as resolved, with no new high/critical finding.
 
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, CI
 reports, fix contracts, the rule catalog, declarative rule packs and their selector previews, trusted security policies, passive-web
-authorization, the bounded `InterfaceVerificationQueue 1.0.0`, `BolaDraftPlan 1.1.0` and legacy 1.0 BOLA draft plans, `BolaAuthorizationTemplate 1.1.0`, `BolaAuthorizationCheck 1.2.0`, its strict bound 1.1 predecessor, their strict legacy 1.0 forms, and BOLA authorization manifests in
+authorization, the bounded `InterfaceVerificationQueue 1.0.0`, `BolaDraftPlan 1.1.0` and legacy 1.0 BOLA draft plans, `BolaAuthorizationTemplate 1.1.0`, `BolaAuthorizationCheck 1.2.0`, its strict bound 1.1 predecessor, their strict legacy 1.0 forms, BOLA authorization manifests, and `BolaVerificationReport 1.1.0` with its strict legacy 1.0 form in
 [`schemas/`](schemas/). `SecurityPolicy 1.1.0` adds the optional additive
 route-security baseline gate and strictly preserves legacy `1.0.0` policies.
 `RulePack 1.1.0` adds bounded required-literal absence
@@ -1056,6 +1073,10 @@ record. Version 1.2 changes only the active handoff instructions so the saved
 receipt, unchanged template and manifest are all required; strict bound 1.1
 receipts remain readable. An unbound check deliberately remains version 1.0,
 cannot claim template fields and is ineligible for active verification.
+`BolaVerificationReport 1.1.0` requires sanitized `preflight_verified`
+receipt/template provenance and cross-validates it against ordered results;
+strict 1.0 reports remain readable only without that field and cannot claim the
+active handoff was checked.
 `CiReport 1.1.0` added rule-pack records, `CiReport 1.2.0` added the required
 FastAPI route-attribution summary, `CiReport 1.3.0` added a required bounded
 route-security comparison whenever baseline counts are present, and `CiReport
@@ -1082,6 +1103,7 @@ The package also exports `validateScanReport`, `validateCiReport`,
 `createSelectedBolaDraftPlan`, `draftBola`, `createBolaAuthorizationTemplate`,
 `prepareBola`, `loadBolaAuthorizationTemplate`, `loadBolaAuthorizationCheck`,
 `checkBolaAuthorization`, `checkBola`, `assertBolaVerificationPreflight`,
+`verifyBola`, `validateBolaVerificationReport`,
 `validateAuthorizationManifestSchema`, `validateBolaDraftPlan`,
 `validateBolaAuthorizationTemplate`, `validateBolaAuthorizationCheck` and
 `validateBolaAuthorizationManifestSchema` for integrations that consume these

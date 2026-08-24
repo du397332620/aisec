@@ -103,6 +103,7 @@ function completedBolaManifest(template) {
 }
 
 try {
+  await access(join(repositoryRoot, "schemas", "bola-verification-report.schema.json"));
   const readme = await readFile(join(repositoryRoot, "README.md"), "utf8");
   for (const required of [
     "git clone https://github.com/du397332620/aisec.git",
@@ -122,6 +123,7 @@ try {
     "aisec check-bola",
     "BolaAuthorizationTemplate 1.1.0",
     "BolaAuthorizationCheck 1.2.0",
+    "BolaVerificationReport 1.1.0",
     "--template bola-authorization-template.json",
     "RulePack 1.1.0",
     "RulePackPreview 1.0.0",
@@ -163,6 +165,7 @@ try {
   assert.match(help, /--confirm-policy-suppressions/);
   assert.match(help, /terminal\|json\|html\|sarif\|ci\|github\|markdown/);
   assert.match(help, /verify-bola --authorization <manifest\.yml> --template <same-template\.json> --check <authorization-check\.json> --confirm/);
+  assert.match(help, /strict 1\.1 result binds sanitized receipt\/template provenance/u);
   assert.match(help, /interface-queue --scan <scan-id\|report\.json>/);
   assert.match(help, /draft-bola --scan <scan-id\|report\.json>.*--candidate interface-candidate-id/);
   assert.match(help, /prepare-bola --draft <selected-bola-draft\.json>/);

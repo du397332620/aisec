@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import type { BolaAuthorizationManifest } from "../src/schema.js";
+import { validateBolaVerificationReport } from "../src/core/schema-validation.js";
 import { validateBolaAuthorization } from "../src/web/authorization.js";
 import { executeBolaVerification, verifyBola, type BolaRequester } from "../src/web/bola.js";
 
@@ -147,6 +148,9 @@ test("BOLA verifier reports verified cross-account object access without leaking
   const manifest = validateBolaAuthorization(manifestValue);
   const { requester, seen } = requesterFor({ status: 200, body: { data: { id: 12345, project_name: "aisec-fixture-project-a", secret: "owner data" } } });
   const report = await executeBolaVerification(manifest, credentials, requester);
+  assert.equal(report.schemaVersion, "1.0.0");
+  assert.ok(!report.provenance);
+  assert.equal(validateBolaVerificationReport(report), report);
   assert.equal(report.requestCount, 4);
   assert.equal(report.coverage[0]?.status, "complete");
   assert.equal(report.cases[0]?.status, "vulnerable");
@@ -156,6 +160,68 @@ test("BOLA verifier reports verified cross-account object access without leaking
   assert.equal(seen[3]?.authorization, "Bearer other-token");
   const serialized = JSON.stringify(report);
   for (const secret of [...Object.values(credentials), "owner-token", "other-token", "owner data"]) assert.ok(!serialized.includes(secret));
+});
+
+test("legacy BOLA reports are strict and cannot claim active preflight provenance", async () => {
+  const manifest = validateBolaAuthorization(manifestValue);
+  const report = await executeBolaVerification(manifest, credentials, requesterFor({
+    status: 200,
+    body: { data: { project_name: "aisec-fixture-project-a" } },
+  }).requester);
+  assert.equal(validateBolaVerificationReport(report), report);
+
+  assert.throws(
+    () => validateBolaVerificationReport({ ...report, schemaVersion: "1.1.0" }),
+    /BolaVerificationReport.*provenance/u,
+  );
+  assert.throws(
+    () => validateBolaVerificationReport({ ...report, provenance: { status: "preflight_verified" } }),
+    /BolaVerificationReport.*provenance/u,
+  );
+  assert.throws(
+    () => validateBolaVerificationReport({ ...report, responseBody: "must-not-be-recorded" }),
+    /BolaVerificationReport.*additional properties/u,
+  );
+
+  const duplicateCase = structuredClone(report);
+  duplicateCase.cases.push(structuredClone(duplicateCase.cases[0]!));
+  assert.throws(() => validateBolaVerificationReport(duplicateCase), /case IDs must be unique/u);
+
+  const missingSignal = structuredClone(report);
+  missingSignal.signals = [];
+  assert.throws(() => validateBolaVerificationReport(missingSignal), /every vulnerable case requires one verified signal/u);
+
+  const mismatchedSignal = structuredClone(report);
+  mismatchedSignal.signals[0]!.metadata!.caseId = "different-case";
+  assert.throws(() => validateBolaVerificationReport(mismatchedSignal), /one-to-one to vulnerable cases/u);
+
+  const forgedRequestCount = structuredClone(report);
+  forgedRequestCount.requestCount -= 1;
+  assert.throws(() => validateBolaVerificationReport(forgedRequestCount), /request count is inconsistent/u);
+});
+
+test("BOLA report reasons do not retain arbitrary requester error or response text", async () => {
+  const manifest = validateBolaAuthorization(manifestValue);
+  const sentinel = "RAW_RESPONSE_SECRET_7f9134";
+  const requester: BolaRequester = async (input) => {
+    if (input.url.endsWith("/user/login")) {
+      const login = JSON.parse(input.body ?? "{}") as { username?: string };
+      const owner = login.username === "fixture_owner";
+      return jsonResponse(input.url, 200, { data: {
+        access_token: owner ? "owner-token" : "other-token",
+        user_id: owner ? 101 : 202,
+      } });
+    }
+    if (input.headers?.authorization === "Bearer owner-token") {
+      return jsonResponse(input.url, 200, { data: { project_name: "aisec-fixture-project-a" } });
+    }
+    throw new Error(`${sentinel}: ${JSON.stringify({ responseBody: "private customer data" })}`);
+  };
+  const report = await executeBolaVerification(manifest, credentials, requester);
+  assert.equal(report.cases[0]?.status, "inconclusive");
+  assert.equal(report.cases[0]?.reason, "cross-account request failed before a response could be safely evaluated");
+  assert.doesNotMatch(JSON.stringify(report), new RegExp(`${sentinel}|private customer data`, "u"));
+  assert.equal(validateBolaVerificationReport(report), report);
 });
 
 test("BOLA verifier can use a response owner field without storing account identities", async () => {

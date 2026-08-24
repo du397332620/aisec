@@ -10,6 +10,7 @@ import type { BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizati
 import {
   validateBolaAuthorizationCheck,
   validateBolaAuthorizationTemplate,
+  validateBolaVerificationReport,
 } from "../src/core/schema-validation.js";
 import { scanProject } from "../src/core/scan.js";
 import { createSelectedBolaDraftPlan, createBolaDraftPlan } from "../src/web/bola-draft.js";
@@ -693,9 +694,60 @@ test("verify-bola checks bound files before credentials or requests and executes
     environment: credentials,
     requester,
   });
+  assert.equal(report.schemaVersion, "1.1.0");
+  assert.equal(validateBolaVerificationReport(report), report);
+  assert.equal(report.provenance?.status, "preflight_verified");
+  assert.equal(report.provenance?.receipt.schemaVersion, receipt.schemaVersion);
+  assert.equal(report.provenance?.receipt.checkId, receipt.checkId);
+  assert.equal(report.provenance?.receipt.checkedAt, receipt.checkedAt);
+  assert.equal(report.provenance?.manifest.digestSha256, receipt.manifestDigestSha256);
+  assert.equal(report.provenance?.template.schemaVersion, template.schemaVersion);
+  assert.equal(report.provenance?.template.templateId, template.templateId);
+  assert.deepEqual(report.provenance?.authorization.caseIds, receipt.caseIds);
   assert.equal(report.requestCount, 4);
   assert.equal(report.cases[0]?.status, "protected");
   assert.equal(requests, 4);
+  const serializedProvenance = JSON.stringify(report.provenance);
+  assert.doesNotMatch(
+    serializedProvenance,
+    /staging\.binding\.invalid|\/auth\/login|\/private\/object|object_id|912345|AISEC_BOLA|fixture_owner|owner-token|owner-id|forbidden/u,
+  );
+  const serializedReport = JSON.stringify(report);
+  for (const secret of [...Object.values(credentials), "owner-token", "other-token", "owner-id", "other-id", "forbidden"]) {
+    assert.ok(!serializedReport.includes(secret), `active report must not contain ${secret}`);
+  }
+
+  const missingProvenance = structuredClone(report) as typeof report & { provenance?: unknown };
+  delete missingProvenance.provenance;
+  assert.throws(() => validateBolaVerificationReport(missingProvenance), /BolaVerificationReport.*provenance/u);
+  const forgedReceipt = structuredClone(report);
+  forgedReceipt.provenance!.receipt.checkId = "bola_check_0000000000000000";
+  assert.throws(() => validateBolaVerificationReport(forgedReceipt), /receipt identity is inconsistent/u);
+  const forgedCases = structuredClone(report);
+  forgedCases.provenance!.authorization.caseIds = ["different-case"];
+  assert.throws(() => validateBolaVerificationReport(forgedCases), /authorization provenance is inconsistent/u);
+  const forgedBudget = structuredClone(report);
+  forgedBudget.provenance!.authorization.summary.maxRequests = 3;
+  assert.throws(() => validateBolaVerificationReport(forgedBudget), /BolaVerificationReport.*maxRequests|authorization provenance/u);
+  const leakedTokenField = structuredClone(report) as typeof report & {
+    provenance: NonNullable<typeof report.provenance> & { token?: string };
+  };
+  leakedTokenField.provenance.token = "must-not-be-recorded";
+  assert.throws(() => validateBolaVerificationReport(leakedTokenField), /BolaVerificationReport.*additional properties.*token/u);
+
+  await writeFile(receiptPath, `${JSON.stringify(legacyBoundCheck(receipt))}\n`);
+  const legacyReport = await verifyBola(manifestPath, {
+    confirmed: true,
+    templatePath,
+    checkPath: receiptPath,
+    environment: credentials,
+    requester,
+  });
+  assert.equal(legacyReport.schemaVersion, "1.1.0");
+  assert.equal(legacyReport.provenance?.receipt.schemaVersion, "1.1.0");
+  assert.equal(legacyReport.provenance?.receipt.checkId, receipt.checkId);
+  assert.equal(validateBolaVerificationReport(legacyReport), legacyReport);
+  assert.equal(requests, 8);
 });
 
 test("template binding accepts concrete GET route forms and rejects ambiguous route changes", async () => {

@@ -102,4 +102,9 @@ public schemas, placeholder/route rejection tests, CLI/API docs and
 installed-package smoke together. Active `verify-bola` changes must retain the
 required manifest/template/bound-check handoff, accept strict bound check 1.1
 compatibility, reject unbound 1.0 for execution, and complete all receipt
-matching before reading credentials or invoking networking.
+matching before reading credentials or invoking networking. Its active result
+must remain strict `BolaVerificationReport 1.1.0`, include only sanitized
+receipt/template provenance, validate case order/count/budget and signal/result
+relationships, and never copy credentials, tokens, identities, response bodies
+or arbitrary requester errors. Keep legacy report 1.0 readable only without a
+preflight claim, and update the public report schema plus installed API smoke.

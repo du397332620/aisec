@@ -159,6 +159,13 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   before reading credential values, resolving DNS or invoking the requester.
   Receipt IDs/digests are consistency evidence, not a signature, freshness
   proof or origin authentication; keep all three artifacts operator-owned.
+  A successful active run emits strict `BolaVerificationReport 1.1.0` with only
+  sanitized receipt/template provenance. Its validator recomputes receipt
+  identity and requires exact result case order, counts and budget. Artifact
+  paths, target/route/body/object/fixture values, credential names/values,
+  identities, tokens and response bodies are excluded from provenance, and
+  arbitrary requester error text is never copied into case results. Low-level
+  execution remains report 1.0 without provenance and cannot claim this gate.
 - Passive web requests pin a validated DNS answer to the socket and redirects
   must retain the exact authorized origin. Local verification is deliberately
   allowed to reach private addresses; staging/test verification is not.

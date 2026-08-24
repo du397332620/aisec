@@ -2,14 +2,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import type { AuthorizationManifest, BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaDraftPlan, CiReport, FixContract, InterfaceVerificationQueue, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
+import type { AuthorizationManifest, BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaDraftPlan, BolaVerificationReport, CiReport, FixContract, InterfaceVerificationQueue, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
 import { ROUTE_SECURITY_RULES, routeSecurityIssueKey } from "./route-security.js";
 import { evaluateRouteSecurityBaselineGate } from "./route-security-gate.js";
 import { safeRelativePath } from "../reporters/safety.js";
 import { classifyBolaStaticRoute } from "../web/bola-policy.js";
 import { stableId } from "./utils.js";
 
-type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "InterfaceVerificationQueue" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
+type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "BolaVerificationReport" | "InterfaceVerificationQueue" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
 
 function loadSchema(filename: string): object {
   const path = fileURLToPath(new URL(`../../../schemas/${filename}`, import.meta.url));
@@ -28,6 +28,7 @@ const bolaAuthorizationManifestValidator = ajv.compile(loadSchema("bola-authoriz
 const bolaAuthorizationTemplateValidator = ajv.compile(loadSchema("bola-authorization-template.schema.json"));
 const bolaAuthorizationCheckValidator = ajv.compile(loadSchema("bola-authorization-check.schema.json"));
 const bolaDraftPlanValidator = ajv.compile(loadSchema("bola-draft.schema.json"));
+const bolaVerificationReportValidator = ajv.compile(loadSchema("bola-verification-report.schema.json"));
 const interfaceVerificationQueueValidator = ajv.compile(loadSchema("interface-verification-queue.schema.json"));
 const ruleCatalogValidator = ajv.compile(loadSchema("rule-catalog.schema.json"));
 const rulePackValidator = ajv.compile(loadSchema("rule-pack.schema.json"));
@@ -539,6 +540,106 @@ export function validateBolaAuthorizationCheck(value: unknown): BolaAuthorizatio
     throw new Error("BolaAuthorizationCheck stable check ID is inconsistent");
   }
   return check;
+}
+
+export function validateBolaVerificationReport(value: unknown): BolaVerificationReport {
+  const report = assertSchema<BolaVerificationReport>(
+    "BolaVerificationReport",
+    bolaVerificationReportValidator,
+    value,
+    "1.1.0",
+  );
+  if (Date.parse(report.completedAt) < Date.parse(report.startedAt)) {
+    throw new Error("BolaVerificationReport completedAt precedes startedAt");
+  }
+
+  const caseIds = new Set<string>();
+  const casesById = new Map<string, BolaVerificationReport["cases"][number]>();
+  for (const item of report.cases) {
+    if (caseIds.has(item.caseId)) throw new Error("BolaVerificationReport case IDs must be unique");
+    if (item.ownerAccount === item.otherAccount
+      || !report.accounts.includes(item.ownerAccount)
+      || !report.accounts.includes(item.otherAccount)) {
+      throw new Error(`BolaVerificationReport case ${item.caseId} account roles are inconsistent`);
+    }
+    caseIds.add(item.caseId);
+    casesById.set(item.caseId, item);
+  }
+
+  const incomplete = report.cases.some((item) => item.status === "inconclusive" || item.status === "not_run");
+  const expectedCoverage = incomplete ? "partial" : "complete";
+  if (report.coverage[0]?.status !== expectedCoverage) {
+    throw new Error("BolaVerificationReport coverage is inconsistent with case outcomes");
+  }
+  const expectedRequestCount = 2 + report.cases.length + report.cases.filter((item) => (
+    item.otherStatus !== undefined
+    || item.reason === "cross-account request failed before a response could be safely evaluated"
+  )).length;
+  if (report.requestCount !== expectedRequestCount) {
+    throw new Error("BolaVerificationReport request count is inconsistent with case execution");
+  }
+  if (report.cases.some((item) => (
+    (item.status === "vulnerable" || item.status === "protected")
+    && (item.ownerStatus === undefined || item.otherStatus === undefined)
+  ))) {
+    throw new Error("BolaVerificationReport conclusive cases require both response status codes");
+  }
+
+  const signaledCases = new Set<string>();
+  for (const signal of report.signals) {
+    const metadata = signal.metadata;
+    const caseId = typeof metadata?.caseId === "string" ? metadata.caseId : "";
+    const item = casesById.get(caseId);
+    if (!item || item.status !== "vulnerable" || signaledCases.has(caseId)) {
+      throw new Error("BolaVerificationReport signals must map one-to-one to vulnerable cases");
+    }
+    if (metadata?.method !== item.method
+      || metadata?.ownerAccount !== item.ownerAccount
+      || metadata?.otherAccount !== item.otherAccount
+      || metadata?.testDataLabel !== item.testDataLabel
+      || signal.locations[0]?.path !== new URL(item.path, report.target).toString()) {
+      throw new Error(`BolaVerificationReport signal provenance is inconsistent for case ${caseId}`);
+    }
+    signaledCases.add(caseId);
+  }
+  if (report.cases.some((item) => item.status === "vulnerable" && !signaledCases.has(item.caseId))) {
+    throw new Error("BolaVerificationReport every vulnerable case requires one verified signal");
+  }
+
+  const provenance = report.provenance;
+  if (!provenance) return report;
+  const summary = provenance.authorization.summary;
+  const orderedCaseIds = report.cases.map((item) => item.caseId);
+  if (summary.cases !== report.cases.length
+    || summary.requiredRequests !== 2 + summary.cases * 2
+    || summary.maxRequests < summary.requiredRequests
+    || summary.getCases !== report.cases.filter((item) => item.method === "GET").length
+    || summary.postCases !== report.cases.filter((item) => item.method === "POST").length
+    || summary.getCases + summary.postCases !== summary.cases
+    || summary.testDataLabelCases + summary.ownerIdentityCases !== summary.cases
+    || provenance.template.matchedCases !== summary.cases
+    || report.requestCount > summary.maxRequests
+    || provenance.authorization.caseIds.length !== orderedCaseIds.length
+    || provenance.authorization.caseIds.some((caseId, index) => caseId !== orderedCaseIds[index])) {
+    throw new Error("BolaVerificationReport authorization provenance is inconsistent with results");
+  }
+  const expectedCheckId = stableId(
+    "bola_check",
+    provenance.manifest.digestSha256,
+    provenance.template.templateId,
+    provenance.template.templateDigestSha256,
+    provenance.template.draftId,
+    provenance.template.scanId,
+    provenance.template.projectId,
+    provenance.template.queueId,
+    provenance.template.queueCoverage,
+    provenance.template.queueCoverageScope,
+    String(provenance.template.matchedCases),
+  );
+  if (provenance.receipt.checkId !== expectedCheckId) {
+    throw new Error("BolaVerificationReport receipt identity is inconsistent");
+  }
+  return report;
 }
 
 export function validateBolaDraftPlan(value: unknown): BolaDraftPlan {
