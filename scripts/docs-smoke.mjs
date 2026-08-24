@@ -59,6 +59,10 @@ try {
     "aisec interface-queue",
     "InterfaceVerificationQueue 1.0.0",
     "BolaDraftPlan 1.1.0",
+    "aisec prepare-bola",
+    "aisec check-bola",
+    "BolaAuthorizationTemplate 1.0.0",
+    "BolaAuthorizationCheck 1.0.0",
     "RulePack 1.1.0",
     "RulePackPreview 1.0.0",
     "SecurityPolicy 1.1.0",
@@ -101,6 +105,8 @@ try {
   assert.match(help, /verify-bola --authorization <manifest\.yml> --confirm/);
   assert.match(help, /interface-queue --scan <scan-id\|report\.json>/);
   assert.match(help, /draft-bola --scan <scan-id\|report\.json>.*--candidate interface-candidate-id/);
+  assert.match(help, /prepare-bola --draft <selected-bola-draft\.json>/);
+  assert.match(help, /check-bola --authorization <completed-manifest\.yml>/);
   const doctor = report(run(["doctor", "--json"]), "doctor");
   assert.equal(doctor.node, process.version);
   assert.deepEqual(doctor.engines.map((item) => item.source), ["invalid", "invalid", "invalid"]);
@@ -177,6 +183,29 @@ try {
   assert.equal(selectedDraft.selection.queueId, selectedQueue.queueId);
   assert.equal(selectedDraft.selection.bindings[0].route, selectedQueue.candidates[0].route);
   assert.equal(selectedDraft.summary.total, 1);
+  const selectedDraftPath = join(temporary, "selected-bola-draft.json");
+  await writeFile(selectedDraftPath, `${JSON.stringify(selectedDraft)}\n`);
+  const authorizationTemplate = report(run([
+    "prepare-bola",
+    "--draft",
+    selectedDraftPath,
+  ]), "BOLA authorization template");
+  assert.equal(authorizationTemplate.status, "placeholders_required");
+  assert.equal(authorizationTemplate.networkRequests, 0);
+  assert.equal(authorizationTemplate.selection.queueId, selectedQueue.queueId);
+  assert.equal(authorizationTemplate.bindings[0].route, selectedQueue.candidates[0].route);
+  assert.equal(authorizationTemplate.manifest.targetBaseUrl, "<SET_AUTHORIZED_BASE_URL>");
+
+  const authorizationCheck = report(run([
+    "check-bola",
+    "--authorization",
+    "examples/authorization.bola.local.yml",
+  ]), "offline BOLA authorization check");
+  assert.equal(authorizationCheck.status, "valid_review_required");
+  assert.equal(authorizationCheck.networkRequests, 0);
+  assert.equal(authorizationCheck.environmentValuesRead, 0);
+  assert.equal(authorizationCheck.dnsLookups, 0);
+  assert.doesNotMatch(JSON.stringify(authorizationCheck), /127\.0\.0\.1|\/project\/detail|project_id/u);
   const duplicateSelection = run([
     "draft-bola",
     "--scan",

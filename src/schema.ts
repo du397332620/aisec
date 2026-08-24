@@ -4,6 +4,8 @@ export const CI_REPORT_SCHEMA_VERSION = "1.4.0" as const;
 export const RULE_PACK_PREVIEW_SCHEMA_VERSION = "1.0.0" as const;
 export const INTERFACE_VERIFICATION_QUEUE_SCHEMA_VERSION = "1.0.0" as const;
 export const BOLA_DRAFT_SCHEMA_VERSION = "1.1.0" as const;
+export const BOLA_AUTHORIZATION_TEMPLATE_SCHEMA_VERSION = "1.0.0" as const;
+export const BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION = "1.0.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type EvidenceLevel = "verified" | "static_confirmed" | "inferred";
@@ -784,6 +786,111 @@ export interface BolaDraftPlan {
   };
   prerequisites: string[];
   nextCommand: "aisec verify-bola --authorization <reviewed-manifest.yml> --confirm";
+  disclaimer: string;
+}
+
+export interface BolaAuthorizationTemplateCase {
+  id: string;
+  method: "GET" | "POST";
+  path: string;
+  readOnly: true;
+  testDataLabel: string;
+  ownerAccount: "owner";
+  otherAccount: "other";
+  body?: Record<string, string>;
+  expected: {
+    match: "testDataLabel";
+    statusCodes: [200];
+    jsonPath: "<SET_JSON_PATH_TO_SYNTHETIC_MARKER>";
+    value: string;
+  } | {
+    match: "ownerIdentity";
+    statusCodes: [200];
+    jsonPath: "<REVIEW_JSON_PATH_TO_SERVER_DERIVED_OWNER_FIELD>";
+  };
+}
+
+export interface BolaAuthorizationTemplate {
+  schemaVersion: typeof BOLA_AUTHORIZATION_TEMPLATE_SCHEMA_VERSION;
+  templateId: string;
+  draftId: string;
+  scanId: string;
+  projectId: string;
+  generatedAt: string;
+  status: "placeholders_required";
+  networkRequests: 0;
+  selection: {
+    mode: "interface_queue";
+    queueId: string;
+    queueCoverage: "complete" | "partial";
+    queueCoverageScope: "observed_route_cards_only";
+    candidateIds: string[];
+  };
+  manifest: {
+    schemaVersion: typeof SCHEMA_VERSION;
+    targetBaseUrl: "<SET_AUTHORIZED_BASE_URL>";
+    environment: "<SET_LOCAL_TEST_OR_STAGING>";
+    ownedBy: "<SET_AUTHORIZATION_OWNER>";
+    allowedHosts: ["<SET_EXACT_AUTHORIZED_HOST>"];
+    dataPrefix: "<SET_AISEC_DATA_PREFIX>";
+    maxRequests: number;
+    accounts: [
+      { label: "owner"; usernameEnv: "AISEC_BOLA_OWNER_USERNAME"; passwordEnv: "AISEC_BOLA_OWNER_PASSWORD" },
+      { label: "other"; usernameEnv: "AISEC_BOLA_OTHER_USERNAME"; passwordEnv: "AISEC_BOLA_OTHER_PASSWORD" },
+    ];
+    login: {
+      path: "<SET_LOGIN_PATH>";
+      usernameField: "<SET_LOGIN_USERNAME_FIELD>";
+      passwordField: "<SET_LOGIN_PASSWORD_FIELD>";
+      successStatusCodes: [200];
+      tokenJsonPath: "<SET_LOGIN_TOKEN_JSON_PATH>";
+      identityJsonPath: "<SET_LOGIN_IDENTITY_JSON_PATH>";
+      tokenPrefix: "Bearer";
+    };
+    cases: BolaAuthorizationTemplateCase[];
+    acknowledgment: "<REVIEW_AND_SET_AUTHORIZATION_ACKNOWLEDGMENT>";
+  };
+  bindings: Array<{
+    caseId: string;
+    interfaceCandidateId: string;
+    bolaCandidateId: string;
+    signalId: string;
+    route: string;
+    objectIdFields: string[];
+    evidenceMode: BolaDraftEvidenceMode;
+    reviewRequirements: {
+      concretePrecreatedObjectId: true;
+      readOnlySemantics: true;
+      responseEvidence: true;
+    };
+  }>;
+  reviewChecklist: string[];
+  nextCommand: "aisec check-bola --authorization <completed-manifest.yml>";
+  disclaimer: string;
+}
+
+export interface BolaAuthorizationCheck {
+  schemaVersion: typeof BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION;
+  checkId: string;
+  checkedAt: string;
+  status: "valid_review_required";
+  manifestDigestSha256: string;
+  environment: "local" | "test" | "staging";
+  summary: {
+    cases: number;
+    requiredRequests: number;
+    maxRequests: number;
+    getCases: number;
+    postCases: number;
+    testDataLabelCases: number;
+    ownerIdentityCases: number;
+  };
+  caseIds: string[];
+  networkRequests: 0;
+  environmentValuesRead: 0;
+  dnsLookups: 0;
+  reviewRequired: string[];
+  nextCommand: "aisec verify-bola --authorization <same-reviewed-manifest.yml> --confirm";
   disclaimer: string;
 }
 

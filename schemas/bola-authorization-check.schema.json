@@ -1,0 +1,51 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/bola-authorization-check-1.0.0.json",
+  "title": "AIsec BOLA Authorization Check 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "checkId", "checkedAt", "status", "manifestDigestSha256", "environment", "summary", "caseIds", "networkRequests", "environmentValuesRead", "dnsLookups", "reviewRequired", "nextCommand", "disclaimer"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "checkId": { "type": "string", "pattern": "^bola_check_[0-9a-f]{16}$" },
+    "checkedAt": { "type": "string", "format": "date-time" },
+    "status": { "const": "valid_review_required" },
+    "manifestDigestSha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "environment": { "enum": ["local", "test", "staging"] },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["cases", "requiredRequests", "maxRequests", "getCases", "postCases", "testDataLabelCases", "ownerIdentityCases"],
+      "properties": {
+        "cases": { "type": "integer", "minimum": 1, "maximum": 9 },
+        "requiredRequests": { "type": "integer", "minimum": 4, "maximum": 20 },
+        "maxRequests": { "type": "integer", "minimum": 4, "maximum": 20 },
+        "getCases": { "type": "integer", "minimum": 0, "maximum": 9 },
+        "postCases": { "type": "integer", "minimum": 0, "maximum": 9 },
+        "testDataLabelCases": { "type": "integer", "minimum": 0, "maximum": 9 },
+        "ownerIdentityCases": { "type": "integer", "minimum": 0, "maximum": 9 }
+      }
+    },
+    "caseIds": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 9,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9_-]{0,63}$" }
+    },
+    "networkRequests": { "const": 0 },
+    "environmentValuesRead": { "const": 0 },
+    "dnsLookups": { "const": 0 },
+    "reviewRequired": {
+      "const": [
+        "Confirm the exact non-production target and written authorization with the named owner.",
+        "Provide two distinct low-privilege accounts through the declared environment variable names.",
+        "Confirm every object identifier references only a pre-created synthetic owner fixture; never enumerate identifiers.",
+        "Confirm every case is read-only and its response evidence is server-derived rather than request-echoed.",
+        "Run verify-bola with --confirm only after this manual review."
+      ]
+    },
+    "nextCommand": { "const": "aisec verify-bola --authorization <same-reviewed-manifest.yml> --confirm" },
+    "disclaimer": { "const": "This offline check validates manifest structure and declared safety constraints only. It performs no environment-value reads, DNS lookups or network requests and does not prove authorization, reachability, protection or vulnerability." }
+  }
+}

@@ -87,3 +87,12 @@ explicit queue/interface-candidate/route/signal/BOLA-candidate binding. Unknown,
 duplicate, omitted, multi-source or truncated-evidence selections must fail
 closed; never accept target hosts, credentials, concrete object IDs, external
 queue files or automatic verifier execution.
+
+BOLA preflight changes must keep `prepare-bola` and `check-bola` completely
+offline. The template must remain invalid as an active manifest until every
+critical instruction is replaced, retain one exact binding per selected case,
+and accept only bounded selected 1.1 JSON. The checker may inspect declared
+environment-variable names but must never read their values, resolve DNS, open
+a socket or invoke the requester. Its output must stay sanitized and explicitly
+review-required. Update both public schemas, placeholder/route rejection tests,
+CLI/API docs and installed-package smoke together.

@@ -135,6 +135,17 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   permits one to nine unique emitted candidates, requires one complete source
   without truncated finding references, binds queue/route/signal/candidate IDs,
   and still emits placeholders without resolving a host or sending a request.
+- `prepare-bola` accepts only a selected 1.1 draft JSON file of at most 1 MiB.
+  It preserves exact queue/route/evidence bindings in a strict wrapper whose
+  nested authorization skeleton retains critical instruction placeholders and
+  therefore cannot be executed. It reads no credentials, resolves no DNS and
+  sends no request.
+- `check-bola` applies the normal strict BOLA manifest schema and semantic policy
+  offline to a file of at most 1 MiB. It rejects residual instruction markers
+  and framework route parameters before any credential lookup; its strict
+  output omits targets, routes, bodies, object IDs, evidence values and
+  credential names/values. A valid check remains `review_required`, not proof
+  of authorization, reachability, protection or vulnerability.
 - Passive web requests pin a validated DNS answer to the socket and redirects
   must retain the exact authorized origin. Local verification is deliberately
   allowed to reach private addresses; staging/test verification is not.
@@ -143,6 +154,8 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   mutation-like paths, redirects, object enumeration and credential values in
   manifests or reports. Query-style POST routes remain an explicit trusted
   manifest assertion and should be executed only against disposable fixtures.
+  Confirmed active verification also rejects any residual instruction or route
+  parameter placeholder rather than sending it literally.
 
 ## Current limitations
 

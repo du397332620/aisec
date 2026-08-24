@@ -1,0 +1,178 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/bola-authorization-template-1.0.0.json",
+  "title": "AIsec BOLA Authorization Template 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "templateId", "draftId", "scanId", "projectId", "generatedAt", "status", "networkRequests", "selection", "manifest", "bindings", "reviewChecklist", "nextCommand", "disclaimer"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "templateId": { "type": "string", "pattern": "^bola_template_[0-9a-f]{16}$" },
+    "draftId": { "type": "string", "pattern": "^bola_draft_[0-9a-f]{16}$" },
+    "scanId": { "type": "string", "pattern": "^scan_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "projectId": { "type": "string", "pattern": "^project_[0-9a-f]{16}$" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "status": { "const": "placeholders_required" },
+    "networkRequests": { "const": 0 },
+    "selection": { "$ref": "#/$defs/selection" },
+    "manifest": { "$ref": "#/$defs/manifest" },
+    "bindings": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 9,
+      "items": { "$ref": "#/$defs/binding" }
+    },
+    "reviewChecklist": {
+      "const": [
+        "Confirm the exact non-production target and written authorization with the named owner.",
+        "Create two distinct low-privilege accounts and pre-created synthetic owner fixtures; never enumerate identifiers.",
+        "Replace every target, login, fixture, route/body and response-evidence placeholder after reviewing each binding.",
+        "Confirm every case is read-only and ownerIdentity evidence is server-derived rather than request-echoed.",
+        "Copy only the completed manifest object to a separate file and run check-bola before any active verification."
+      ]
+    },
+    "nextCommand": { "const": "aisec check-bola --authorization <completed-manifest.yml>" },
+    "disclaimer": { "const": "This template contains unresolved instructions and is intentionally not executable. It performs no network requests and does not grant authorization or prove a vulnerability." }
+  },
+  "$defs": {
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode", "queueId", "queueCoverage", "queueCoverageScope", "candidateIds"],
+      "properties": {
+        "mode": { "const": "interface_queue" },
+        "queueId": { "type": "string", "pattern": "^interface_queue_[0-9a-f]{16}$" },
+        "queueCoverage": { "enum": ["complete", "partial"] },
+        "queueCoverageScope": { "const": "observed_route_cards_only" },
+        "candidateIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 9,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^interface_candidate_[0-9a-f]{16}$" }
+        }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "targetBaseUrl", "environment", "ownedBy", "allowedHosts", "dataPrefix", "maxRequests", "accounts", "login", "cases", "acknowledgment"],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "targetBaseUrl": { "const": "<SET_AUTHORIZED_BASE_URL>" },
+        "environment": { "const": "<SET_LOCAL_TEST_OR_STAGING>" },
+        "ownedBy": { "const": "<SET_AUTHORIZATION_OWNER>" },
+        "allowedHosts": { "const": ["<SET_EXACT_AUTHORIZED_HOST>"] },
+        "dataPrefix": { "const": "<SET_AISEC_DATA_PREFIX>" },
+        "maxRequests": { "type": "integer", "minimum": 4, "maximum": 20 },
+        "accounts": {
+          "const": [
+            { "label": "owner", "usernameEnv": "AISEC_BOLA_OWNER_USERNAME", "passwordEnv": "AISEC_BOLA_OWNER_PASSWORD" },
+            { "label": "other", "usernameEnv": "AISEC_BOLA_OTHER_USERNAME", "passwordEnv": "AISEC_BOLA_OTHER_PASSWORD" }
+          ]
+        },
+        "login": {
+          "const": {
+            "path": "<SET_LOGIN_PATH>",
+            "usernameField": "<SET_LOGIN_USERNAME_FIELD>",
+            "passwordField": "<SET_LOGIN_PASSWORD_FIELD>",
+            "successStatusCodes": [200],
+            "tokenJsonPath": "<SET_LOGIN_TOKEN_JSON_PATH>",
+            "identityJsonPath": "<SET_LOGIN_IDENTITY_JSON_PATH>",
+            "tokenPrefix": "Bearer"
+          }
+        },
+        "cases": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 9,
+          "items": { "$ref": "#/$defs/case" }
+        },
+        "acknowledgment": { "const": "<REVIEW_AND_SET_AUTHORIZATION_ACKNOWLEDGMENT>" }
+      }
+    },
+    "case": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "method", "path", "readOnly", "testDataLabel", "ownerAccount", "otherAccount", "expected"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^case_[0-9a-f]{16}$" },
+        "method": { "enum": ["GET", "POST"] },
+        "path": { "type": "string", "minLength": 2, "maxLength": 2048, "pattern": "^/[^/]" },
+        "readOnly": { "const": true },
+        "testDataLabel": { "type": "string", "pattern": "^<SET_TEST_DATA_LABEL_[0-9]{2}>$" },
+        "ownerAccount": { "const": "owner" },
+        "otherAccount": { "const": "other" },
+        "body": {
+          "type": "object",
+          "maxProperties": 40,
+          "additionalProperties": { "type": "string", "pattern": "^<SET_PRECREATED_OWNER_[A-Z0-9_]+>$" }
+        },
+        "expected": {
+          "oneOf": [
+            { "$ref": "#/$defs/testDataLabelExpected" },
+            { "$ref": "#/$defs/ownerIdentityExpected" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "method": { "const": "POST" } }, "required": ["method"] },
+          "then": { "required": ["body"], "properties": { "body": { "type": "object", "minProperties": 1 } } },
+          "else": { "properties": { "body": false } }
+        }
+      ]
+    },
+    "testDataLabelExpected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["match", "statusCodes", "jsonPath", "value"],
+      "properties": {
+        "match": { "const": "testDataLabel" },
+        "statusCodes": { "const": [200] },
+        "jsonPath": { "const": "<SET_JSON_PATH_TO_SYNTHETIC_MARKER>" },
+        "value": { "type": "string", "pattern": "^<SET_TEST_DATA_LABEL_[0-9]{2}>$" }
+      }
+    },
+    "ownerIdentityExpected": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["match", "statusCodes", "jsonPath"],
+      "properties": {
+        "match": { "const": "ownerIdentity" },
+        "statusCodes": { "const": [200] },
+        "jsonPath": { "const": "<REVIEW_JSON_PATH_TO_SERVER_DERIVED_OWNER_FIELD>" }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["caseId", "interfaceCandidateId", "bolaCandidateId", "signalId", "route", "objectIdFields", "evidenceMode", "reviewRequirements"],
+      "properties": {
+        "caseId": { "type": "string", "pattern": "^case_[0-9a-f]{16}$" },
+        "interfaceCandidateId": { "type": "string", "pattern": "^interface_candidate_[0-9a-f]{16}$" },
+        "bolaCandidateId": { "type": "string", "pattern": "^bola_candidate_[0-9a-f]{16}$" },
+        "signalId": { "type": "string", "pattern": "^sig_[0-9a-f]{16}$" },
+        "route": { "type": "string", "pattern": "^(?:GET|POST) +/[^\\s\\u007f]{0,480}$", "maxLength": 512 },
+        "objectIdFields": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 40,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" }
+        },
+        "evidenceMode": { "enum": ["testDataLabel", "ownerIdentity"] },
+        "reviewRequirements": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["concretePrecreatedObjectId", "readOnlySemantics", "responseEvidence"],
+          "properties": {
+            "concretePrecreatedObjectId": { "const": true },
+            "readOnlySemantics": { "const": true },
+            "responseEvidence": { "const": true }
+          }
+        }
+      }
+    }
+  }
+}

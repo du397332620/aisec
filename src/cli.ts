@@ -12,6 +12,7 @@ import { renderFixContract } from "./reporters/terminal.js";
 import { verifyWeb } from "./web/verify.js";
 import { verifyBola } from "./web/bola.js";
 import { draftBola } from "./web/bola-draft.js";
+import { checkBola, prepareBola } from "./web/bola-preflight.js";
 import { interfaceVerificationQueue } from "./web/interface-verification-queue.js";
 import { TOOL_VERSION } from "./core/constants.js";
 import { parsePositiveInt } from "./core/utils.js";
@@ -30,6 +31,8 @@ Usage:
   aisec fix-contract --scan <scan-id|report.json> --finding <id|fingerprint> [--format terminal|json] [--output file]
   aisec interface-queue --scan <scan-id|report.json> [--output file]
   aisec draft-bola --scan <scan-id|report.json> [--candidate interface-candidate-id ...] [--output file]
+  aisec prepare-bola --draft <selected-bola-draft.json> [--output file]
+  aisec check-bola --authorization <completed-manifest.yml> [--output file]
   aisec verify-web --authorization <manifest.yml> --confirm [--output file]
   aisec verify-bola --authorization <manifest.yml> --confirm [--output file]
   aisec rule-pack check [path] --rule-pack <trusted-rules.yml> [--format terminal|json] [--output file]
@@ -46,6 +49,8 @@ Scan safety:
   engines without changing the selected profile's artifact policy.
   Defaults: --max-files 20000, --max-file-bytes 2097152,
   --max-total-bytes 67108864, --timeout-ms 120000, at most 10 artifacts.
+  prepare-bola and check-bola accept at most 1 MiB, read no credential values,
+  resolve no DNS and send no requests. Only verify commands cross that boundary.
 
 Scan options:
   --profile predeploy|native  Acceptance scan (default) or source-only first pass
@@ -105,6 +110,24 @@ function pathFlags(parsed: ReturnType<typeof parseArgs>, name: string): string[]
   const values = flags(parsed, name);
   if (values.some((value) => value === "true" || !value.trim())) throw new Error(`--${name} requires a file path`);
   return values;
+}
+
+function assertSimpleFileCommand(
+  parsed: ReturnType<typeof parseArgs>,
+  command: string,
+  required: string,
+): { input: string; output?: string } {
+  if (parsed.positionals.length > 0) throw new Error(`${command} does not accept positional arguments`);
+  const allowed = new Set([required, "output"]);
+  for (const name of parsed.flags.keys()) {
+    if (!allowed.has(name)) throw new Error(`${command} does not support --${name}`);
+  }
+  for (const name of allowed) {
+    if (flags(parsed, name).length > 1) throw new Error(`${command} accepts --${name} at most once`);
+  }
+  const output = flag(parsed, "output");
+  if (output === "true" || (output !== undefined && !output.trim())) throw new Error("--output requires a file path");
+  return { input: requireFlag(parsed, required), ...(output === undefined ? {} : { output }) };
 }
 
 async function writeOrStdout(value: string, output?: string): Promise<void> {
@@ -221,6 +244,20 @@ async function main(): Promise<void> {
       ? await draftBola(requireFlag(parsed, "scan"))
       : await draftBola(requireFlag(parsed, "scan"), candidateIds);
     await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, flag(parsed, "output"));
+    return;
+  }
+
+  if (parsed.command === "prepare-bola") {
+    const options = assertSimpleFileCommand(parsed, "prepare-bola", "draft");
+    const result = await prepareBola(options.input);
+    await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, options.output);
+    return;
+  }
+
+  if (parsed.command === "check-bola") {
+    const options = assertSimpleFileCommand(parsed, "check-bola", "authorization");
+    const result = await checkBola(options.input);
+    await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, options.output);
     return;
   }
 

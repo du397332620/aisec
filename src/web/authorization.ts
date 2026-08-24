@@ -1,10 +1,11 @@
-import { readFile } from "node:fs/promises";
 import { isIP } from "node:net";
-import { resolve } from "node:path";
 import YAML from "yaml";
 import type { AuthorizationManifest, BolaAuthorizationManifest } from "../schema.js";
 import { validateAuthorizationManifestSchema, validateBolaAuthorizationManifestSchema } from "../core/schema-validation.js";
+import { readBoundedUtf8File } from "../core/bounded-file.js";
 import { BOLA_MUTATING_PATH_MARKERS, BOLA_READ_PATH_MARKERS, bolaMarkerTokens } from "./bola-policy.js";
+
+export const MAX_AUTHORIZATION_DOCUMENT_BYTES = 1024 * 1024;
 
 function isPrivateIpv4(host: string): boolean {
   const parts = host.split(".").map(Number);
@@ -47,8 +48,8 @@ export function validateAuthorization(value: unknown): AuthorizationManifest {
 }
 
 export async function loadAuthorization(path: string): Promise<AuthorizationManifest> {
-  const text = await readFile(resolve(path), "utf8");
-  const parsed = path.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+  const text = await readBoundedUtf8File(path, MAX_AUTHORIZATION_DOCUMENT_BYTES, "Authorization manifest");
+  const parsed = path.toLowerCase().endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
   return validateAuthorization(parsed);
 }
 
@@ -97,8 +98,48 @@ function mutatingBodyMarker(value: unknown): string | undefined {
   return undefined;
 }
 
+const INSTRUCTION_PLACEHOLDER = /<(?:SET|REVIEW|REPLACE|INSERT|TODO)_[A-Z0-9_]{1,160}>/u;
+const ROUTE_PARAMETER_SEGMENT = /(?:^|\/)(?::|\{|\[|\*)[^/]*(?=\/|$)/u;
+
+function assertNoInstructionPlaceholders(value: unknown): void {
+  const pending: Array<{ value: unknown; depth: number }> = [{ value, depth: 0 }];
+  let visited = 0;
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    visited += 1;
+    if (visited > 100_000 || current.depth > 32) {
+      throw new Error("BOLA authorization values exceed the offline validation complexity limit");
+    }
+    if (typeof current.value === "string") {
+      if (INSTRUCTION_PLACEHOLDER.test(current.value)) {
+        throw new Error("BOLA authorization contains an unresolved instruction placeholder");
+      }
+      continue;
+    }
+    if (Array.isArray(current.value)) {
+      for (const nested of current.value) pending.push({ value: nested, depth: current.depth + 1 });
+      continue;
+    }
+    if (!current.value || typeof current.value !== "object") continue;
+    for (const [key, nested] of Object.entries(current.value)) {
+      if (INSTRUCTION_PLACEHOLDER.test(key)) {
+        throw new Error("BOLA authorization contains an unresolved instruction placeholder");
+      }
+      pending.push({ value: nested, depth: current.depth + 1 });
+    }
+  }
+}
+
+function hasUnresolvedRouteParameter(path: string, base: string): boolean {
+  const url = new URL(path, base);
+  if (ROUTE_PARAMETER_SEGMENT.test(decodeURIComponent(url.pathname))) return true;
+  return [...url.searchParams.values()].some((value) => ROUTE_PARAMETER_SEGMENT.test(`/${value}`));
+}
+
 export function validateBolaAuthorization(value: unknown): BolaAuthorizationManifest {
-  const manifest = validateTarget(validateBolaAuthorizationManifestSchema(value));
+  const schemaManifest = validateBolaAuthorizationManifestSchema(value);
+  assertNoInstructionPlaceholders(schemaManifest);
+  const manifest = validateTarget(schemaManifest);
   const labels = manifest.accounts.map((account) => account.label);
   if (new Set(labels).size !== 2) throw new Error("BOLA verification requires two distinct account labels");
   const credentialVariables = manifest.accounts.flatMap((account) => [account.usernameEnv, account.passwordEnv]);
@@ -106,6 +147,9 @@ export function validateBolaAuthorization(value: unknown): BolaAuthorizationMani
   if (manifest.login.usernameField === manifest.login.passwordField) throw new Error("Login usernameField and passwordField must differ");
   if (manifest.login.tokenJsonPath === manifest.login.identityJsonPath) throw new Error("Login tokenJsonPath and identityJsonPath must differ");
   const loginTokens = pathTokens(manifest.login.path, manifest.targetBaseUrl).tokens;
+  if (hasUnresolvedRouteParameter(manifest.login.path, manifest.targetBaseUrl)) {
+    throw new Error("BOLA login.path contains an unresolved route parameter");
+  }
   if (!["login", "signin", "session", "token"].some((marker) => loginTokens.includes(marker))) throw new Error("login.path must identify an authentication endpoint");
   const unsafeLoginMarker = [...BOLA_MUTATING_PATH_MARKERS].find((marker) => !["create", "start"].includes(marker) && loginTokens.includes(marker));
   if (unsafeLoginMarker) throw new Error(`login.path has an unrelated state-changing marker: ${unsafeLoginMarker}`);
@@ -126,6 +170,9 @@ export function validateBolaAuthorization(value: unknown): BolaAuthorizationMani
       throw new Error(`BOLA case ${item.id} expected.value must exactly equal testDataLabel`);
     }
     const parsedPath = pathTokens(item.path, manifest.targetBaseUrl);
+    if (hasUnresolvedRouteParameter(item.path, manifest.targetBaseUrl)) {
+      throw new Error(`BOLA case ${item.id} contains an unresolved route parameter`);
+    }
     const mutatingMarker = [...BOLA_MUTATING_PATH_MARKERS].find((marker) => parsedPath.tokens.includes(marker));
     if (mutatingMarker) throw new Error(`BOLA case ${item.id} path has a state-changing marker: ${mutatingMarker}`);
     if (item.method === "POST" && ![...BOLA_READ_PATH_MARKERS].some((marker) => parsedPath.tokens.includes(marker))) {
@@ -152,8 +199,8 @@ export function validateBolaAuthorization(value: unknown): BolaAuthorizationMani
 }
 
 export async function loadBolaAuthorization(path: string): Promise<BolaAuthorizationManifest> {
-  const text = await readFile(resolve(path), "utf8");
-  const parsed = path.endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
+  const text = await readBoundedUtf8File(path, MAX_AUTHORIZATION_DOCUMENT_BYTES, "BOLA authorization manifest");
+  const parsed = path.toLowerCase().endsWith(".json") ? JSON.parse(text) : YAML.parse(text);
   return validateBolaAuthorization(parsed);
 }
 

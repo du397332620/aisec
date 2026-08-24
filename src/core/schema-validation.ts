@@ -2,14 +2,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import type { AuthorizationManifest, BolaAuthorizationManifest, BolaDraftPlan, CiReport, FixContract, InterfaceVerificationQueue, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
+import type { AuthorizationManifest, BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaDraftPlan, CiReport, FixContract, InterfaceVerificationQueue, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
 import { ROUTE_SECURITY_RULES, routeSecurityIssueKey } from "./route-security.js";
 import { evaluateRouteSecurityBaselineGate } from "./route-security-gate.js";
 import { safeRelativePath } from "../reporters/safety.js";
 import { classifyBolaStaticRoute } from "../web/bola-policy.js";
 import { stableId } from "./utils.js";
 
-type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaDraftPlan" | "InterfaceVerificationQueue" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
+type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "InterfaceVerificationQueue" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
 
 function loadSchema(filename: string): object {
   const path = fileURLToPath(new URL(`../../../schemas/${filename}`, import.meta.url));
@@ -25,6 +25,8 @@ const ciReportValidator = ajv.compile(loadSchema("ci-report.schema.json"));
 const fixContractValidator = ajv.compile(loadSchema("fix-contract.schema.json"));
 const authorizationManifestValidator = ajv.compile(loadSchema("authorization-manifest.schema.json"));
 const bolaAuthorizationManifestValidator = ajv.compile(loadSchema("bola-authorization-manifest.schema.json"));
+const bolaAuthorizationTemplateValidator = ajv.compile(loadSchema("bola-authorization-template.schema.json"));
+const bolaAuthorizationCheckValidator = ajv.compile(loadSchema("bola-authorization-check.schema.json"));
 const bolaDraftPlanValidator = ajv.compile(loadSchema("bola-draft.schema.json"));
 const interfaceVerificationQueueValidator = ajv.compile(loadSchema("interface-verification-queue.schema.json"));
 const ruleCatalogValidator = ajv.compile(loadSchema("rule-catalog.schema.json"));
@@ -405,6 +407,118 @@ export function validateAuthorizationManifestSchema(value: unknown): Authorizati
 
 export function validateBolaAuthorizationManifestSchema(value: unknown): BolaAuthorizationManifest {
   return assertSchema<BolaAuthorizationManifest>("BolaAuthorizationManifest", bolaAuthorizationManifestValidator, value);
+}
+
+function expectedTemplateId(template: BolaAuthorizationTemplate): string {
+  return stableId(
+    "bola_template",
+    template.draftId,
+    template.scanId,
+    template.projectId,
+    template.selection.queueId,
+    template.selection.queueCoverage,
+    template.selection.queueCoverageScope,
+    ...template.selection.candidateIds,
+    ...template.bindings.flatMap((binding) => [
+      binding.bolaCandidateId,
+      binding.signalId,
+      binding.route,
+      binding.objectIdFields.join(","),
+      binding.evidenceMode,
+    ]),
+  );
+}
+
+export function validateBolaAuthorizationTemplate(value: unknown): BolaAuthorizationTemplate {
+  const template = assertSchema<BolaAuthorizationTemplate>(
+    "BolaAuthorizationTemplate",
+    bolaAuthorizationTemplateValidator,
+    value,
+  );
+  const total = template.manifest.cases.length;
+  if (total < 1 || total > 9
+    || template.selection.candidateIds.length !== total
+    || template.bindings.length !== total
+    || template.manifest.maxRequests !== 2 + total * 2) {
+    throw new Error("BolaAuthorizationTemplate case, binding and request totals are inconsistent");
+  }
+
+  const caseIds = new Set<string>();
+  const interfaceIds = new Set<string>();
+  const bolaIds = new Set<string>();
+  const routes = new Set<string>();
+  for (let index = 0; index < total; index += 1) {
+    const item = template.manifest.cases[index]!;
+    const binding = template.bindings[index]!;
+    const interfaceCandidateId = template.selection.candidateIds[index]!;
+    const expectedCaseId = `case_${binding.bolaCandidateId.slice(-16)}`;
+    if (item.id !== expectedCaseId || binding.caseId !== item.id) {
+      throw new Error(`BolaAuthorizationTemplate case binding is inconsistent at index ${index}`);
+    }
+    if (binding.interfaceCandidateId !== interfaceCandidateId) {
+      throw new Error(`BolaAuthorizationTemplate interface selection order is inconsistent at index ${index}`);
+    }
+    const route = `${item.method} ${item.path}`;
+    if (binding.route !== route) {
+      throw new Error(`BolaAuthorizationTemplate binding route is inconsistent at index ${index}`);
+    }
+    if (item.testDataLabel !== `<SET_TEST_DATA_LABEL_${String(index + 1).padStart(2, "0")}>`) {
+      throw new Error(`BolaAuthorizationTemplate test-data placeholder is inconsistent at index ${index}`);
+    }
+    if (item.expected.match !== binding.evidenceMode) {
+      throw new Error(`BolaAuthorizationTemplate evidence binding is inconsistent at index ${index}`);
+    }
+    if (item.expected.match === "testDataLabel" && item.expected.value !== item.testDataLabel) {
+      throw new Error(`BolaAuthorizationTemplate evidence value is inconsistent at index ${index}`);
+    }
+    if (item.method === "POST") {
+      const expectedBody = Object.fromEntries(binding.objectIdFields.map((field) => [
+        field,
+        `<SET_PRECREATED_OWNER_${field.toUpperCase()}>`,
+      ]));
+      if (!item.body
+        || Object.keys(item.body).length !== Object.keys(expectedBody).length
+        || Object.entries(expectedBody).some(([field, placeholder]) => item.body?.[field] !== placeholder)) {
+        throw new Error(`BolaAuthorizationTemplate request body is inconsistent at index ${index}`);
+      }
+    } else if (item.body !== undefined) {
+      throw new Error(`BolaAuthorizationTemplate GET request contains a body at index ${index}`);
+    }
+    if (caseIds.has(item.id)
+      || interfaceIds.has(binding.interfaceCandidateId)
+      || bolaIds.has(binding.bolaCandidateId)
+      || routes.has(binding.route)) {
+      throw new Error("BolaAuthorizationTemplate bindings contain duplicate identities");
+    }
+    caseIds.add(item.id);
+    interfaceIds.add(binding.interfaceCandidateId);
+    bolaIds.add(binding.bolaCandidateId);
+    routes.add(binding.route);
+  }
+  if (template.templateId !== expectedTemplateId(template)) {
+    throw new Error("BolaAuthorizationTemplate stable template ID is inconsistent");
+  }
+  return template;
+}
+
+export function validateBolaAuthorizationCheck(value: unknown): BolaAuthorizationCheck {
+  const check = assertSchema<BolaAuthorizationCheck>(
+    "BolaAuthorizationCheck",
+    bolaAuthorizationCheckValidator,
+    value,
+  );
+  const summary = check.summary;
+  if (check.caseIds.length !== summary.cases
+    || summary.requiredRequests !== 2 + summary.cases * 2
+    || summary.maxRequests < summary.requiredRequests
+    || summary.getCases + summary.postCases !== summary.cases
+    || summary.testDataLabelCases + summary.ownerIdentityCases !== summary.cases) {
+    throw new Error("BolaAuthorizationCheck summary totals are inconsistent");
+  }
+  if (check.checkId !== stableId("bola_check", check.manifestDigestSha256)) {
+    throw new Error("BolaAuthorizationCheck stable check ID is inconsistent");
+  }
+  return check;
 }
 
 export function validateBolaDraftPlan(value: unknown): BolaDraftPlan {

@@ -65,6 +65,8 @@ try {
   assert.ok(packedPaths.has("schemas/security-policy.schema.json"), "security policy schema must be packaged");
   assert.ok(packedPaths.has("schemas/ci-report.schema.json"), "CI report schema must be packaged");
   assert.ok(packedPaths.has("schemas/interface-verification-queue.schema.json"), "interface-verification queue schema must be packaged");
+  assert.ok(packedPaths.has("schemas/bola-authorization-template.schema.json"), "BOLA authorization template schema must be packaged");
+  assert.ok(packedPaths.has("schemas/bola-authorization-check.schema.json"), "BOLA authorization check schema must be packaged");
   assert.ok(packedPaths.has("examples/security-policy.example.yml"), "trusted policy example must be packaged");
   assert.ok(packedPaths.has("examples/rule-pack.example.yml"), "declarative rule-pack example must be packaged");
   assert.ok(![...packedPaths].some((path) => path.startsWith("docs/") || path.startsWith(".scratch/")), "local progress documents must stay out of the npm package");
@@ -92,6 +94,8 @@ try {
   await access(executable, process.platform === "win32" ? constants.R_OK : constants.X_OK);
   await access(join(packageRoot, "schemas", "bola-authorization-manifest.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "bola-draft.schema.json"), constants.R_OK);
+  await access(join(packageRoot, "schemas", "bola-authorization-template.schema.json"), constants.R_OK);
+  await access(join(packageRoot, "schemas", "bola-authorization-check.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "rule-catalog.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "rule-pack.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "rule-pack-preview.schema.json"), constants.R_OK);
@@ -149,6 +153,8 @@ try {
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /rule-pack check \[path\]/);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /local-gate \[path\].*--state-dir <private-directory>/);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /draft-bola --scan <scan-id\|report\.json>.*--candidate interface-candidate-id/);
+  assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /prepare-bola --draft <selected-bola-draft\.json>/);
+  assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /check-bola --authorization <completed-manifest\.yml>/);
 
   process.stdout.write("Running the installed CLI against safe and vulnerable fixtures...\n");
   const safe = parseReport(run(executable, [
@@ -336,6 +342,28 @@ suppressions: []
   assert.equal(selectedDraft.schemaVersion, "1.1.0");
   assert.equal(selectedDraft.selection.queueId, selectedQueue.queueId);
   assert.deepEqual(selectedDraft.selection.candidateIds, [selectedQueue.candidates[0].id]);
+  const selectedDraftPath = join(temporary, "installed-selected-bola-draft.json");
+  await writeFile(selectedDraftPath, `${JSON.stringify(selectedDraft)}\n`);
+  const authorizationTemplate = parseReport(run(executable, [
+    "prepare-bola",
+    "--draft",
+    selectedDraftPath,
+  ], { cwd: consumer, env: scanEnvironment }), "installed BOLA authorization template");
+  assert.equal(authorizationTemplate.status, "placeholders_required");
+  assert.equal(authorizationTemplate.networkRequests, 0);
+  assert.equal(authorizationTemplate.selection.queueId, selectedQueue.queueId);
+  assert.equal(authorizationTemplate.bindings[0].route, selectedQueue.candidates[0].route);
+
+  const authorizationCheck = parseReport(run(executable, [
+    "check-bola",
+    "--authorization",
+    join(packageRoot, "examples", "authorization.bola.local.yml"),
+  ], { cwd: consumer, env: scanEnvironment }), "installed offline BOLA authorization check");
+  assert.equal(authorizationCheck.status, "valid_review_required");
+  assert.equal(authorizationCheck.networkRequests, 0);
+  assert.equal(authorizationCheck.environmentValuesRead, 0);
+  assert.equal(authorizationCheck.dnsLookups, 0);
+  assert.doesNotMatch(JSON.stringify(authorizationCheck), /127\.0\.0\.1|\/project\/detail|project_id/u);
 
   const selectedDraftApi = parseReport(run(process.execPath, [
     "--input-type=module",
@@ -346,6 +374,17 @@ suppressions: []
     schemaVersion: "1.1.0",
     queueId: selectedQueue.queueId,
     candidates: 1,
+  });
+
+  const bolaPreflightApi = parseReport(run(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `import { readFileSync } from "node:fs"; import { checkBola, createBolaAuthorizationTemplate, validateBolaAuthorizationCheck, validateBolaAuthorizationTemplate } from ${JSON.stringify(packageMetadata.name)}; const draft = JSON.parse(readFileSync(${JSON.stringify(selectedDraftPath)}, "utf8")); const template = validateBolaAuthorizationTemplate(createBolaAuthorizationTemplate(draft)); const check = validateBolaAuthorizationCheck(await checkBola(${JSON.stringify(join(packageRoot, "examples", "authorization.bola.local.yml"))})); process.stdout.write(JSON.stringify({ template: template.status, check: check.status, requests: template.networkRequests + check.networkRequests }));`,
+  ], { cwd: consumer, env: scanEnvironment }), "installed BOLA preflight API");
+  assert.deepEqual(bolaPreflightApi, {
+    template: "placeholders_required",
+    check: "valid_review_required",
+    requests: 0,
   });
 
   process.stdout.write("Running the public corpus from inside the installed package...\n");
