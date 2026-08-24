@@ -16,6 +16,7 @@ import { TOOL_VERSION } from "./core/constants.js";
 import { parsePositiveInt } from "./core/utils.js";
 import { prepareTrivyDatabase, trivyDatabaseStatus } from "./engines/trivy-db.js";
 import { previewRulePacks, renderRulePackPreview } from "./rules/preview.js";
+import { runLocalGate } from "./core/local-gate.js";
 
 const HELP = `AIsec ${TOOL_VERSION} — local-first security acceptance for AI-built applications
 
@@ -23,6 +24,7 @@ Usage:
   aisec inspect [path] [--artifact app.apk]
   aisec scan [path] [--profile predeploy|native] [--policy trusted-policy.yml] [--rule-pack trusted-rules.yml] [--native-only] [--artifact app.apk] [--format terminal|json|html|sarif|ci|github|markdown] [--output file]
   aisec rescan [path] --baseline <scan-id|report.json> [scan options]
+  aisec local-gate [path] --policy <trusted-policy.yml> --state-dir <private-directory> [gate scan options]
   aisec report <scan-id|report.json> [--format terminal|json|html|sarif|ci|github|markdown] [--output file]
   aisec fix-contract --scan <scan-id|report.json> --finding <id|fingerprint> [--format terminal|json] [--output file]
   aisec draft-bola --scan <scan-id|report.json> [--output file]
@@ -57,13 +59,19 @@ Scan options:
   --timeout-ms <ms>          External engine/artifact timeout (default 120000)
   --no-persist               Do not store the generated report
 
+Local gate:
+  Requires an operator SecurityPolicy 1.1.0 routeSecurityBaseline gate and a
+  private state directory outside the target. The first run pins baseline.json;
+  later runs rescan it and never advance it automatically. Use a new empty state
+  directory for a deliberately reviewed policy or baseline change.
+
 Rule-pack preview:
   Validates explicit RulePack 1.0/1.1 files and lists bounded selected project
   paths without evaluating literals or producing vulnerability findings.
   Uses the scan inventory limits and the same outside-target trust boundary.
 
 Decision exit codes:
-  Scans: 0 no_blockers_found/review, 1 block, 2 incomplete
+  Scans/local gate: 0 no_blockers_found/review, 1 block, 2 incomplete
   Rule-pack preview: 0 complete, 2 partial; 64 invalid usage/error
 `;
 
@@ -139,6 +147,46 @@ async function main(): Promise<void> {
     await emitReport(result.report, formatValue(flag(parsed, "format")), flag(parsed, "output"));
     if (result.storedAt && !flag(parsed, "output") && formatValue(flag(parsed, "format")) === "terminal") process.stderr.write(`Stored report: ${result.storedAt}\n`);
     process.exitCode = scanExitCode(result.report.decision);
+    return;
+  }
+
+  if (parsed.command === "local-gate") {
+    if (parsed.positionals.length > 1) throw new Error("local-gate accepts at most one target path");
+    for (const unsupported of ["profile", "native-only", "no-persist", "baseline", "output"] as const) {
+      if (parsed.flags.has(unsupported)) throw new Error(`local-gate manages --${unsupported} internally; remove that option`);
+    }
+    const allowed = new Set([
+      "policy", "state-dir", "rule-pack", "confirm-policy-suppressions", "artifact",
+      "git-history", "max-files", "max-file-bytes", "max-total-bytes", "timeout-ms", "format",
+    ]);
+    for (const name of parsed.flags.keys()) {
+      if (!allowed.has(name)) throw new Error(`local-gate does not support --${name}`);
+    }
+    for (const singleton of [
+      "policy", "state-dir", "confirm-policy-suppressions", "git-history", "max-files",
+      "max-file-bytes", "max-total-bytes", "timeout-ms", "format",
+    ] as const) {
+      if (flags(parsed, singleton).length > 1) throw new Error(`local-gate accepts --${singleton} at most once`);
+    }
+    const result = await runLocalGate(parsed.positionals[0] ?? ".", {
+      policyPath: requireFlag(parsed, "policy"),
+      stateDirectory: requireFlag(parsed, "state-dir"),
+      artifacts: flags(parsed, "artifact"),
+      includeGitHistory: booleanFlag(parsed, "git-history"),
+      maxFiles: parsePositiveInt(flag(parsed, "max-files"), 20_000),
+      maxFileBytes: parsePositiveInt(flag(parsed, "max-file-bytes"), 2 * 1024 * 1024),
+      maxTotalBytes: parsePositiveInt(flag(parsed, "max-total-bytes"), 64 * 1024 * 1024),
+      timeoutMs: parsePositiveInt(flag(parsed, "timeout-ms"), 120_000),
+      confirmPolicySuppressions: booleanFlag(parsed, "confirm-policy-suppressions"),
+      rulePackPaths: pathFlags(parsed, "rule-pack"),
+    });
+    await emitReport(result.report, formatValue(flag(parsed, "format")));
+    if (result.mode === "initialized") {
+      process.stderr.write(`Local gate baseline initialized: ${result.baselinePath}\nBootstrap is fail-closed; review the pinned baseline before relying on later checks.\n`);
+    } else {
+      process.stderr.write(`Local gate baseline (unchanged): ${result.baselinePath}\nLatest report: ${result.latestPath}\n`);
+    }
+    process.exitCode = result.exitCode;
     return;
   }
 

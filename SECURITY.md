@@ -86,6 +86,12 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   optional route-security baseline gate is additive, requires comparison
   evidence, evaluates only eligible open findings, and can require partial or
   bounded route comparison to fail closed as incomplete.
+- `local-gate` keeps its baseline and latest report in a dedicated
+  operator-selected directory outside the target. The directory must be a real,
+  owner-only directory; an unrecognized non-empty directory, symlinked root,
+  non-regular baseline, target mismatch or changed policy/rule-pack digest is
+  rejected. The first baseline is written once with owner-only permissions and
+  is never advanced by a later scan; only `latest.json` is atomically replaced.
 - A declarative rule pack is also never discovered from the target. Its real
   path must be outside the scan root, its strict schema has no regex, script,
   command, import or callback fields, and matching is bounded to line-local
@@ -168,6 +174,13 @@ Policy SHA-256 records exact policy bytes for reproducibility; it is not a
 signature and does not prove who authored or approved the file. Protect the
 operator policy with normal repository/CI access controls and use a new
 baseline for an intentional policy change.
+
+The local-gate state directory is a filesystem trust boundary, not a signed or
+tamper-proof store. Another process running as the same OS user can still alter
+it. Protect that account and directory, review the first captured baseline, and
+use a new empty private state directory when deliberately accepting a changed
+policy or baseline. Do not place the state below the target or synchronize it
+into an untrusted project checkout.
 
 Rule-pack SHA-256 has the same limitation: it binds report and baseline evidence
 to exact bytes but does not establish authorship, review quality or provenance.

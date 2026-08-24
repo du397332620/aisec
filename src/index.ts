@@ -8,6 +8,7 @@ export { loadTrustedRulePack, loadTrustedRulePacks, parseRulePack } from "./rule
 export { previewRulePacks, renderRulePackPreview } from "./rules/preview.js";
 export { compareReports } from "./core/compare.js";
 export { loadReport } from "./core/store.js";
+export { runLocalGate, type LocalGateOptions, type LocalGateResult } from "./core/local-gate.js";
 export { validateAuthorization, validateBolaAuthorization } from "./web/authorization.js";
 export { createBolaDraftPlan, draftBola } from "./web/bola-draft.js";
 export { serializeReport } from "./reporters/index.js";

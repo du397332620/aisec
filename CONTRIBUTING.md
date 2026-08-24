@@ -36,6 +36,11 @@ tests together. Baseline gates must remain additive, distinguish confirmed
 blockers from incomplete comparison evidence, and retain explicit suppression
 semantics.
 
+Local-gate changes must keep state outside the target, reject shared or
+ambiguous state, preserve owner-only files and never advance a pinned baseline
+automatically. A blocked or incomplete run must remain compared with the same
+baseline on repetition.
+
 Declarative rule-pack changes must preserve the non-executable extension
 boundary. Packs are explicit operator-owned files outside the target and may
 only add bounded literal findings and required coverage. Do not add dynamic

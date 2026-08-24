@@ -127,6 +127,13 @@ try {
   ], { cwd: consumer, env: scanEnvironment }), "installed security policy API");
   assert.equal(policyApi.policyId, "package-smoke");
 
+  const localGateApi = run(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `import { runLocalGate } from ${JSON.stringify(packageMetadata.name)}; process.stdout.write(typeof runLocalGate);`,
+  ], { cwd: consumer, env: scanEnvironment });
+  assert.equal(localGateApi, "function");
+
   const rulePackApi = parseReport(run(process.execPath, [
     "--input-type=module",
     "--eval",
@@ -138,6 +145,7 @@ try {
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /--policy <file>/);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /--rule-pack <file>/);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /rule-pack check \[path\]/);
+  assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /local-gate \[path\].*--state-dir <private-directory>/);
 
   process.stdout.write("Running the installed CLI against safe and vulnerable fixtures...\n");
   const safe = parseReport(run(executable, [
@@ -149,6 +157,46 @@ try {
     "json",
   ], { cwd: consumer, env: scanEnvironment }), "safe fixture");
   assert.equal(safe.decision, "no_blockers_found");
+
+  const localGateTarget = join(temporary, "local-gate-target");
+  const localGateState = join(temporary, "local-gate-state");
+  const localGatePolicy = join(temporary, "local-gate-policy.yml");
+  const localGateEnvironment = {
+    ...scanEnvironment,
+    AISEC_GITLEAKS_PATH: join(temporary, "missing-gitleaks"),
+    AISEC_OPENGREP_PATH: join(temporary, "missing-opengrep"),
+    AISEC_TRIVY_PATH: join(temporary, "missing-trivy"),
+  };
+  const routeSource = (routes) => `from fastapi import FastAPI\n\napp = FastAPI()\n\n${routes.map((route, index) => `@app.get("${route}")\nasync def handler_${index}():\n    try:\n        return load_value()\n    except Exception as error:\n        return {"message": str(error)}\n`).join("\n")}`;
+  await mkdir(localGateTarget);
+  await writeFile(join(localGateTarget, "main.py"), routeSource(["/legacy"]));
+  await writeFile(localGatePolicy, `schemaVersion: 1.1.0
+policyId: package-local-gate
+expiresAt: 2099-12-31T23:59:59Z
+profile: predeploy
+requiredEngines: [gitleaks, opengrep, trivy]
+gate:
+  minimumSeverity: high
+  includeInferred: false
+  requireNoSuppressions: false
+routeSecurityBaseline:
+  minimumSeverity: medium
+  includeInferred: false
+  requireComplete: true
+rules:
+  required: [privacy.sensitive-logging]
+  block: []
+suppressions: []
+`);
+  const localGateArgs = ["local-gate", localGateTarget, "--policy", localGatePolicy, "--state-dir", localGateState, "--format", "json"];
+  const localGateFirst = parseReport(run(executable, localGateArgs, { cwd: consumer, env: localGateEnvironment, expectedStatus: 2 }), "installed local gate bootstrap");
+  const pinnedLocalBaseline = await readFile(join(localGateState, "baseline.json"), "utf8");
+  assert.equal(localGateFirst.decision, "incomplete");
+  await writeFile(join(localGateTarget, "main.py"), routeSource(["/legacy", "/new"]));
+  const localGateSecond = parseReport(run(executable, localGateArgs, { cwd: consumer, env: localGateEnvironment, expectedStatus: 1 }), "installed local gate rescan");
+  assert.equal(localGateSecond.decision, "block");
+  assert.ok(localGateSecond.comparison.routeSecurity.new.some((entry) => entry.route === "GET /new"));
+  assert.equal(await readFile(join(localGateState, "baseline.json"), "utf8"), pinnedLocalBaseline);
 
   const customTarget = join(temporary, "custom-target");
   await mkdir(join(customTarget, "src"), { recursive: true });

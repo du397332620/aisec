@@ -274,6 +274,7 @@ before treating a pre-deploy result as complete.
 aisec inspect [path]
 aisec scan [path] [--profile predeploy|native] [--policy trusted-policy.yml] [--rule-pack trusted-rules.yml] [--native-only] [--artifact app.apk]
 aisec rescan [path] --baseline <scan-id|report.json> [--policy trusted-policy.yml] [--rule-pack trusted-rules.yml]
+aisec local-gate [path] --policy <trusted-policy.yml> --state-dir <private-directory>
 aisec rule-pack check [path] --rule-pack <trusted-rules.yml> [--format terminal|json]
 aisec report <scan-id|report.json> --format terminal|json|html|sarif|ci|github|markdown
 aisec fix-contract --scan <scan-id> --finding <id> --format json
@@ -318,6 +319,54 @@ returns `incomplete` until `rescan` supplies a comparison unless another
 confirmed finding already makes the decision `block`. With
 `requireComplete: true`, not-rechecked or bounded comparison evidence also
 fails closed as `incomplete`.
+
+### Local source-use gate
+
+`local-gate` is the safe convenience entry point for a fixed local baseline.
+It requires an explicit `SecurityPolicy 1.1.0` with
+`routeSecurityBaseline` enabled and a dedicated private state directory outside
+the scanned target. It always runs the full `predeploy` profile and does not
+persist a second copy in the normal report store.
+
+From a source checkout:
+
+```bash
+npm run build
+
+# Keep both paths outside ../target. Copy the example into operator-owned
+# storage, review it, then uncomment its routeSecurityBaseline section.
+mkdir -p ../trusted/keyan-gate
+chmod 700 ../trusted/keyan-gate
+cp examples/security-policy.example.yml ../trusted/security-policy.yml
+# Edit ../trusted/security-policy.yml now; do not use the demonstration values
+# without review.
+
+node dist/src/cli.js local-gate ../target \
+  --policy ../trusted/security-policy.yml \
+  --state-dir ../trusted/keyan-gate
+```
+
+The first run writes owner-only `baseline.json` and `latest.json`. It is a
+bootstrap run and therefore exits non-zero: normally `2` for the missing
+comparison, or `1` when another confirmed policy blocker has higher priority.
+After reviewing that baseline, run the same command after each code change.
+Later runs automatically rescan the pinned baseline and return `0` for an
+accepted/review result, `1` for `block`, `2` for `incomplete`, or `64` for
+invalid usage/state.
+
+`local-gate` intentionally does not accept `--output`: its canonical latest
+report already lives at `<state-dir>/latest.json`, while stdout can be captured
+by the caller. Render a separate HTML/SARIF/CI artifact with `aisec report`
+afterward so an output path cannot overwrite the pinned state or trusted input.
+
+The baseline is intentionally never advanced automatically—even after a clean
+or repeated blocked run. Otherwise, rerunning a rejected change could turn its
+new risk into accepted baseline debt. For a deliberate policy change or a
+human-approved new baseline, choose a new empty private `--state-dir`, run the
+bootstrap once, review it, then use that directory for later checks. Existing
+state is bound to the canonical target and exact policy/rule-pack digests.
+Symlinked, target-owned, shared-permission or unrelated non-empty state
+directories are rejected.
 
 ### Trusted release policy
 
@@ -606,6 +655,7 @@ finding fingerprints and accepted suppressions for compatible consumers.
 | --- | --- | --- |
 | Public rule catalog | JSON + generated Markdown | 58 shipped deterministic rules: 55 native and 3 bundled Opengrep; strict schema and drift checks tie detector IDs, corpus coverage, CWE/evidence metadata, Opengrep YAML/verified version and `RULES.md` to one catalog; `*` means syntax/config/artifact based without a dependency-semver gate, not complete framework support |
 | Trusted release policy | Explicit operator-owned YAML | Strict public schema; policy must resolve outside the scanned target, retain the full predeploy engine boundary and may only keep or strengthen the default gate; shipped rule IDs are catalog-validated, narrow suppressions expire and require a second explicit confirmation, reports retain digest/gate/approval evidence, and policy baselines require the same digest; target-owned `.aisec.yml` is ignored |
+| Local fixed-baseline gate | `local-gate` CLI | First run writes an owner-only baseline in a dedicated target-external state directory; later runs automatically rescan that immutable baseline and atomically refresh only the latest report. Target-owned/symlinked/shared/unrecognized state, target drift and policy/rule-pack digest drift fail closed; deliberate baseline changes use a new empty private directory |
 | Declarative rule packs | Explicit operator-owned YAML/JSON | Strict `RulePack 1.1.0` with unchanged 1.0 compatibility; outside-target, digest-bound, bounded line-local present or required-literal-absent checks only; `rule-pack check`, Node API and MCP expose a strict bounded selector-only preview without literals/findings; absence findings are inferred and path-only, while an empty selection or reached bound makes coverage partial; no code, regex, target discovery, suppression or gate relaxation; ScanReport/CI/reporters retain pack ID, rule count and digest, and baselines require the same pack set |
 | Project inventory and stack map | Native | Local read only; supported text candidates and manifests, no dependency installation or project execution |
 | Secrets in selected source files | Native | Deterministic provider patterns plus fully redacted concrete sensitive-environment interpolation fallbacks; working tree only, not Git history |

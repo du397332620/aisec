@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import { access, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -61,6 +61,9 @@ try {
     "SecurityPolicy 1.1.0",
     "CiReport 1.4.0",
     "routeSecurityBaseline",
+    "node dist/src/cli.js local-gate ../target",
+    "never advanced automatically",
+    "does not accept `--output`",
     "stable machine-readable reasons",
     "also makes every active pack's required scan coverage `partial`",
     "emitWhen: absent",
@@ -86,6 +89,7 @@ try {
   assert.match(help, /--policy <file>/);
   assert.match(help, /--rule-pack <file>/);
   assert.match(help, /rule-pack check \[path\]/);
+  assert.match(help, /local-gate \[path\].*--state-dir <private-directory>/);
   assert.match(help, /--confirm-policy-suppressions/);
   assert.match(help, /terminal\|json\|html\|sarif\|ci\|github\|markdown/);
   assert.match(help, /verify-bola --authorization <manifest\.yml> --confirm/);
@@ -150,7 +154,7 @@ try {
   const trustedPolicy = join(temporary, "trusted-policy.yml");
   await mkdir(policyTarget);
   await writeFile(join(policyTarget, "index.ts"), "console.log(refreshToken);\n");
-  await writeFile(trustedPolicy, `schemaVersion: 1.0.0
+  await writeFile(trustedPolicy, `schemaVersion: 1.1.0
 policyId: docs-smoke
 expiresAt: 2099-12-31T23:59:59Z
 profile: predeploy
@@ -159,6 +163,10 @@ gate:
   minimumSeverity: high
   includeInferred: false
   requireNoSuppressions: false
+routeSecurityBaseline:
+  minimumSeverity: high
+  includeInferred: false
+  requireComplete: true
 rules:
   required: [privacy.sensitive-logging]
   block: [privacy.sensitive-logging]
@@ -167,6 +175,21 @@ suppressions: []
   const policyReport = report(run(["scan", policyTarget, "--policy", trustedPolicy, "--no-persist", "--format", "json"], 1), "trusted policy scan");
   assert.equal(policyReport.policy.source, "operator");
   assert.equal(policyReport.policy.policyId, "docs-smoke");
+
+  const localGateState = join(temporary, "local-gate-state");
+  const localGateArgs = ["local-gate", policyTarget, "--policy", trustedPolicy, "--state-dir", localGateState, "--format", "json"];
+  const localGateFirstResult = run(localGateArgs, 1);
+  const localGateFirst = report(localGateFirstResult, "local gate bootstrap");
+  assert.equal(localGateFirst.decision, "block");
+  assert.match(localGateFirstResult.stderr, /Local gate baseline initialized:/);
+  assert.equal((await stat(localGateState)).mode & 0o077, 0);
+  const localGateBaselinePath = join(localGateState, "baseline.json");
+  const localGateBaseline = await readFile(localGateBaselinePath, "utf8");
+  const localGateSecondResult = run(localGateArgs, 1);
+  const localGateSecond = report(localGateSecondResult, "local gate rescan");
+  assert.equal(localGateSecond.comparison.baselineScanId, localGateFirst.scanId);
+  assert.match(localGateSecondResult.stderr, /Local gate baseline \(unchanged\):/);
+  assert.equal(await readFile(localGateBaselinePath, "utf8"), localGateBaseline);
 
   const trustedRulePack = join(temporary, "trusted-rule-pack.yml");
   await writeFile(trustedRulePack, `schemaVersion: 1.0.0
