@@ -64,6 +64,7 @@ try {
   assert.ok(packedPaths.has("schemas/rule-pack-preview.schema.json"), "rule-pack preview schema must be packaged");
   assert.ok(packedPaths.has("schemas/security-policy.schema.json"), "security policy schema must be packaged");
   assert.ok(packedPaths.has("schemas/ci-report.schema.json"), "CI report schema must be packaged");
+  assert.ok(packedPaths.has("schemas/interface-verification-queue.schema.json"), "interface-verification queue schema must be packaged");
   assert.ok(packedPaths.has("examples/security-policy.example.yml"), "trusted policy example must be packaged");
   assert.ok(packedPaths.has("examples/rule-pack.example.yml"), "declarative rule-pack example must be packaged");
   assert.ok(![...packedPaths].some((path) => path.startsWith("docs/") || path.startsWith(".scratch/")), "local progress documents must stay out of the npm package");
@@ -96,6 +97,7 @@ try {
   await access(join(packageRoot, "schemas", "rule-pack-preview.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "security-policy.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "ci-report.schema.json"), constants.R_OK);
+  await access(join(packageRoot, "schemas", "interface-verification-queue.schema.json"), constants.R_OK);
   await access(join(packageRoot, "RULES.md"), constants.R_OK);
   const ruleCatalog = JSON.parse(await readFile(join(packageRoot, "rules", "catalog.json"), "utf8"));
   assert.equal(ruleCatalog.rules.length, 58);
@@ -282,6 +284,22 @@ suppressions: []
   ], { cwd: consumer, env: scanEnvironment }), "installed CI report API");
   assert.equal(ciApi.schemaVersion, "1.4.0");
   assert.equal(ciApi.annotations, ci.annotations.length);
+
+  const interfaceQueue = parseReport(run(executable, [
+    "interface-queue",
+    "--scan",
+    storedReport,
+  ], { cwd: consumer, env: scanEnvironment }), "installed interface queue");
+  assert.equal(interfaceQueue.status, "review_required");
+  assert.equal(interfaceQueue.scanId, vulnerable.scanId);
+  assert.equal(interfaceQueue.networkRequests, 0);
+
+  const interfaceQueueApi = parseReport(run(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `import { readFileSync } from "node:fs"; import { createInterfaceVerificationQueue, validateInterfaceVerificationQueue } from ${JSON.stringify(packageMetadata.name)}; const scan = JSON.parse(readFileSync(${JSON.stringify(storedReport)}, "utf8")); const value = validateInterfaceVerificationQueue(createInterfaceVerificationQueue(scan)); process.stdout.write(JSON.stringify({ schemaVersion: value.schemaVersion, networkRequests: value.networkRequests }));`,
+  ], { cwd: consumer, env: scanEnvironment }), "installed interface queue API");
+  assert.deepEqual(interfaceQueueApi, { schemaVersion: "1.0.0", networkRequests: 0 });
 
   const bolaDraft = parseReport(run(executable, [
     "draft-bola",

@@ -278,6 +278,7 @@ aisec local-gate [path] --policy <trusted-policy.yml> --state-dir <private-direc
 aisec rule-pack check [path] --rule-pack <trusted-rules.yml> [--format terminal|json]
 aisec report <scan-id|report.json> --format terminal|json|html|sarif|ci|github|markdown
 aisec fix-contract --scan <scan-id> --finding <id> --format json
+aisec interface-queue --scan <scan-id|report.json> --output interface-queue.json
 aisec draft-bola --scan <scan-id|report.json> --output bola-draft.json
 aisec verify-web --authorization authorization.yml --confirm
 aisec verify-bola --authorization bola-authorization.yml --confirm
@@ -686,6 +687,7 @@ accepted suppressions for compatible consumers.
 | Dependency, IaC and secondary secret checks | Trivy `0.73.0` | Required in pre-deploy mode; requires an explicitly prepared, fresh schema-v2 database and scans offline; canonical metadata retains recorded direct/indirect/unknown dependency relationship, ecosystem/class and fix availability, while terminal/HTML derive bounded package/version priority groups without claiming reachability or base-image package coverage |
 | APK/IPA static resources | Native archive adapter | Optional input; required for pre-deploy mobile artifact coverage when a mobile project/artifact is expected; prioritizes app manifests/plists, DEX/resource tables, JS bundles and the iOS main executable, semantically decodes bounded binary plists, recovers bounded ASCII/UTF-16 strings in memory, and performs no installation, on-disk member extraction or runtime instrumentation |
 | Passive test/staging Web checks | `verify-web` | Explicit authorization plus `--confirm`; bounded GET/header/cookie checks only, no auth/IDOR/injection testing |
+| Interface verification queue | `interface-queue` | Converts exact route-security cards into a strict bounded zero-request plan; only open object-authorization routes with proven source, recorded object IDs and BOLA-compatible read semantics become candidates, while every other reviewed route gets machine-readable exclusion reasons |
 | Static-to-active BOLA planning | `draft-bola` | Converts open static BOLA/IDOR signals into a non-executable review worksheet; mutation routes are excluded and object IDs/markers remain placeholders |
 | Two-account BOLA verification | `verify-bola` | Exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
 | Agent integration | stdio MCP | Local read-oriented inspection, bounded rule-pack selector previews, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
@@ -757,6 +759,37 @@ Run only after reviewing the target:
 ```bash
 aisec verify-web --authorization authorization.yml --confirm
 ```
+
+## Interface verification candidate queue
+
+Before preparing any dynamic test, derive an auditable queue from a stored scan:
+
+```bash
+aisec interface-queue \
+  --scan <scan-id-or-report.json> \
+  --output interface-queue.json
+```
+
+`interface-queue` performs no network requests and records `networkRequests: 0`
+in its strict output. It reviews every canonical route-security card, but only an
+open `object_authorization` finding with a normalized exact route association, a
+safe relative source location, a recorded handler, at least one detector-recorded
+object identifier and BOLA-compatible read semantics becomes a candidate. A
+`GET` is labeled `safe_get`. A query/detail-style `POST` may be labeled
+`reviewed_read_post`, but still requires `confirm_post_read_only`; a path with a
+mutation marker is always excluded.
+
+Closed or suppressed evidence, other vulnerability categories, ambiguous read
+semantics, unproven route provenance and missing object identifiers remain in a
+bounded exclusion list with stable reason codes. Aggregate reason counts cover
+all reviewed routes even when only the first 100 candidate or exclusion details
+can be emitted. Any source or output omission changes queue coverage to
+`partial`; `coverageScope: observed_route_cards_only` makes clear that
+`complete` describes disposition of observed cards, not endpoint discovery or
+the underlying scan's detector coverage. The queue contains route templates and evidence references only—no
+host, credentials, concrete object IDs, request bodies or response values—and is
+not accepted by either verifier. It is a preparation aid, not proof of
+reachability, exploitability or safety.
 
 ## Authorized two-account BOLA verification
 
@@ -912,7 +945,7 @@ as resolved, with no new high/critical finding.
 
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, CI
 reports, fix contracts, the rule catalog, declarative rule packs and their selector previews, trusted security policies, passive-web
-authorization, BOLA draft plans and BOLA authorization manifests in
+authorization, the bounded `InterfaceVerificationQueue 1.0.0`, BOLA draft plans and BOLA authorization manifests in
 [`schemas/`](schemas/). `SecurityPolicy 1.1.0` adds the optional additive
 route-security baseline gate and strictly preserves legacy `1.0.0` policies.
 `RulePack 1.1.0` adds bounded required-literal absence
@@ -940,7 +973,8 @@ The package also exports `validateScanReport`, `validateCiReport`,
 `validateRuleCatalog`, `validateRulePack`, `validateRulePackPreview`, `validateSecurityPolicy`, `loadRuleCatalog`,
 `renderRuleCatalog`, `parseRulePack`, `loadTrustedRulePack`,
 `loadTrustedRulePacks`, `previewRulePacks`, `renderRulePackPreview`, `parseSecurityPolicy`, `loadTrustedPolicy`,
-`validateAuthorizationManifestSchema`, `validateBolaDraftPlan` and
+`createInterfaceVerificationQueue`, `interfaceVerificationQueue`,
+`validateInterfaceVerificationQueue`, `validateAuthorizationManifestSchema`, `validateBolaDraftPlan` and
 `validateBolaAuthorizationManifestSchema` for integrations that consume these
 objects directly. The JSON catalog is also exported at
 `@aisec/cli/rules/catalog.json`. Fields declared optional may be omitted by

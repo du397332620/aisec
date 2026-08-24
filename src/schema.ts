@@ -2,6 +2,7 @@ export const SCHEMA_VERSION = "1.0.0" as const;
 export const SCAN_REPORT_SCHEMA_VERSION = "1.4.0" as const;
 export const CI_REPORT_SCHEMA_VERSION = "1.4.0" as const;
 export const RULE_PACK_PREVIEW_SCHEMA_VERSION = "1.0.0" as const;
+export const INTERFACE_VERIFICATION_QUEUE_SCHEMA_VERSION = "1.0.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type EvidenceLevel = "verified" | "static_confirmed" | "inferred";
@@ -328,6 +329,120 @@ export interface RouteSecurityComparison {
   remaining: RouteSecurityComparisonEntry[];
   resolved: RouteSecurityComparisonEntry[];
   notRechecked: RouteSecurityComparisonEntry[];
+}
+
+export type InterfaceVerificationMethodPolicy = "safe_get" | "reviewed_read_post";
+export type InterfaceVerificationRequiredReview =
+  | "confirm_route_and_fixture_match"
+  | "confirm_response_evidence"
+  | "confirm_post_read_only";
+export type InterfaceVerificationExclusionReason =
+  | "no_open_finding"
+  | "no_open_object_authorization_finding"
+  | "unsupported_verification_category"
+  | "mutation_semantics"
+  | "ambiguous_read_semantics"
+  | "unproven_route_source"
+  | "missing_object_identifier";
+
+export interface InterfaceVerificationSource {
+  signalId: string;
+  ruleId: string;
+  fingerprint: string;
+  evidenceLevel: EvidenceLevel;
+  handler: string;
+  objectIdFields: string[];
+  openFindingIds: string[];
+  omittedOpenFindingIds: number;
+  location: {
+    path: string;
+    line?: number;
+    column?: number;
+  };
+}
+
+export interface InterfaceVerificationCandidate {
+  id: string;
+  framework: RouteSecurityFramework;
+  route: string;
+  method: "GET" | "POST";
+  path: string;
+  severity: Severity;
+  categories: RouteSecurityCategory[];
+  verification: "two_account_object_read";
+  methodPolicy: InterfaceVerificationMethodPolicy;
+  eligibility: [
+    "open_object_authorization_finding",
+    "exact_route_provenance",
+    "bola_read_compatible",
+    "recorded_object_identifier",
+  ];
+  objectIdFields: string[];
+  sourceCount: number;
+  sources: InterfaceVerificationSource[];
+  omittedSources: number;
+  requiredReviews: InterfaceVerificationRequiredReview[];
+}
+
+export interface InterfaceVerificationExclusion {
+  id: string;
+  framework: RouteSecurityFramework;
+  route: string;
+  method: string;
+  path: string;
+  severity: Severity;
+  categories: RouteSecurityCategory[];
+  reasons: InterfaceVerificationExclusionReason[];
+  signalCount: number;
+  signalIds: string[];
+  omittedSignals: number;
+  openFindingCount: number;
+  openFindingIds: string[];
+  omittedOpenFindings: number;
+}
+
+export interface InterfaceVerificationQueue {
+  schemaVersion: typeof INTERFACE_VERIFICATION_QUEUE_SCHEMA_VERSION;
+  queueId: string;
+  scanId: string;
+  projectId: string;
+  generatedAt: string;
+  status: "review_required";
+  coverage: "complete" | "partial";
+  coverageScope: "observed_route_cards_only";
+  networkRequests: 0;
+  summary: {
+    reviewedRoutes: number;
+    eligibleRoutes: number;
+    excludedRoutes: number;
+    emittedCandidates: number;
+    omittedCandidates: number;
+    emittedExclusions: number;
+    omittedExclusions: number;
+    omittedSourceRecords: number;
+    omittedFindingIds: number;
+    sourceOmissions: {
+      routeAliases: number;
+      associations: number;
+    };
+    exclusionReasons: Array<{
+      reason: InterfaceVerificationExclusionReason;
+      routes: number;
+    }>;
+  };
+  candidates: InterfaceVerificationCandidate[];
+  exclusions: InterfaceVerificationExclusion[];
+  prerequisites: [
+    "authorized_non_production_target",
+    "two_distinct_low_privilege_accounts",
+    "precreated_synthetic_owner_object",
+    "exact_object_id_no_enumeration",
+    "review_response_evidence",
+    "manual_manifest_review_and_confirm",
+  ];
+  limitations: string[];
+  nextCommand: "aisec draft-bola --scan <same-scan-id-or-report.json> --output bola-draft.json";
+  disclaimer: string;
 }
 
 export interface ScanComparison {

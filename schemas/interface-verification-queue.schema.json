@@ -1,0 +1,260 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/interface-verification-queue-1.0.0.json",
+  "title": "AIsec Interface Verification Queue 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "queueId", "scanId", "projectId", "generatedAt", "status",
+    "coverage", "coverageScope", "networkRequests", "summary", "candidates", "exclusions",
+    "prerequisites", "limitations", "nextCommand", "disclaimer"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "queueId": { "type": "string", "pattern": "^interface_queue_[0-9a-f]{16}$" },
+    "scanId": { "type": "string", "pattern": "^scan_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "projectId": { "type": "string", "pattern": "^project_[0-9a-f]{16}$" },
+    "generatedAt": { "type": "string", "format": "date-time" },
+    "status": { "const": "review_required" },
+    "coverage": { "enum": ["complete", "partial"] },
+    "coverageScope": { "const": "observed_route_cards_only" },
+    "networkRequests": { "const": 0 },
+    "summary": { "$ref": "#/$defs/summary" },
+    "candidates": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/candidate" }
+    },
+    "exclusions": {
+      "type": "array",
+      "maxItems": 100,
+      "items": { "$ref": "#/$defs/exclusion" }
+    },
+    "prerequisites": {
+      "const": [
+        "authorized_non_production_target",
+        "two_distinct_low_privilege_accounts",
+        "precreated_synthetic_owner_object",
+        "exact_object_id_no_enumeration",
+        "review_response_evidence",
+        "manual_manifest_review_and_confirm"
+      ]
+    },
+    "limitations": {
+      "type": "array",
+      "maxItems": 10,
+      "uniqueItems": true,
+      "items": { "type": "string", "minLength": 1, "maxLength": 500 }
+    },
+    "nextCommand": { "const": "aisec draft-bola --scan <same-scan-id-or-report.json> --output bola-draft.json" },
+    "disclaimer": { "type": "string", "minLength": 1, "maxLength": 1000 }
+  },
+  "$defs": {
+    "nonNegative": { "type": "integer", "minimum": 0 },
+    "category": {
+      "enum": [
+        "authentication", "object_authorization", "privileged_authorization",
+        "sql_injection", "ssrf", "untrusted_file_path", "credential_forwarding",
+        "exception_disclosure"
+      ]
+    },
+    "categories": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 8,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/category" }
+    },
+    "exclusionReason": {
+      "enum": [
+        "no_open_finding",
+        "no_open_object_authorization_finding",
+        "unsupported_verification_category",
+        "mutation_semantics",
+        "ambiguous_read_semantics",
+        "unproven_route_source",
+        "missing_object_identifier"
+      ]
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "reviewedRoutes", "eligibleRoutes", "excludedRoutes", "emittedCandidates",
+        "omittedCandidates", "emittedExclusions", "omittedExclusions",
+        "omittedSourceRecords", "omittedFindingIds", "sourceOmissions",
+        "exclusionReasons"
+      ],
+      "properties": {
+        "reviewedRoutes": { "$ref": "#/$defs/nonNegative" },
+        "eligibleRoutes": { "$ref": "#/$defs/nonNegative" },
+        "excludedRoutes": { "$ref": "#/$defs/nonNegative" },
+        "emittedCandidates": { "$ref": "#/$defs/nonNegative" },
+        "omittedCandidates": { "$ref": "#/$defs/nonNegative" },
+        "emittedExclusions": { "$ref": "#/$defs/nonNegative" },
+        "omittedExclusions": { "$ref": "#/$defs/nonNegative" },
+        "omittedSourceRecords": { "$ref": "#/$defs/nonNegative" },
+        "omittedFindingIds": { "$ref": "#/$defs/nonNegative" },
+        "sourceOmissions": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["routeAliases", "associations"],
+          "properties": {
+            "routeAliases": { "$ref": "#/$defs/nonNegative" },
+            "associations": { "$ref": "#/$defs/nonNegative" }
+          }
+        },
+        "exclusionReasons": {
+          "type": "array",
+          "maxItems": 7,
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["reason", "routes"],
+            "properties": {
+              "reason": { "$ref": "#/$defs/exclusionReason" },
+              "routes": { "type": "integer", "minimum": 1 }
+            }
+          }
+        }
+      }
+    },
+    "location": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1, "maxLength": 1024 },
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "identifierFields": {
+      "type": "array",
+      "maxItems": 40,
+      "uniqueItems": true,
+      "items": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$", "maxLength": 100 }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "signalId", "ruleId", "fingerprint", "evidenceLevel", "handler",
+        "objectIdFields", "openFindingIds", "omittedOpenFindingIds", "location"
+      ],
+      "properties": {
+        "signalId": { "type": "string", "pattern": "^sig_[0-9a-f]{16}$" },
+        "ruleId": { "type": "string", "minLength": 1, "maxLength": 300 },
+        "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+        "evidenceLevel": { "enum": ["verified", "static_confirmed", "inferred"] },
+        "handler": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
+        "objectIdFields": { "$ref": "#/$defs/identifierFields" },
+        "openFindingIds": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^finding_[0-9a-f]{16}$" }
+        },
+        "omittedOpenFindingIds": { "$ref": "#/$defs/nonNegative" },
+        "location": { "$ref": "#/$defs/location" }
+      }
+    },
+    "candidate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "framework", "route", "method", "path", "severity", "categories",
+        "verification", "methodPolicy", "eligibility", "objectIdFields",
+        "sourceCount", "sources", "omittedSources", "requiredReviews"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^interface_candidate_[0-9a-f]{16}$" },
+        "framework": { "enum": ["FastAPI", "Express", "NestJS"] },
+        "route": { "type": "string", "pattern": "^(?:GET|POST) +/[^\\s\\u007f]{0,480}$", "maxLength": 512 },
+        "method": { "enum": ["GET", "POST"] },
+        "path": { "type": "string", "pattern": "^/[^\\s\\u007f]{0,480}$", "maxLength": 481 },
+        "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
+        "categories": { "$ref": "#/$defs/categories" },
+        "verification": { "const": "two_account_object_read" },
+        "methodPolicy": { "enum": ["safe_get", "reviewed_read_post"] },
+        "eligibility": {
+          "const": [
+            "open_object_authorization_finding",
+            "exact_route_provenance",
+            "bola_read_compatible",
+            "recorded_object_identifier"
+          ]
+        },
+        "objectIdFields": {
+          "allOf": [
+            { "$ref": "#/$defs/identifierFields" },
+            { "type": "array", "minItems": 1 }
+          ]
+        },
+        "sourceCount": { "type": "integer", "minimum": 1 },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/source" }
+        },
+        "omittedSources": { "$ref": "#/$defs/nonNegative" },
+        "requiredReviews": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 3,
+          "uniqueItems": true,
+          "items": {
+            "enum": [
+              "confirm_route_and_fixture_match",
+              "confirm_response_evidence",
+              "confirm_post_read_only"
+            ]
+          }
+        }
+      }
+    },
+    "exclusion": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id", "framework", "route", "method", "path", "severity", "categories",
+        "reasons", "signalCount", "signalIds", "omittedSignals",
+        "openFindingCount", "openFindingIds", "omittedOpenFindings"
+      ],
+      "properties": {
+        "id": { "type": "string", "pattern": "^interface_exclusion_[0-9a-f]{16}$" },
+        "framework": { "enum": ["FastAPI", "Express", "NestJS"] },
+        "route": { "type": "string", "pattern": "^[A-Z]+ +/[^\\s\\u007f]{0,480}$", "maxLength": 512 },
+        "method": { "type": "string", "pattern": "^[A-Z]+$", "maxLength": 20 },
+        "path": { "type": "string", "pattern": "^/[^\\s\\u007f]{0,480}$", "maxLength": 481 },
+        "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
+        "categories": { "$ref": "#/$defs/categories" },
+        "reasons": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 7,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/exclusionReason" }
+        },
+        "signalCount": { "$ref": "#/$defs/nonNegative" },
+        "signalIds": {
+          "type": "array",
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^sig_[0-9a-f]{16}$" }
+        },
+        "omittedSignals": { "$ref": "#/$defs/nonNegative" },
+        "openFindingCount": { "$ref": "#/$defs/nonNegative" },
+        "openFindingIds": {
+          "type": "array",
+          "maxItems": 20,
+          "uniqueItems": true,
+          "items": { "type": "string", "pattern": "^finding_[0-9a-f]{16}$" }
+        },
+        "omittedOpenFindings": { "$ref": "#/$defs/nonNegative" }
+      }
+    }
+  }
+}

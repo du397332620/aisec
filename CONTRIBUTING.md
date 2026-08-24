@@ -71,3 +71,11 @@ Report-format changes must validate their public contract before serialization
 and include hostile target-controlled text tests. GitHub annotations must reject
 unsafe paths, escape workflow-command syntax and retain deterministic bounds;
 Markdown and HTML must not turn report content into active links or markup.
+
+Interface-queue changes must remain a zero-request transformation of a validated
+stored report and reuse both the route-security review and BOLA route policy.
+Keep candidate/exclusion output deterministic and bounded, reject unsafe source
+paths and contradictory counts, preserve aggregate exclusion reasons, and never
+add target hosts, credentials, concrete object IDs, request bodies or automatic
+verifier execution. Update the public queue schema, CLI/API, docs and installed-
+package tests together.

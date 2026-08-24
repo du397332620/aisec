@@ -2,12 +2,13 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import type { AuthorizationManifest, BolaAuthorizationManifest, BolaDraftPlan, CiReport, FixContract, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
-import { routeSecurityIssueKey } from "./route-security.js";
+import type { AuthorizationManifest, BolaAuthorizationManifest, BolaDraftPlan, CiReport, FixContract, InterfaceVerificationQueue, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
+import { ROUTE_SECURITY_RULES, routeSecurityIssueKey } from "./route-security.js";
 import { evaluateRouteSecurityBaselineGate } from "./route-security-gate.js";
 import { safeRelativePath } from "../reporters/safety.js";
+import { classifyBolaStaticRoute } from "../web/bola-policy.js";
 
-type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaDraftPlan" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
+type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaDraftPlan" | "InterfaceVerificationQueue" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
 
 function loadSchema(filename: string): object {
   const path = fileURLToPath(new URL(`../../../schemas/${filename}`, import.meta.url));
@@ -24,6 +25,7 @@ const fixContractValidator = ajv.compile(loadSchema("fix-contract.schema.json"))
 const authorizationManifestValidator = ajv.compile(loadSchema("authorization-manifest.schema.json"));
 const bolaAuthorizationManifestValidator = ajv.compile(loadSchema("bola-authorization-manifest.schema.json"));
 const bolaDraftPlanValidator = ajv.compile(loadSchema("bola-draft.schema.json"));
+const interfaceVerificationQueueValidator = ajv.compile(loadSchema("interface-verification-queue.schema.json"));
 const ruleCatalogValidator = ajv.compile(loadSchema("rule-catalog.schema.json"));
 const rulePackValidator = ajv.compile(loadSchema("rule-pack.schema.json"));
 const rulePackPreviewValidator = ajv.compile(loadSchema("rule-pack-preview.schema.json"));
@@ -406,6 +408,161 @@ export function validateBolaAuthorizationManifestSchema(value: unknown): BolaAut
 
 export function validateBolaDraftPlan(value: unknown): BolaDraftPlan {
   return assertSchema<BolaDraftPlan>("BolaDraftPlan", bolaDraftPlanValidator, value);
+}
+
+const INTERFACE_EXCLUSION_REASON_ORDER = [
+  "no_open_finding",
+  "no_open_object_authorization_finding",
+  "unsupported_verification_category",
+  "mutation_semantics",
+  "ambiguous_read_semantics",
+  "unproven_route_source",
+  "missing_object_identifier",
+] as const;
+
+export function validateInterfaceVerificationQueue(value: unknown): InterfaceVerificationQueue {
+  const queue = assertSchema<InterfaceVerificationQueue>(
+    "InterfaceVerificationQueue",
+    interfaceVerificationQueueValidator,
+    value,
+  );
+  const summary = queue.summary;
+  if (summary.reviewedRoutes !== summary.eligibleRoutes + summary.excludedRoutes) {
+    throw new Error("InterfaceVerificationQueue route totals are inconsistent");
+  }
+  if (summary.emittedCandidates !== queue.candidates.length
+    || summary.eligibleRoutes !== summary.emittedCandidates + summary.omittedCandidates
+    || summary.emittedExclusions !== queue.exclusions.length
+    || summary.excludedRoutes !== summary.emittedExclusions + summary.omittedExclusions) {
+    throw new Error("InterfaceVerificationQueue emitted and omitted route totals are inconsistent");
+  }
+  const shouldBePartial = summary.omittedCandidates > 0
+    || summary.omittedExclusions > 0
+    || summary.omittedSourceRecords > 0
+    || summary.omittedFindingIds > 0
+    || summary.sourceOmissions.routeAliases > 0
+    || summary.sourceOmissions.associations > 0;
+  if ((queue.coverage === "partial") !== shouldBePartial) {
+    throw new Error("InterfaceVerificationQueue coverage is inconsistent with recorded omissions");
+  }
+
+  const visibleOmittedSourceRecords = queue.candidates.reduce((total, candidate) => total + candidate.omittedSources, 0)
+    + queue.exclusions.reduce((total, exclusion) => total + exclusion.omittedSignals, 0);
+  const visibleOmittedFindingIds = queue.candidates.reduce((total, candidate) => (
+    total + candidate.sources.reduce((sourceTotal, source) => sourceTotal + source.omittedOpenFindingIds, 0)
+  ), 0) + queue.exclusions.reduce((total, exclusion) => total + exclusion.omittedOpenFindings, 0);
+  const routeDetailsAreComplete = summary.omittedCandidates === 0 && summary.omittedExclusions === 0;
+  if (summary.omittedSourceRecords < visibleOmittedSourceRecords
+    || summary.omittedFindingIds < visibleOmittedFindingIds
+    || (routeDetailsAreComplete && (summary.omittedSourceRecords !== visibleOmittedSourceRecords
+      || summary.omittedFindingIds !== visibleOmittedFindingIds))) {
+    throw new Error("InterfaceVerificationQueue evidence omission totals are inconsistent");
+  }
+
+  const routeIdentities = new Set<string>();
+  for (const candidate of queue.candidates) {
+    const identity = `${candidate.framework}\u0000${candidate.route}`;
+    if (routeIdentities.has(identity)) throw new Error("InterfaceVerificationQueue contains a duplicate route identity");
+    routeIdentities.add(identity);
+    if (candidate.route !== `${candidate.method} ${candidate.path}`) {
+      throw new Error(`InterfaceVerificationQueue candidate ${candidate.id} route fields are inconsistent`);
+    }
+    const classification = classifyBolaStaticRoute(candidate.method, candidate.path);
+    if (classification.classification !== "read_candidate") {
+      throw new Error(`InterfaceVerificationQueue candidate ${candidate.id} is not BOLA read compatible`);
+    }
+    const expectedPolicy = candidate.method === "GET" ? "safe_get" : "reviewed_read_post";
+    if (candidate.methodPolicy !== expectedPolicy) {
+      throw new Error(`InterfaceVerificationQueue candidate ${candidate.id} method policy is inconsistent`);
+    }
+    const expectedReviews = candidate.method === "POST"
+      ? ["confirm_route_and_fixture_match", "confirm_response_evidence", "confirm_post_read_only"]
+      : ["confirm_route_and_fixture_match", "confirm_response_evidence"];
+    if (candidate.requiredReviews.length !== expectedReviews.length
+      || candidate.requiredReviews.some((review, index) => review !== expectedReviews[index])) {
+      throw new Error(`InterfaceVerificationQueue candidate ${candidate.id} required reviews are inconsistent`);
+    }
+    if (!candidate.categories.includes("object_authorization")) {
+      throw new Error(`InterfaceVerificationQueue candidate ${candidate.id} lacks object-authorization evidence`);
+    }
+    if (candidate.sourceCount !== candidate.sources.length + candidate.omittedSources) {
+      throw new Error(`InterfaceVerificationQueue candidate ${candidate.id} source totals are inconsistent`);
+    }
+    const sourceIds = new Set<string>();
+    const candidateObjectIds = new Set(candidate.objectIdFields);
+    for (const source of candidate.sources) {
+      if (sourceIds.has(source.signalId)) {
+        throw new Error(`InterfaceVerificationQueue candidate ${candidate.id} contains duplicate source signals`);
+      }
+      sourceIds.add(source.signalId);
+      if (safeRelativePath(source.location.path) !== source.location.path) {
+        throw new Error(`InterfaceVerificationQueue candidate ${candidate.id} contains an unsafe or non-normalized source path`);
+      }
+      const presentation = ROUTE_SECURITY_RULES[source.ruleId];
+      if (presentation?.category !== "object_authorization" || presentation.framework !== candidate.framework) {
+        throw new Error(`InterfaceVerificationQueue candidate ${candidate.id} source is not trusted object-authorization evidence`);
+      }
+      if (source.objectIdFields.some((field) => !candidateObjectIds.has(field))) {
+        throw new Error(`InterfaceVerificationQueue candidate ${candidate.id} source object identifiers are inconsistent`);
+      }
+    }
+  }
+
+  const visibleReasonCounts = new Map<string, number>();
+  for (const exclusion of queue.exclusions) {
+    const identity = `${exclusion.framework}\u0000${exclusion.route}`;
+    if (routeIdentities.has(identity)) throw new Error("InterfaceVerificationQueue contains a duplicate route identity");
+    routeIdentities.add(identity);
+    if (exclusion.route !== `${exclusion.method} ${exclusion.path}`) {
+      throw new Error(`InterfaceVerificationQueue exclusion ${exclusion.id} route fields are inconsistent`);
+    }
+    if (exclusion.signalCount !== exclusion.signalIds.length + exclusion.omittedSignals
+      || exclusion.openFindingCount !== exclusion.openFindingIds.length + exclusion.omittedOpenFindings) {
+      throw new Error(`InterfaceVerificationQueue exclusion ${exclusion.id} evidence totals are inconsistent`);
+    }
+    const classification = classifyBolaStaticRoute(exclusion.method, exclusion.path).classification;
+    if ((classification === "mutation_excluded") !== exclusion.reasons.includes("mutation_semantics")
+      || (classification === "manual_review") !== exclusion.reasons.includes("ambiguous_read_semantics")) {
+      throw new Error(`InterfaceVerificationQueue exclusion ${exclusion.id} read classification is inconsistent`);
+    }
+    if ((exclusion.openFindingCount === 0) !== exclusion.reasons.includes("no_open_finding")) {
+      throw new Error(`InterfaceVerificationQueue exclusion ${exclusion.id} open-finding reason is inconsistent`);
+    }
+    if ((exclusion.categories.includes("object_authorization")) === exclusion.reasons.includes("unsupported_verification_category")) {
+      throw new Error(`InterfaceVerificationQueue exclusion ${exclusion.id} verification category reason is inconsistent`);
+    }
+    const orderedReasons = INTERFACE_EXCLUSION_REASON_ORDER.filter((reason) => exclusion.reasons.includes(reason));
+    if (orderedReasons.length !== exclusion.reasons.length
+      || orderedReasons.some((reason, index) => reason !== exclusion.reasons[index])) {
+      throw new Error(`InterfaceVerificationQueue exclusion ${exclusion.id} reasons are not deterministic`);
+    }
+    for (const reason of exclusion.reasons) visibleReasonCounts.set(reason, (visibleReasonCounts.get(reason) ?? 0) + 1);
+  }
+
+  const summaryReasons = new Set<string>();
+  let previousReasonIndex = -1;
+  let reasonAssignments = 0;
+  for (const entry of summary.exclusionReasons) {
+    if (summaryReasons.has(entry.reason)) throw new Error("InterfaceVerificationQueue contains duplicate exclusion reason totals");
+    summaryReasons.add(entry.reason);
+    const reasonIndex = INTERFACE_EXCLUSION_REASON_ORDER.indexOf(entry.reason);
+    if (reasonIndex <= previousReasonIndex) throw new Error("InterfaceVerificationQueue exclusion reason totals are not deterministic");
+    previousReasonIndex = reasonIndex;
+    const visible = visibleReasonCounts.get(entry.reason) ?? 0;
+    if (entry.routes < visible || entry.routes > summary.excludedRoutes
+      || (summary.omittedExclusions === 0 && entry.routes !== visible)) {
+      throw new Error(`InterfaceVerificationQueue exclusion reason count is inconsistent for ${entry.reason}`);
+    }
+    reasonAssignments += entry.routes;
+  }
+  if ([...visibleReasonCounts.keys()].some((reason) => !summaryReasons.has(reason))) {
+    throw new Error("InterfaceVerificationQueue is missing a visible exclusion reason total");
+  }
+  if ((summary.excludedRoutes === 0) !== (summary.exclusionReasons.length === 0)
+    || reasonAssignments < summary.excludedRoutes) {
+    throw new Error("InterfaceVerificationQueue exclusion reason coverage is inconsistent");
+  }
+  return queue;
 }
 
 export function validateRuleCatalog(value: unknown): RuleCatalog {

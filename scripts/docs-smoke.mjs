@@ -56,6 +56,8 @@ try {
     "--policy ../trusted/security-policy.yml",
     "--rule-pack ../trusted/rule-pack.yml",
     "aisec rule-pack check ../target",
+    "aisec interface-queue",
+    "InterfaceVerificationQueue 1.0.0",
     "RulePack 1.1.0",
     "RulePackPreview 1.0.0",
     "SecurityPolicy 1.1.0",
@@ -96,6 +98,7 @@ try {
   assert.match(help, /--confirm-policy-suppressions/);
   assert.match(help, /terminal\|json\|html\|sarif\|ci\|github\|markdown/);
   assert.match(help, /verify-bola --authorization <manifest\.yml> --confirm/);
+  assert.match(help, /interface-queue --scan <scan-id\|report\.json>/);
   assert.match(help, /draft-bola --scan <scan-id\|report\.json>/);
   const doctor = report(run(["doctor", "--json"]), "doctor");
   assert.equal(doctor.node, process.version);
@@ -138,6 +141,12 @@ try {
   assert.ok(finding, "vulnerable fixture must expose a finding for the documented fix-contract path");
   const contract = JSON.parse(run(["fix-contract", "--scan", vulnerable.scanId, "--finding", finding.id, "--format", "json"]).stdout);
   assert.equal(contract.scanId, vulnerable.scanId);
+
+  const interfaceQueue = report(run(["interface-queue", "--scan", vulnerable.scanId]), "interface queue");
+  assert.equal(interfaceQueue.scanId, vulnerable.scanId);
+  assert.equal(interfaceQueue.status, "review_required");
+  assert.equal(interfaceQueue.networkRequests, 0);
+  assert.equal(interfaceQueue.summary.reviewedRoutes, interfaceQueue.summary.eligibleRoutes + interfaceQueue.summary.excludedRoutes);
 
   const bolaDraft = report(run(["draft-bola", "--scan", vulnerable.scanId]), "BOLA draft");
   assert.equal(bolaDraft.scanId, vulnerable.scanId);

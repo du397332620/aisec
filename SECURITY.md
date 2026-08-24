@@ -123,6 +123,13 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   explicit `engines prepare trivy` setup command.
 - A local, test or staging URL is accessed only through an explicit
   authorization manifest plus `--confirm`.
+- `interface-queue` is a separate static planning operation over a stored scan
+  report. It resolves no host, reads no credentials, emits no concrete object
+  identifier or request template, and records zero network requests. Only exact
+  open object-authorization routes with detector-recorded object IDs and the
+  existing BOLA read classification are eligible; output/source bounds are
+  visible as partial coverage and all other reviewed routes retain exclusion
+  reasons.
 - Passive web requests pin a validated DNS answer to the socket and redirects
   must retain the exact authorized origin. Local verification is deliberately
   allowed to reach private addresses; staging/test verification is not.
