@@ -79,3 +79,11 @@ paths and contradictory counts, preserve aggregate exclusion reasons, and never
 add target hosts, credentials, concrete object IDs, request bodies or automatic
 verifier execution. Update the public queue schema, CLI/API, docs and installed-
 package tests together.
+
+Queue-to-BOLA selection changes must resolve candidate IDs only against a queue
+regenerated from the same validated report. Preserve legacy unselected draft
+compatibility, the nine-case bound, deterministic exact-route ordering and the
+explicit queue/interface-candidate/route/signal/BOLA-candidate binding. Unknown,
+duplicate, omitted, multi-source or truncated-evidence selections must fail
+closed; never accept target hosts, credentials, concrete object IDs, external
+queue files or automatic verifier execution.

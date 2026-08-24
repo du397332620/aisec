@@ -4,11 +4,21 @@ import { join } from "node:path";
 import { dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { scanProject } from "../src/core/scan.js";
-import { createBolaDraftPlan } from "../src/web/bola-draft.js";
+import { createBolaDraftPlan, createSelectedBolaDraftPlan } from "../src/web/bola-draft.js";
 import { validateBolaDraftPlan } from "../src/core/schema-validation.js";
+import { createInterfaceVerificationQueue } from "../src/web/interface-verification-queue.js";
+import type { Finding, ScanReport, Signal } from "../src/schema.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "..", "..", "test", "fixtures");
+
+async function fastApiReadReport(): Promise<ScanReport> {
+  return (await scanProject(join(fixtures, "corpus", "fastapi-authorization", "positive-read"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  })).report;
+}
 
 test("BOLA draft turns an open static read finding into a non-executable review template", async () => {
   const { report } = await scanProject(join(fixtures, "corpus", "fastapi-authorization", "positive-read"), {
@@ -33,6 +43,170 @@ test("BOLA draft turns an open static read finding into a non-executable review 
   assert.equal(draft.status, "review_required");
   assert.match(draft.disclaimer, /performs no network requests/);
   assert.doesNotThrow(() => validateBolaDraftPlan(draft));
+});
+
+test("selected BOLA draft binds one same-report interface candidate without performing requests", async () => {
+  const report = await fastApiReadReport();
+  const before = structuredClone(report);
+  const queue = createInterfaceVerificationQueue(report);
+  const interfaceCandidate = queue.candidates[0];
+  assert.ok(interfaceCandidate);
+  let fetchCalls = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (() => {
+    fetchCalls += 1;
+    throw new Error("selected BOLA draft must never call fetch");
+  }) as typeof fetch;
+  try {
+    const draft = createSelectedBolaDraftPlan(report, [interfaceCandidate.id]);
+    assert.equal(fetchCalls, 0);
+    assert.equal(draft.schemaVersion, "1.1.0");
+    assert.deepEqual(draft.summary, { total: 1, readCandidates: 1, mutationExcluded: 0, manualReview: 0 });
+    assert.deepEqual(draft.selection, {
+      mode: "interface_queue",
+      queueId: queue.queueId,
+      queueCoverage: "complete",
+      queueCoverageScope: "observed_route_cards_only",
+      candidateIds: [interfaceCandidate.id],
+      bindings: [{
+        interfaceCandidateId: interfaceCandidate.id,
+        bolaCandidateId: draft.candidates[0]!.id,
+        signalId: interfaceCandidate.sources[0]!.signalId,
+        route: interfaceCandidate.route,
+      }],
+    });
+    assert.equal(draft.candidates[0]?.classification, "read_candidate");
+    assert.deepEqual(draft.candidates[0]?.requestTemplate?.body, {
+      report_id: "<SET_PRECREATED_OWNER_REPORT_ID>",
+    });
+    assert.match(draft.disclaimer, /performs no network requests/u);
+    assert.doesNotThrow(() => validateBolaDraftPlan(draft));
+    assert.deepEqual(report, before, "selected draft derivation must not mutate canonical evidence");
+
+    const legacy = createBolaDraftPlan(report);
+    assert.equal(legacy.schemaVersion, "1.0.0");
+    assert.equal(legacy.selection, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test("selected BOLA draft preserves the exact queue alias instead of the signal primary route", async () => {
+  const report = await fastApiReadReport();
+  const signal = report.signals.find((item) => item.ruleId === "fastapi.authorization.object-without-ownership-check");
+  assert.ok(signal?.metadata);
+  signal.metadata.routes = [String(signal.metadata.route), "GET /document/{report_id}"];
+  const queue = createInterfaceVerificationQueue(report);
+  const alias = queue.candidates.find((candidate) => candidate.route === "GET /document/{report_id}");
+  assert.ok(alias);
+
+  const draft = createSelectedBolaDraftPlan(report, [alias.id]);
+  const candidate = draft.candidates[0];
+  assert.equal(candidate?.method, "GET");
+  assert.equal(candidate?.path, "/document/{report_id}");
+  assert.equal(candidate?.requestTemplate?.method, "GET");
+  assert.equal(candidate?.requestTemplate?.path, "/document/{report_id}");
+  assert.equal(candidate?.requestTemplate?.body, undefined);
+  assert.equal(draft.selection?.bindings[0]?.route, "GET /document/{report_id}");
+  assert.notEqual(candidate?.id, createBolaDraftPlan(report).candidates[0]?.id);
+
+  const both = createSelectedBolaDraftPlan(report, queue.candidates.map((candidate) => candidate.id));
+  assert.equal(both.candidates.length, 2);
+  assert.equal(new Set(both.selection?.bindings.map((binding) => binding.signalId)).size, 1);
+  assert.doesNotThrow(() => validateBolaDraftPlan(both));
+});
+
+test("selected BOLA draft fails closed for invalid, excluded or incomplete selections", async () => {
+  const report = await fastApiReadReport();
+  const queue = createInterfaceVerificationQueue(report);
+  const id = queue.candidates[0]!.id;
+  assert.throws(() => createSelectedBolaDraftPlan(report, []), /one to nine candidate IDs/u);
+  assert.throws(() => createSelectedBolaDraftPlan(report, [id, id]), /duplicate interface candidate ID/u);
+  assert.throws(() => createSelectedBolaDraftPlan(report, ["interface_candidate_0000000000000000"]), /not an emitted eligible candidate/u);
+
+  const tooMany = await fastApiReadReport();
+  const tooManySignal = tooMany.signals.find((item) => item.ruleId === "fastapi.authorization.object-without-ownership-check");
+  assert.ok(tooManySignal?.metadata);
+  tooManySignal.metadata.routes = Array.from({ length: 10 }, (_, index) => `GET /document/${index}/{report_id}`);
+  const tooManyIds = createInterfaceVerificationQueue(tooMany).candidates.slice(0, 10).map((candidate) => candidate.id);
+  assert.equal(tooManyIds.length, 10);
+  assert.throws(() => createSelectedBolaDraftPlan(tooMany, tooManyIds), /one to nine candidate IDs/u);
+
+  const mutation = (await scanProject(join(fixtures, "corpus", "fastapi-authorization", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  })).report;
+  const excludedId = createInterfaceVerificationQueue(mutation).exclusions[0]!.id;
+  assert.throws(() => createSelectedBolaDraftPlan(mutation, [excludedId]), /candidate ID is invalid/u);
+
+  const multipleSources = await fastApiReadReport();
+  const sourceSignal = multipleSources.signals.find((item) => item.ruleId === "fastapi.authorization.object-without-ownership-check");
+  const sourceFinding = multipleSources.findings.find((finding) => sourceSignal && finding.signalIds.includes(sourceSignal.id));
+  assert.ok(sourceSignal);
+  assert.ok(sourceFinding);
+  const secondSignal: Signal = {
+    ...structuredClone(sourceSignal),
+    id: "sig_ffffffffffffffff",
+    fingerprint: "f".repeat(64),
+  };
+  const secondFinding: Finding = {
+    ...structuredClone(sourceFinding),
+    id: "finding_ffffffffffffffff",
+    fingerprint: "e".repeat(64),
+    signalIds: [secondSignal.id],
+  };
+  multipleSources.signals.push(secondSignal);
+  multipleSources.findings.push(secondFinding);
+  const multipleSourceId = createInterfaceVerificationQueue(multipleSources).candidates[0]!.id;
+  assert.throws(() => createSelectedBolaDraftPlan(multipleSources, [multipleSourceId]), /exactly one complete source/u);
+
+  const truncatedFindings = await fastApiReadReport();
+  const truncatedSignal = truncatedFindings.signals.find((item) => item.ruleId === "fastapi.authorization.object-without-ownership-check");
+  const truncatedFinding = truncatedFindings.findings.find((finding) => truncatedSignal && finding.signalIds.includes(truncatedSignal.id));
+  assert.ok(truncatedSignal);
+  assert.ok(truncatedFinding);
+  truncatedFindings.findings = Array.from({ length: 21 }, (_, index): Finding => ({
+    ...structuredClone(truncatedFinding),
+    id: `finding_${index.toString(16).padStart(16, "0")}`,
+    fingerprint: index.toString(16).padStart(64, "0"),
+    signalIds: [truncatedSignal.id],
+  }));
+  const truncatedId = createInterfaceVerificationQueue(truncatedFindings).candidates[0]!.id;
+  assert.throws(() => createSelectedBolaDraftPlan(truncatedFindings, [truncatedId]), /omits open finding IDs/u);
+});
+
+test("selected BOLA draft validator rejects forged selection bindings and version combinations", async () => {
+  const report = await fastApiReadReport();
+  const id = createInterfaceVerificationQueue(report).candidates[0]!.id;
+  const draft = createSelectedBolaDraftPlan(report, [id]);
+
+  const wrongCount = structuredClone(draft);
+  wrongCount.summary.total = 2;
+  assert.throws(() => validateBolaDraftPlan(wrongCount), /selected summary totals are inconsistent/u);
+
+  const wrongRoute = structuredClone(draft);
+  wrongRoute.selection!.bindings[0]!.route = "GET /forged";
+  assert.throws(() => validateBolaDraftPlan(wrongRoute), /binding route is inconsistent/u);
+
+  const wrongSignal = structuredClone(draft);
+  wrongSignal.selection!.bindings[0]!.signalId = "sig_0000000000000000";
+  assert.throws(() => validateBolaDraftPlan(wrongSignal), /binding signal is inconsistent/u);
+
+  const wrongQueue = structuredClone(draft);
+  wrongQueue.selection!.queueId = "interface_queue_0000000000000000";
+  assert.throws(() => validateBolaDraftPlan(wrongQueue), /stable draft ID is inconsistent/u);
+
+  const unsafeSource = structuredClone(draft);
+  unsafeSource.candidates[0]!.source.location.path = "../outside.py";
+  assert.throws(() => validateBolaDraftPlan(unsafeSource), /unsafe or non-normalized source path/u);
+
+  const falselyLegacy = { ...draft, schemaVersion: "1.0.0" };
+  assert.throws(() => validateBolaDraftPlan(falselyLegacy), /BolaDraftPlan.*selection/u);
+
+  const missingSelection = structuredClone(draft) as Partial<typeof draft>;
+  delete missingSelection.selection;
+  assert.throws(() => validateBolaDraftPlan(missingSelection), /BolaDraftPlan.*selection/u);
 });
 
 test("BOLA draft excludes mutation routes and never emits request templates for them", async () => {

@@ -148,6 +148,7 @@ try {
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /--rule-pack <file>/);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /rule-pack check \[path\]/);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /local-gate \[path\].*--state-dir <private-directory>/);
+  assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /draft-bola --scan <scan-id\|report\.json>.*--candidate interface-candidate-id/);
 
   process.stdout.write("Running the installed CLI against safe and vulnerable fixtures...\n");
   const safe = parseReport(run(executable, [
@@ -308,6 +309,44 @@ suppressions: []
   ], { cwd: consumer, env: scanEnvironment }), "installed BOLA draft");
   assert.equal(bolaDraft.status, "review_required");
   assert.equal(bolaDraft.scanId, vulnerable.scanId);
+  assert.equal(bolaDraft.schemaVersion, "1.0.0");
+
+  const selectedSource = parseReport(run(executable, [
+    "scan",
+    join(packageRoot, "test", "fixtures", "corpus", "fastapi-authorization", "positive-read"),
+    "--profile",
+    "native",
+    "--format",
+    "json",
+  ], { cwd: consumer, env: scanEnvironment, expectedStatus: 2 }), "installed selected BOLA source scan");
+  const selectedSourcePath = join(temporary, "data", "scans", `${selectedSource.scanId}.json`);
+  const selectedQueue = parseReport(run(executable, [
+    "interface-queue",
+    "--scan",
+    selectedSourcePath,
+  ], { cwd: consumer, env: scanEnvironment }), "installed selected BOLA queue");
+  assert.equal(selectedQueue.candidates.length, 1);
+  const selectedDraft = parseReport(run(executable, [
+    "draft-bola",
+    "--scan",
+    selectedSourcePath,
+    "--candidate",
+    selectedQueue.candidates[0].id,
+  ], { cwd: consumer, env: scanEnvironment }), "installed selected BOLA draft");
+  assert.equal(selectedDraft.schemaVersion, "1.1.0");
+  assert.equal(selectedDraft.selection.queueId, selectedQueue.queueId);
+  assert.deepEqual(selectedDraft.selection.candidateIds, [selectedQueue.candidates[0].id]);
+
+  const selectedDraftApi = parseReport(run(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `import { readFileSync } from "node:fs"; import { createInterfaceVerificationQueue, createSelectedBolaDraftPlan, validateBolaDraftPlan } from ${JSON.stringify(packageMetadata.name)}; const scan = JSON.parse(readFileSync(${JSON.stringify(selectedSourcePath)}, "utf8")); const queue = createInterfaceVerificationQueue(scan); const value = validateBolaDraftPlan(createSelectedBolaDraftPlan(scan, [queue.candidates[0].id])); process.stdout.write(JSON.stringify({ schemaVersion: value.schemaVersion, queueId: value.selection.queueId, candidates: value.candidates.length }));`,
+  ], { cwd: consumer, env: scanEnvironment }), "installed selected BOLA API");
+  assert.deepEqual(selectedDraftApi, {
+    schemaVersion: "1.1.0",
+    queueId: selectedQueue.queueId,
+    candidates: 1,
+  });
 
   process.stdout.write("Running the public corpus from inside the installed package...\n");
   const benchmarkOutput = run(process.execPath, [join(packageRoot, "dist", "src", "benchmark.js")], {

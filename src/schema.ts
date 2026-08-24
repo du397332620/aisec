@@ -3,6 +3,7 @@ export const SCAN_REPORT_SCHEMA_VERSION = "1.4.0" as const;
 export const CI_REPORT_SCHEMA_VERSION = "1.4.0" as const;
 export const RULE_PACK_PREVIEW_SCHEMA_VERSION = "1.0.0" as const;
 export const INTERFACE_VERIFICATION_QUEUE_SCHEMA_VERSION = "1.0.0" as const;
+export const BOLA_DRAFT_SCHEMA_VERSION = "1.1.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type EvidenceLevel = "verified" | "static_confirmed" | "inferred";
@@ -755,7 +756,7 @@ export interface BolaDraftCandidate {
 }
 
 export interface BolaDraftPlan {
-  schemaVersion: typeof SCHEMA_VERSION;
+  schemaVersion: typeof SCHEMA_VERSION | typeof BOLA_DRAFT_SCHEMA_VERSION;
   draftId: string;
   scanId: string;
   projectId: string;
@@ -768,6 +769,19 @@ export interface BolaDraftPlan {
     manualReview: number;
   };
   candidates: BolaDraftCandidate[];
+  selection?: {
+    mode: "interface_queue";
+    queueId: string;
+    queueCoverage: "complete" | "partial";
+    queueCoverageScope: "observed_route_cards_only";
+    candidateIds: string[];
+    bindings: Array<{
+      interfaceCandidateId: string;
+      bolaCandidateId: string;
+      signalId: string;
+      route: string;
+    }>;
+  };
   prerequisites: string[];
   nextCommand: "aisec verify-bola --authorization <reviewed-manifest.yml> --confirm";
   disclaimer: string;

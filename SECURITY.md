@@ -130,6 +130,11 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   existing BOLA read classification are eligible; output/source bounds are
   visible as partial coverage and all other reviewed routes retain exclusion
   reasons.
+- Selected `draft-bola --candidate` handoff regenerates that queue from the same
+  validated scan report; it does not accept an external queue document. It
+  permits one to nine unique emitted candidates, requires one complete source
+  without truncated finding references, binds queue/route/signal/candidate IDs,
+  and still emits placeholders without resolving a host or sending a request.
 - Passive web requests pin a validated DNS answer to the socket and redirects
   must retain the exact authorized origin. Local verification is deliberately
   allowed to reach private addresses; staging/test verification is not.

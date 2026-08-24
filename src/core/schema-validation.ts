@@ -7,6 +7,7 @@ import { ROUTE_SECURITY_RULES, routeSecurityIssueKey } from "./route-security.js
 import { evaluateRouteSecurityBaselineGate } from "./route-security-gate.js";
 import { safeRelativePath } from "../reporters/safety.js";
 import { classifyBolaStaticRoute } from "../web/bola-policy.js";
+import { stableId } from "./utils.js";
 
 type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaDraftPlan" | "InterfaceVerificationQueue" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
 
@@ -407,7 +408,81 @@ export function validateBolaAuthorizationManifestSchema(value: unknown): BolaAut
 }
 
 export function validateBolaDraftPlan(value: unknown): BolaDraftPlan {
-  return assertSchema<BolaDraftPlan>("BolaDraftPlan", bolaDraftPlanValidator, value);
+  const plan = assertSchema<BolaDraftPlan>("BolaDraftPlan", bolaDraftPlanValidator, value, "1.1.0");
+  if (plan.schemaVersion === "1.0.0") return plan;
+
+  const selection = plan.selection!;
+  const total = plan.candidates.length;
+  if (total < 1 || total > 9
+    || plan.summary.total !== total
+    || plan.summary.readCandidates !== total
+    || plan.summary.mutationExcluded !== 0
+    || plan.summary.manualReview !== 0
+    || selection.candidateIds.length !== total
+    || selection.bindings.length !== total) {
+    throw new Error("BolaDraftPlan selected summary totals are inconsistent");
+  }
+
+  const interfaceIds = new Set<string>();
+  const bolaIds = new Set<string>();
+  const routes = new Set<string>();
+  for (let index = 0; index < total; index += 1) {
+    const candidate = plan.candidates[index]!;
+    const binding = selection.bindings[index]!;
+    const interfaceCandidateId = selection.candidateIds[index]!;
+    if (candidate.classification !== "read_candidate") {
+      throw new Error(`BolaDraftPlan selected candidate ${candidate.id} is not a read candidate`);
+    }
+    if (binding.interfaceCandidateId !== interfaceCandidateId) {
+      throw new Error(`BolaDraftPlan selected binding order is inconsistent at index ${index}`);
+    }
+    if (binding.bolaCandidateId !== candidate.id) {
+      throw new Error(`BolaDraftPlan selected binding candidate is inconsistent at index ${index}`);
+    }
+    if (binding.signalId !== candidate.source.signalId) {
+      throw new Error(`BolaDraftPlan selected binding signal is inconsistent at index ${index}`);
+    }
+    const route = `${candidate.method} ${candidate.path}`;
+    if (binding.route !== route) {
+      throw new Error(`BolaDraftPlan selected binding route is inconsistent at index ${index}`);
+    }
+    if (candidate.requestTemplate?.method !== candidate.method
+      || candidate.requestTemplate.path !== candidate.path) {
+      throw new Error(`BolaDraftPlan selected request template is inconsistent for ${candidate.id}`);
+    }
+    if (safeRelativePath(candidate.source.location.path) !== candidate.source.location.path) {
+      throw new Error(`BolaDraftPlan selected candidate ${candidate.id} contains an unsafe or non-normalized source path`);
+    }
+    const expectedCandidateId = stableId(
+      "bola_candidate",
+      candidate.source.fingerprint,
+      candidate.method,
+      candidate.path,
+    );
+    if (candidate.id !== expectedCandidateId) {
+      throw new Error(`BolaDraftPlan selected candidate ${candidate.id} stable ID is inconsistent`);
+    }
+    if (interfaceIds.has(interfaceCandidateId)
+      || bolaIds.has(candidate.id)
+      || routes.has(route)) {
+      throw new Error("BolaDraftPlan selected bindings contain duplicate identities");
+    }
+    interfaceIds.add(interfaceCandidateId);
+    bolaIds.add(candidate.id);
+    routes.add(route);
+  }
+
+  const expectedDraftId = stableId(
+    "bola_draft",
+    plan.scanId,
+    selection.queueId,
+    ...selection.candidateIds,
+    ...plan.candidates.map((candidate) => candidate.id),
+  );
+  if (plan.draftId !== expectedDraftId) {
+    throw new Error("BolaDraftPlan selected stable draft ID is inconsistent");
+  }
+  return plan;
 }
 
 const INTERFACE_EXCLUSION_REASON_ORDER = [

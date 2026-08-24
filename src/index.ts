@@ -10,7 +10,7 @@ export { compareReports } from "./core/compare.js";
 export { loadReport } from "./core/store.js";
 export { runLocalGate, type LocalGateOptions, type LocalGateResult } from "./core/local-gate.js";
 export { validateAuthorization, validateBolaAuthorization } from "./web/authorization.js";
-export { createBolaDraftPlan, draftBola } from "./web/bola-draft.js";
+export { createBolaDraftPlan, createSelectedBolaDraftPlan, draftBola } from "./web/bola-draft.js";
 export { createInterfaceVerificationQueue, interfaceVerificationQueue } from "./web/interface-verification-queue.js";
 export { serializeReport } from "./reporters/index.js";
 export { buildCiReport, renderGithubAnnotations, renderMarkdownSummary } from "./reporters/ci.js";

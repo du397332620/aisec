@@ -279,7 +279,7 @@ aisec rule-pack check [path] --rule-pack <trusted-rules.yml> [--format terminal|
 aisec report <scan-id|report.json> --format terminal|json|html|sarif|ci|github|markdown
 aisec fix-contract --scan <scan-id> --finding <id> --format json
 aisec interface-queue --scan <scan-id|report.json> --output interface-queue.json
-aisec draft-bola --scan <scan-id|report.json> --output bola-draft.json
+aisec draft-bola --scan <scan-id|report.json> [--candidate interface-candidate-id ...] --output bola-draft.json
 aisec verify-web --authorization authorization.yml --confirm
 aisec verify-bola --authorization bola-authorization.yml --confirm
 aisec doctor
@@ -688,7 +688,7 @@ accepted suppressions for compatible consumers.
 | APK/IPA static resources | Native archive adapter | Optional input; required for pre-deploy mobile artifact coverage when a mobile project/artifact is expected; prioritizes app manifests/plists, DEX/resource tables, JS bundles and the iOS main executable, semantically decodes bounded binary plists, recovers bounded ASCII/UTF-16 strings in memory, and performs no installation, on-disk member extraction or runtime instrumentation |
 | Passive test/staging Web checks | `verify-web` | Explicit authorization plus `--confirm`; bounded GET/header/cookie checks only, no auth/IDOR/injection testing |
 | Interface verification queue | `interface-queue` | Converts exact route-security cards into a strict bounded zero-request plan; only open object-authorization routes with proven source, recorded object IDs and BOLA-compatible read semantics become candidates, while every other reviewed route gets machine-readable exclusion reasons |
-| Static-to-active BOLA planning | `draft-bola` | Converts open static BOLA/IDOR signals into a non-executable review worksheet; mutation routes are excluded and object IDs/markers remain placeholders |
+| Static-to-active BOLA planning | `draft-bola` | Legacy mode converts all open static BOLA/IDOR signals into a non-executable 1.0 worksheet; selected 1.1 mode accepts one to nine same-report interface candidate IDs and binds queue, exact route, source signal and BOLA candidate. Both keep object IDs/markers as placeholders and send no requests |
 | Two-account BOLA verification | `verify-bola` | Exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
 | Agent integration | stdio MCP | Local read-oriented inspection, bounded rule-pack selector previews, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
 | Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; terminal/HTML can group opted-in repeated evidence, derive exact-route security cards and summarize Trivy dependency/IaC/secret evidence by recorded relationship and fix context while retaining every canonical finding; terminal/HTML/CI Markdown keep unattributed FastAPI dataflow visible with bounded reason summaries, and rescans compare exact route/category gaps as newly observed, remaining, resolved or not rechecked without treating suppression as a fix; deployment exposure stays explicitly project-level unless service-to-route ownership is proven; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
@@ -791,6 +791,24 @@ host, credentials, concrete object IDs, request bodies or response values—and 
 not accepted by either verifier. It is a preparation aid, not proof of
 reachability, exploitability or safety.
 
+After reviewing the queue, hand one to nine exact candidate IDs to the BOLA
+worksheet generator. Repeat `--candidate` to select more than one route:
+
+```bash
+aisec draft-bola \
+  --scan <same-scan-id-or-report.json> \
+  --candidate interface_candidate_0123456789abcdef \
+  --output bola-draft.json
+```
+
+The command does not trust a separately supplied queue file. It regenerates the
+queue from the same validated scan report and resolves the IDs there, preventing
+an edited or cross-scan queue from being spliced into the handoff. Unknown,
+duplicate, excluded or omitted IDs fail closed. This first selected slice also
+requires each chosen route to have exactly one complete source record and no
+truncated finding-ID evidence; select a different candidate or review ambiguous
+multi-source evidence manually.
+
 ## Authorized two-account BOLA verification
 
 Before preparing an authorization manifest, generate a review worksheet from a
@@ -802,7 +820,14 @@ aisec draft-bola \
   --output bola-draft.json
 ```
 
-`draft-bola` performs no network requests. It considers only open findings
+Without `--candidate`, `draft-bola` retains the legacy full static worksheet
+behavior and emits `BolaDraftPlan 1.0.0`. With one or more queue candidate IDs,
+it emits `BolaDraftPlan 1.1.0`: every output is a `read_candidate`, and the
+`selection` record binds the regenerated queue ID and coverage, interface
+candidate ID, exact route, source signal and resulting BOLA candidate ID.
+Selected and legacy modes both perform no network requests.
+
+The legacy mode considers only open findings
 tagged `bola` or `idor`, preserves the originating rule and source location,
 and classifies each route as `read_candidate`, `mutation_excluded`, or
 `manual_review`. A read candidate contains placeholders for a pre-created owner
@@ -945,13 +970,16 @@ as resolved, with no new high/critical finding.
 
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, CI
 reports, fix contracts, the rule catalog, declarative rule packs and their selector previews, trusted security policies, passive-web
-authorization, the bounded `InterfaceVerificationQueue 1.0.0`, BOLA draft plans and BOLA authorization manifests in
+authorization, the bounded `InterfaceVerificationQueue 1.0.0`, `BolaDraftPlan 1.1.0` and legacy 1.0 BOLA draft plans, and BOLA authorization manifests in
 [`schemas/`](schemas/). `SecurityPolicy 1.1.0` adds the optional additive
 route-security baseline gate and strictly preserves legacy `1.0.0` policies.
 `RulePack 1.1.0` adds bounded required-literal absence
 assertions and continues to accept legacy `1.0.0` packs only when the new field
 is absent. `RulePackPreview 1.0.0` is the strict bounded output of the CLI,
-Node API and MCP selector-preview operation. Other unchanged contracts remain at `1.0.0`.
+Node API and MCP selector-preview operation. `BolaDraftPlan 1.1.0` adds the
+required same-report interface-queue selection binding while the validator keeps
+legacy `1.0.0` plans readable only when `selection` is absent. Other unchanged
+contracts remain at `1.0.0`.
 `CiReport 1.1.0` added rule-pack records, `CiReport 1.2.0` added the required
 FastAPI route-attribution summary, `CiReport 1.3.0` added a required bounded
 route-security comparison whenever baseline counts are present, and `CiReport
@@ -974,7 +1002,8 @@ The package also exports `validateScanReport`, `validateCiReport`,
 `renderRuleCatalog`, `parseRulePack`, `loadTrustedRulePack`,
 `loadTrustedRulePacks`, `previewRulePacks`, `renderRulePackPreview`, `parseSecurityPolicy`, `loadTrustedPolicy`,
 `createInterfaceVerificationQueue`, `interfaceVerificationQueue`,
-`validateInterfaceVerificationQueue`, `validateAuthorizationManifestSchema`, `validateBolaDraftPlan` and
+`validateInterfaceVerificationQueue`, `createBolaDraftPlan`,
+`createSelectedBolaDraftPlan`, `draftBola`, `validateAuthorizationManifestSchema`, `validateBolaDraftPlan` and
 `validateBolaAuthorizationManifestSchema` for integrations that consume these
 objects directly. The JSON catalog is also exported at
 `@aisec/cli/rules/catalog.json`. Fields declared optional may be omitted by

@@ -58,6 +58,7 @@ try {
     "aisec rule-pack check ../target",
     "aisec interface-queue",
     "InterfaceVerificationQueue 1.0.0",
+    "BolaDraftPlan 1.1.0",
     "RulePack 1.1.0",
     "RulePackPreview 1.0.0",
     "SecurityPolicy 1.1.0",
@@ -99,7 +100,7 @@ try {
   assert.match(help, /terminal\|json\|html\|sarif\|ci\|github\|markdown/);
   assert.match(help, /verify-bola --authorization <manifest\.yml> --confirm/);
   assert.match(help, /interface-queue --scan <scan-id\|report\.json>/);
-  assert.match(help, /draft-bola --scan <scan-id\|report\.json>/);
+  assert.match(help, /draft-bola --scan <scan-id\|report\.json>.*--candidate interface-candidate-id/);
   const doctor = report(run(["doctor", "--json"]), "doctor");
   assert.equal(doctor.node, process.version);
   assert.deepEqual(doctor.engines.map((item) => item.source), ["invalid", "invalid", "invalid"]);
@@ -150,8 +151,43 @@ try {
 
   const bolaDraft = report(run(["draft-bola", "--scan", vulnerable.scanId]), "BOLA draft");
   assert.equal(bolaDraft.scanId, vulnerable.scanId);
+  assert.equal(bolaDraft.schemaVersion, "1.0.0");
   assert.equal(bolaDraft.status, "review_required");
   assert.match(bolaDraft.disclaimer, /performs no network requests/);
+
+  const bolaSource = report(run([
+    "scan",
+    "test/fixtures/corpus/fastapi-authorization/positive-read",
+    "--profile",
+    "native",
+    "--format",
+    "json",
+  ], 2), "selected BOLA source scan");
+  const selectedQueue = report(run(["interface-queue", "--scan", bolaSource.scanId]), "selected BOLA queue");
+  assert.equal(selectedQueue.candidates.length, 1);
+  const selectedDraft = report(run([
+    "draft-bola",
+    "--scan",
+    bolaSource.scanId,
+    "--candidate",
+    selectedQueue.candidates[0].id,
+  ]), "selected BOLA draft");
+  assert.equal(selectedDraft.schemaVersion, "1.1.0");
+  assert.deepEqual(selectedDraft.selection.candidateIds, [selectedQueue.candidates[0].id]);
+  assert.equal(selectedDraft.selection.queueId, selectedQueue.queueId);
+  assert.equal(selectedDraft.selection.bindings[0].route, selectedQueue.candidates[0].route);
+  assert.equal(selectedDraft.summary.total, 1);
+  const duplicateSelection = run([
+    "draft-bola",
+    "--scan",
+    bolaSource.scanId,
+    "--candidate",
+    selectedQueue.candidates[0].id,
+    "--candidate",
+    selectedQueue.candidates[0].id,
+  ], 64);
+  assert.equal(duplicateSelection.stdout, "");
+  assert.match(duplicateSelection.stderr, /duplicate interface candidate ID/u);
 
   const incomplete = report(run(["scan", "test/fixtures/safe", "--no-persist", "--format", "json"], 2), "full scan without engines");
   assert.equal(incomplete.decision, "incomplete");

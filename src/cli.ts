@@ -29,7 +29,7 @@ Usage:
   aisec report <scan-id|report.json> [--format terminal|json|html|sarif|ci|github|markdown] [--output file]
   aisec fix-contract --scan <scan-id|report.json> --finding <id|fingerprint> [--format terminal|json] [--output file]
   aisec interface-queue --scan <scan-id|report.json> [--output file]
-  aisec draft-bola --scan <scan-id|report.json> [--output file]
+  aisec draft-bola --scan <scan-id|report.json> [--candidate interface-candidate-id ...] [--output file]
   aisec verify-web --authorization <manifest.yml> --confirm [--output file]
   aisec verify-bola --authorization <manifest.yml> --confirm [--output file]
   aisec rule-pack check [path] --rule-pack <trusted-rules.yml> [--format terminal|json] [--output file]
@@ -213,7 +213,13 @@ async function main(): Promise<void> {
   }
 
   if (parsed.command === "draft-bola") {
-    const result = await draftBola(requireFlag(parsed, "scan"));
+    const candidateIds = flags(parsed, "candidate");
+    if (candidateIds.some((candidateId) => candidateId === "true" || !candidateId.trim())) {
+      throw new Error("--candidate requires an interface candidate ID");
+    }
+    const result = candidateIds.length === 0
+      ? await draftBola(requireFlag(parsed, "scan"))
+      : await draftBola(requireFlag(parsed, "scan"), candidateIds);
     await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, flag(parsed, "output"));
     return;
   }
