@@ -283,7 +283,7 @@ aisec draft-bola --scan <scan-id|report.json> [--candidate interface-candidate-i
 aisec prepare-bola --draft <selected-bola-draft.json> --output bola-authorization-template.json
 aisec check-bola --authorization <completed-manifest.yml> --template <same-template.json> --output bola-authorization-check.json
 aisec verify-web --authorization authorization.yml --confirm
-aisec verify-bola --authorization bola-authorization.yml --confirm
+aisec verify-bola --authorization bola-authorization.yml --template same-template.json --check bola-authorization-check.json --confirm
 aisec doctor
 aisec engines status
 aisec engines prepare trivy [--timeout-ms 600000]
@@ -691,8 +691,8 @@ accepted suppressions for compatible consumers.
 | Passive test/staging Web checks | `verify-web` | Explicit authorization plus `--confirm`; bounded GET/header/cookie checks only, no auth/IDOR/injection testing |
 | Interface verification queue | `interface-queue` | Converts exact route-security cards into a strict bounded zero-request plan; only open object-authorization routes with proven source, recorded object IDs and BOLA-compatible read semantics become candidates, while every other reviewed route gets machine-readable exclusion reasons |
 | Static-to-active BOLA planning | `draft-bola` | Legacy mode converts all open static BOLA/IDOR signals into a non-executable 1.0 worksheet; selected 1.1 mode accepts one to nine same-report interface candidate IDs and binds queue, exact route, source signal and BOLA candidate. Both keep object IDs/markers as placeholders and send no requests |
-| BOLA authorization preflight | `prepare-bola` / `check-bola` | Converts only a selected 1.1 worksheet into a strict, deliberately non-executable template, then validates a separately completed manifest offline. Passing that unchanged template back to `check-bola` also proves exact case order, method, route-template, object-field and evidence-mode binding. Each input is limited to 1 MiB; no credential values are read and no DNS or requests occur |
-| Two-account BOLA verification | `verify-bola` | Exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
+| BOLA authorization preflight | `prepare-bola` / `check-bola` | Converts only a selected 1.1 worksheet into a strict, deliberately non-executable template, then validates a separately completed manifest offline. Passing that unchanged template back to `check-bola` proves exact case order, method, route-template, object-field and evidence-mode binding and produces a saved 1.2 receipt. Each input is limited to 1 MiB; no credential values are read and no DNS or requests occur |
+| Two-account BOLA verification | `verify-bola` | Requires the same manifest, unchanged template, matching bound 1.1/1.2 receipt and explicit confirmation before credential access or networking; exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
 | Agent integration | stdio MCP | Local read-oriented inspection, bounded rule-pack selector previews, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
 | Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; terminal/HTML can group opted-in repeated evidence, derive exact-route security cards and summarize Trivy dependency/IaC/secret evidence by recorded relationship and fix context while retaining every canonical finding; terminal/HTML/CI Markdown keep unattributed FastAPI dataflow visible with bounded reason summaries, and rescans compare exact route/category gaps as newly observed, remaining, resolved or not rechecked without treating suppression as a fix; deployment exposure stays explicitly project-level unless service-to-route ownership is proven; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
 
@@ -850,19 +850,23 @@ expectations and evidence modes;
 static route/query structure cannot change, every GET object ID must replace a
 declared route placeholder, and every POST body must retain exactly the declared
 object-ID fields with concrete scalar values. A successful bound
-`BolaAuthorizationCheck 1.1.0` records only stable source IDs, canonical
+`BolaAuthorizationCheck 1.2.0` records only stable source IDs, canonical
 manifest/template digests and constant binding assertions. It omits the target,
 hosts, concrete routes, request bodies, object IDs, test labels, credential
 names/values and response paths. It still means only `valid_review_required`,
 not proof of authorization, reachability, protection or vulnerability.
 
-For compatibility, omitting `--template` retains the unbound
+Version 1.2 changes the handoff instruction so active verification must consume
+the same manifest, unchanged template and saved check. Strict previously
+generated bound 1.1 receipts remain eligible when those files still match. For
+compatibility, omitting `--template` retains the unbound
 `BolaAuthorizationCheck 1.0.0` behavior, and strict previously generated
 `BolaAuthorizationTemplate 1.0.0` files remain valid binding inputs. The bound
 form never falls back to the unbound result when its template is invalid or does
-not match. Stable IDs and digests make the local handoff auditable; they are not
-a signature and do not authenticate who created the supplied template. Keep the
-template operator-owned and compare its recorded digest when handing it off.
+not match. An unbound 1.0 check remains readable and generatable but cannot
+authorize `verify-bola`. Stable IDs and digests make the local handoff auditable;
+they are not a signature, freshness proof, or author/origin authentication. Keep
+all three artifacts operator-owned.
 
 ## Authorized two-account BOLA verification
 
@@ -896,14 +900,19 @@ source cannot reliably infer every response envelope. Fields also supplied as
 request object IDs are excluded from owner-identity suggestions to reduce
 echo-based false positives. The output is deliberately not accepted by
 `verify-bola`: use the selected 1.1 workflow above, create dedicated fixtures,
-validate each suggestion, complete the generated nested manifest and pass
-`check-bola` before active review.
+validate each suggestion, complete the generated nested manifest, save the
+bound `check-bola` result, and retain all three files for active review.
 
 `verify-bola` actively checks whether one low-privilege account can read an
 object owned by a second low-privilege account. It is a separate, explicit
-workflow from `scan` and `verify-web`: production is refused, `--confirm` is
-required, and credentials are read only from named `AISEC_BOLA_` environment
-variables. The tool sends at most two login requests, verifies that they resolve
+workflow from `scan` and `verify-web`: production is refused, `--confirm` plus
+the same manifest, unchanged template and saved bound check are required, and
+credentials are read only from named `AISEC_BOLA_` environment variables. The
+tool loads each file once (at most 1 MiB), recomputes the manifest digest and
+complete P1-14 template binding in memory, and rejects unbound 1.0 receipts or
+any drift before reading credential values, resolving DNS, opening a socket or
+sending a request. The validated manifest object is then executed without
+reopening its path. The tool sends at most two login requests, verifies that they resolve
 to distinct identities, and sends a cross-account request only after the owner
 baseline succeeds. It never guesses or enumerates object identifiers, creates
 test data, follows redirects, or sends mutation methods.
@@ -929,7 +938,9 @@ non-comparable responses produce partial coverage and exit `2`; they are never
 reported as a clean pass. Use `ownerIdentity` only for a field populated by the
 server from the stored object—not a field that echoes request or caller data.
 
-Start from [`examples/authorization.bola.local.yml`](examples/authorization.bola.local.yml).
+[`examples/authorization.bola.local.yml`](examples/authorization.bola.local.yml)
+shows the completed manifest shape, but it is not executable by itself: active
+use must retain a selected-workflow template and its matching bound receipt.
 The example shape matches APIs such as `POST /user/login` returning
 `data.access_token` plus a stable `data.user_id`, and a read-only
 `POST /project/detail` request. Replace the placeholder object ID with a
@@ -954,13 +965,16 @@ export AISEC_BOLA_OTHER_PASSWORD='...'
 
 aisec verify-bola \
   --authorization examples/authorization.bola.local.yml \
+  --template bola-authorization-template.json \
+  --check bola-authorization-check.json \
   --confirm \
   --output bola-report.json
 ```
 
 Exit `1` means verified cross-account access, exit `2` means at least one case
 was inconclusive, exit `0` means every listed case was conclusively protected,
-and exit `64` means the manifest, credentials or login setup was invalid. The
+and exit `64` means the manifest/template/check handoff, credentials or login
+setup was invalid. The
 report contains account labels and case outcomes, but never usernames,
 passwords, bearer tokens or response bodies.
 
@@ -1025,7 +1039,7 @@ as resolved, with no new high/critical finding.
 
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, CI
 reports, fix contracts, the rule catalog, declarative rule packs and their selector previews, trusted security policies, passive-web
-authorization, the bounded `InterfaceVerificationQueue 1.0.0`, `BolaDraftPlan 1.1.0` and legacy 1.0 BOLA draft plans, `BolaAuthorizationTemplate 1.1.0`, `BolaAuthorizationCheck 1.1.0`, their strict legacy 1.0 forms, and BOLA authorization manifests in
+authorization, the bounded `InterfaceVerificationQueue 1.0.0`, `BolaDraftPlan 1.1.0` and legacy 1.0 BOLA draft plans, `BolaAuthorizationTemplate 1.1.0`, `BolaAuthorizationCheck 1.2.0`, its strict bound 1.1 predecessor, their strict legacy 1.0 forms, and BOLA authorization manifests in
 [`schemas/`](schemas/). `SecurityPolicy 1.1.0` adds the optional additive
 route-security baseline gate and strictly preserves legacy `1.0.0` policies.
 `RulePack 1.1.0` adds bounded required-literal absence
@@ -1037,9 +1051,11 @@ legacy `1.0.0` plans readable only when `selection` is absent. Other unchanged
 contracts remain at `1.0.0`.
 `BolaAuthorizationTemplate 1.1.0` changes only the handoff instructions so the
 same wrapper is retained for binding; strict 1.0 wrappers remain readable.
-`BolaAuthorizationCheck 1.1.0` adds the required sanitized `templateBinding`
-record, while an unbound check deliberately remains version 1.0 and cannot
-claim those fields.
+`BolaAuthorizationCheck 1.1.0` added the required sanitized `templateBinding`
+record. Version 1.2 changes only the active handoff instructions so the saved
+receipt, unchanged template and manifest are all required; strict bound 1.1
+receipts remain readable. An unbound check deliberately remains version 1.0,
+cannot claim template fields and is ineligible for active verification.
 `CiReport 1.1.0` added rule-pack records, `CiReport 1.2.0` added the required
 FastAPI route-attribution summary, `CiReport 1.3.0` added a required bounded
 route-security comparison whenever baseline counts are present, and `CiReport
@@ -1064,7 +1080,8 @@ The package also exports `validateScanReport`, `validateCiReport`,
 `createInterfaceVerificationQueue`, `interfaceVerificationQueue`,
 `validateInterfaceVerificationQueue`, `createBolaDraftPlan`,
 `createSelectedBolaDraftPlan`, `draftBola`, `createBolaAuthorizationTemplate`,
-`prepareBola`, `loadBolaAuthorizationTemplate`, `checkBolaAuthorization`, `checkBola`,
+`prepareBola`, `loadBolaAuthorizationTemplate`, `loadBolaAuthorizationCheck`,
+`checkBolaAuthorization`, `checkBola`, `assertBolaVerificationPreflight`,
 `validateAuthorizationManifestSchema`, `validateBolaDraftPlan`,
 `validateBolaAuthorizationTemplate`, `validateBolaAuthorizationCheck` and
 `validateBolaAuthorizationManifestSchema` for integrations that consume these
@@ -1130,13 +1147,15 @@ boundary.
   and database updates, and runs Trivy in explicit offline mode. For a hard
   no-egress guarantee around third-party binaries, enforce it with an OS sandbox
   or CI network policy. AIsec's own network paths are explicit engine setup and
-  `verify-web --confirm` or the more restrictive `verify-bola --confirm`.
+  `verify-web --confirm` or the more restrictive receipt-bound
+  `verify-bola --confirm`.
 - `prepare-bola` and both bound/unbound forms of `check-bola` are offline data
   transformations. Each input is independently bounded to 1 MiB; they do not
   read declared credential values, resolve DNS or send requests. A supplied
   template is strict JSON and any mismatch fails rather than degrading to an
-  unbound result. Only the later explicitly confirmed `verify-bola` command can
-  cross that boundary.
+  unbound result. The later `verify-bola` command requires the same manifest,
+  unchanged template, a matching bound 1.1/1.2 receipt and explicit confirmation;
+  it recomputes the full offline binding before credential access or networking.
 - APK/IPA inspection validates every listed path, prioritizes at most 25 supported
   members, and streams each selected member through `unzip` without extracting it
   onto disk. Binary recovery is capped at 8 MiB per member and 16 MiB aggregate

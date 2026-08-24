@@ -34,7 +34,7 @@ Usage:
   aisec prepare-bola --draft <selected-bola-draft.json> [--output file]
   aisec check-bola --authorization <completed-manifest.yml> [--template same-template.json] [--output file]
   aisec verify-web --authorization <manifest.yml> --confirm [--output file]
-  aisec verify-bola --authorization <manifest.yml> --confirm [--output file]
+  aisec verify-bola --authorization <manifest.yml> --template <same-template.json> --check <authorization-check.json> --confirm [--output file]
   aisec rule-pack check [path] --rule-pack <trusted-rules.yml> [--format terminal|json] [--output file]
   aisec doctor [--json]
   aisec engines status [--json]
@@ -49,9 +49,9 @@ Scan safety:
   engines without changing the selected profile's artifact policy.
   Defaults: --max-files 20000, --max-file-bytes 2097152,
   --max-total-bytes 67108864, --timeout-ms 120000, at most 10 artifacts.
-  prepare-bola and each check-bola input accept at most 1 MiB. They read no
-  credential values, resolve no DNS and send no requests. Only verify commands
-  cross that boundary. Pass the unchanged template to bind a completed manifest.
+  prepare-bola and every BOLA manifest/template/check input accept at most 1 MiB.
+  Preflight reads no credential values, resolves no DNS and sends no requests.
+  verify-bola recomputes the saved bound check before crossing that boundary.
 
 Scan options:
   --profile predeploy|native  Acceptance scan (default) or source-only first pass
@@ -155,6 +155,34 @@ function assertCheckBolaCommand(parsed: ReturnType<typeof parseArgs>): {
   return {
     input: requireFlag(parsed, "authorization"),
     ...(template === undefined ? {} : { template }),
+    ...(output === undefined ? {} : { output }),
+  };
+}
+
+function assertVerifyBolaCommand(parsed: ReturnType<typeof parseArgs>): {
+  authorization: string;
+  template: string;
+  check: string;
+  confirmed: boolean;
+  output?: string;
+} {
+  if (parsed.positionals.length > 0) throw new Error("verify-bola does not accept positional arguments");
+  const allowed = new Set(["authorization", "template", "check", "confirm", "output"]);
+  for (const name of parsed.flags.keys()) {
+    if (!allowed.has(name)) throw new Error(`verify-bola does not support --${name}`);
+  }
+  for (const name of allowed) {
+    if (flags(parsed, name).length > 1) throw new Error(`verify-bola accepts --${name} at most once`);
+  }
+  const output = flag(parsed, "output");
+  if (output === "true" || (output !== undefined && !output.trim())) {
+    throw new Error("--output requires a file path");
+  }
+  return {
+    authorization: requireFlag(parsed, "authorization"),
+    template: requireFlag(parsed, "template"),
+    check: requireFlag(parsed, "check"),
+    confirmed: booleanFlag(parsed, "confirm"),
     ...(output === undefined ? {} : { output }),
   };
 }
@@ -298,8 +326,13 @@ async function main(): Promise<void> {
   }
 
   if (parsed.command === "verify-bola") {
-    const result = await verifyBola(requireFlag(parsed, "authorization"), booleanFlag(parsed, "confirm"));
-    await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, flag(parsed, "output"));
+    const options = assertVerifyBolaCommand(parsed);
+    const result = await verifyBola(options.authorization, {
+      confirmed: options.confirmed,
+      templatePath: options.template,
+      checkPath: options.check,
+    });
+    await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, options.output);
     if (result.signals.some((signal) => ["critical", "high"].includes(signal.severity))) process.exitCode = 1;
     else if (result.coverage.some((item) => item.required && item.status !== "complete")) process.exitCode = 2;
     else process.exitCode = 0;

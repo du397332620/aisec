@@ -121,7 +121,7 @@ try {
     "aisec prepare-bola",
     "aisec check-bola",
     "BolaAuthorizationTemplate 1.1.0",
-    "BolaAuthorizationCheck 1.1.0",
+    "BolaAuthorizationCheck 1.2.0",
     "--template bola-authorization-template.json",
     "RulePack 1.1.0",
     "RulePackPreview 1.0.0",
@@ -162,7 +162,7 @@ try {
   assert.match(help, /local-gate \[path\].*--state-dir <private-directory>/);
   assert.match(help, /--confirm-policy-suppressions/);
   assert.match(help, /terminal\|json\|html\|sarif\|ci\|github\|markdown/);
-  assert.match(help, /verify-bola --authorization <manifest\.yml> --confirm/);
+  assert.match(help, /verify-bola --authorization <manifest\.yml> --template <same-template\.json> --check <authorization-check\.json> --confirm/);
   assert.match(help, /interface-queue --scan <scan-id\|report\.json>/);
   assert.match(help, /draft-bola --scan <scan-id\|report\.json>.*--candidate interface-candidate-id/);
   assert.match(help, /prepare-bola --draft <selected-bola-draft\.json>/);
@@ -269,7 +269,7 @@ try {
     "--template",
     authorizationTemplatePath,
   ]), "offline BOLA authorization check");
-  assert.equal(authorizationCheck.schemaVersion, "1.1.0");
+  assert.equal(authorizationCheck.schemaVersion, "1.2.0");
   assert.equal(authorizationCheck.status, "valid_review_required");
   assert.equal(authorizationCheck.templateBinding.status, "verified");
   assert.equal(authorizationCheck.templateBinding.templateId, authorizationTemplate.templateId);
@@ -277,6 +277,20 @@ try {
   assert.equal(authorizationCheck.environmentValuesRead, 0);
   assert.equal(authorizationCheck.dnsLookups, 0);
   assert.doesNotMatch(JSON.stringify(authorizationCheck), /127\.0\.0\.1|\/project\/detail|project_id/u);
+  const authorizationCheckPath = join(temporary, "bola-authorization-check.json");
+  await writeFile(authorizationCheckPath, `${JSON.stringify(authorizationCheck)}\n`);
+  const activeWithoutCredentials = run([
+    "verify-bola",
+    "--authorization",
+    completedAuthorizationPath,
+    "--template",
+    authorizationTemplatePath,
+    "--check",
+    authorizationCheckPath,
+    "--confirm",
+  ], 64);
+  assert.equal(activeWithoutCredentials.stdout, "");
+  assert.match(activeWithoutCredentials.stderr, /Both BOLA test-account usernames must be provided/u);
   const legacyAuthorizationCheck = report(run([
     "check-bola",
     "--authorization",

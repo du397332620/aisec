@@ -6,7 +6,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import type { BolaAuthorizationManifest, BolaAuthorizationTemplate, ScanReport } from "../src/schema.js";
+import type { BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, ScanReport } from "../src/schema.js";
 import {
   validateBolaAuthorizationCheck,
   validateBolaAuthorizationTemplate,
@@ -18,9 +18,11 @@ import { validateBolaAuthorization } from "../src/web/authorization.js";
 import { verifyBola } from "../src/web/bola.js";
 import {
   MAX_BOLA_PREFLIGHT_DOCUMENT_BYTES,
+  assertBolaVerificationPreflight,
   checkBola,
   checkBolaAuthorization,
   createBolaAuthorizationTemplate,
+  loadBolaAuthorizationCheck,
   loadBolaAuthorizationTemplate,
   prepareBola,
 } from "../src/web/bola-preflight.js";
@@ -76,11 +78,27 @@ const LEGACY_TEMPLATE_REVIEW_CHECKLIST = [
   "Copy only the completed manifest object to a separate file and run check-bola before any active verification.",
 ];
 
+const LEGACY_CHECK_REVIEW_REQUIREMENTS = [
+  "Confirm the exact non-production target and written authorization with the named owner.",
+  "Provide two distinct low-privilege accounts through the declared environment variable names.",
+  "Confirm every object identifier references only a pre-created synthetic owner fixture; never enumerate identifiers.",
+  "Confirm every case is read-only and its response evidence is server-derived rather than request-echoed.",
+  "Run verify-bola with --confirm only after this manual review.",
+];
+
 function legacyTemplate(value: BolaAuthorizationTemplate): BolaAuthorizationTemplate {
   const legacy = structuredClone(value);
   legacy.schemaVersion = "1.0.0";
   legacy.reviewChecklist = [...LEGACY_TEMPLATE_REVIEW_CHECKLIST];
   legacy.nextCommand = "aisec check-bola --authorization <completed-manifest.yml>";
+  return legacy;
+}
+
+function legacyBoundCheck(value: BolaAuthorizationCheck): BolaAuthorizationCheck {
+  const legacy = structuredClone(value);
+  legacy.schemaVersion = "1.1.0";
+  legacy.reviewRequired = [...LEGACY_CHECK_REVIEW_REQUIREMENTS];
+  legacy.nextCommand = "aisec verify-bola --authorization <same-reviewed-manifest.yml> --confirm";
   return legacy;
 }
 
@@ -312,6 +330,18 @@ test("preflight document loading is JSON-only for drafts and bounded before pars
   await writeFile(oversizedTemplate, "x".repeat(MAX_BOLA_PREFLIGHT_DOCUMENT_BYTES + 1));
   await assert.rejects(() => loadBolaAuthorizationTemplate(oversizedTemplate), /exceeds 1048576 bytes/u);
   await assert.rejects(() => loadBolaAuthorizationTemplate(temporary), /regular file/u);
+
+  const receipt = checkBolaAuthorization(completedManifest(template), template);
+  const receiptPath = join(temporary, "check.json");
+  await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`);
+  assert.deepEqual(await loadBolaAuthorizationCheck(receiptPath), receipt);
+  const receiptYaml = join(temporary, "check.yml");
+  await writeFile(receiptYaml, "schemaVersion: 1.2.0\n");
+  await assert.rejects(() => loadBolaAuthorizationCheck(receiptYaml), /valid JSON/u);
+  const oversizedReceipt = join(temporary, "oversized-check.json");
+  await writeFile(oversizedReceipt, "x".repeat(MAX_BOLA_PREFLIGHT_DOCUMENT_BYTES + 1));
+  await assert.rejects(() => loadBolaAuthorizationCheck(oversizedReceipt), /exceeds 1048576 bytes/u);
+  await assert.rejects(() => loadBolaAuthorizationCheck(temporary), /regular file/u);
 });
 
 test("check-bola validates a completed manifest without reading credentials, DNS or HTTP", async () => {
@@ -408,7 +438,7 @@ test("check-bola binds a completed manifest to template provenance without crede
     const first = checkBolaAuthorization(manifest, template);
     const second = checkBolaAuthorization(structuredClone(manifest), structuredClone(template));
     assert.equal(fetchCalls, 0);
-    assert.equal(first.schemaVersion, "1.1.0");
+    assert.equal(first.schemaVersion, "1.2.0");
     assert.equal(first.status, "valid_review_required");
     assert.equal(first.networkRequests, 0);
     assert.equal(first.environmentValuesRead, 0);
@@ -423,7 +453,12 @@ test("check-bola binds a completed manifest to template provenance without crede
     assert.equal(first.templateBinding?.routeTemplatesMatched, true);
     assert.equal(first.templateBinding?.concreteObjectIds, true);
     assert.match(first.templateBinding?.templateDigestSha256 ?? "", /^[0-9a-f]{64}$/u);
+    assert.equal(
+      first.nextCommand,
+      "aisec verify-bola --authorization <same-reviewed-manifest.yml> --template <same-template.json> --check <this-check.json> --confirm",
+    );
     assert.doesNotThrow(() => validateBolaAuthorizationCheck(first));
+    assert.doesNotThrow(() => validateBolaAuthorizationCheck(legacyBoundCheck(first)));
 
     const forgedTotal = structuredClone(first);
     forgedTotal.templateBinding!.matchedCases += 1;
@@ -437,6 +472,9 @@ test("check-bola binds a completed manifest to template provenance without crede
     const falselyLegacy = structuredClone(first);
     falselyLegacy.schemaVersion = "1.0.0";
     assert.throws(() => validateBolaAuthorizationCheck(falselyLegacy), /BolaAuthorizationCheck/u);
+    const falselyPrevious = structuredClone(first);
+    falselyPrevious.schemaVersion = "1.1.0";
+    assert.throws(() => validateBolaAuthorizationCheck(falselyPrevious), /BolaAuthorizationCheck/u);
     const missingBinding = structuredClone(first);
     delete missingBinding.templateBinding;
     assert.throws(() => validateBolaAuthorizationCheck(missingBinding), /BolaAuthorizationCheck/u);
@@ -453,13 +491,211 @@ test("check-bola binds a completed manifest to template provenance without crede
     ]) assert.ok(!serialized.includes(forbidden), `bound check output leaked ${forbidden}`);
 
     const legacyBound = checkBolaAuthorization(manifest, legacyTemplate(template));
-    assert.equal(legacyBound.schemaVersion, "1.1.0");
+    assert.equal(legacyBound.schemaVersion, "1.2.0");
     assert.equal(legacyBound.templateBinding?.templateId, template.templateId);
     assert.notEqual(legacyBound.checkId, first.checkId, "template digest must bind exact template version/content");
   } finally {
     process.env = originalEnvironment;
     globalThis.fetch = originalFetch;
   }
+});
+
+test("active BOLA preflight accepts current and legacy bound receipts but rejects drift", async () => {
+  const template = createBolaAuthorizationTemplate(await selectedDraft());
+  const manifest = completedManifest(template);
+  const receipt = checkBolaAuthorization(manifest, template);
+  assert.equal(assertBolaVerificationPreflight(manifest, template, receipt), receipt);
+  const legacyReceipt = legacyBoundCheck(receipt);
+  assert.equal(assertBolaVerificationPreflight(manifest, template, legacyReceipt), legacyReceipt);
+
+  const changedTime = structuredClone(receipt);
+  changedTime.checkedAt = "2020-01-01T00:00:00.000Z";
+  assert.doesNotThrow(() => assertBolaVerificationPreflight(manifest, template, changedTime));
+
+  const unbound = checkBolaAuthorization(manifest);
+  assert.throws(
+    () => assertBolaVerificationPreflight(manifest, template, unbound),
+    /requires a template-bound authorization check/u,
+  );
+
+  const changedManifest = structuredClone(manifest);
+  changedManifest.ownedBy = "Different authorization owner";
+  assert.throws(
+    () => assertBolaVerificationPreflight(changedManifest, template, receipt),
+    /does not match the supplied manifest and template/u,
+  );
+  assert.throws(
+    () => assertBolaVerificationPreflight(manifest, legacyTemplate(template), receipt),
+    /does not match the supplied manifest and template/u,
+  );
+
+  const changedEnvironment = structuredClone(receipt);
+  changedEnvironment.environment = "test";
+  assert.throws(
+    () => assertBolaVerificationPreflight(manifest, template, changedEnvironment),
+    /does not match the supplied manifest and template/u,
+  );
+  const changedSummary = structuredClone(receipt);
+  changedSummary.summary.getCases = 1;
+  changedSummary.summary.postCases = 0;
+  assert.throws(
+    () => assertBolaVerificationPreflight(manifest, template, changedSummary),
+    /does not match the supplied manifest and template/u,
+  );
+  const changedCaseIds = structuredClone(receipt);
+  changedCaseIds.caseIds = ["different-case"];
+  assert.throws(
+    () => assertBolaVerificationPreflight(manifest, template, changedCaseIds),
+    /does not match the supplied manifest and template/u,
+  );
+});
+
+test("verify-bola checks bound files before credentials or requests and executes only a match", async (context) => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-bola-active-preflight-"));
+  context.after(() => rm(temporary, { recursive: true, force: true }));
+  const template = createBolaAuthorizationTemplate(await selectedDraft());
+  const manifest = completedManifest(template);
+  const receipt = checkBolaAuthorization(manifest, template);
+  const manifestPath = join(temporary, "authorization.json");
+  const templatePath = join(temporary, "template.json");
+  const receiptPath = join(temporary, "check.json");
+  await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+  await writeFile(templatePath, `${JSON.stringify(template)}\n`);
+  await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`);
+
+  let credentialReads = 0;
+  let requests = 0;
+  const throwingEnvironment = new Proxy({} as NodeJS.ProcessEnv, {
+    get() {
+      credentialReads += 1;
+      throw new Error("credentials must not be read before the receipt matches");
+    },
+  });
+  const throwingRequester = async (): Promise<never> => {
+    requests += 1;
+    throw new Error("requests must not run before the receipt matches");
+  };
+
+  await assert.rejects(
+    () => verifyBola("missing-manifest", {
+      confirmed: false,
+      templatePath: "missing-template",
+      checkPath: "missing-check",
+      environment: throwingEnvironment,
+      requester: throwingRequester,
+    }),
+    /requires --confirm/u,
+  );
+
+  const changedManifest = structuredClone(manifest);
+  changedManifest.ownedBy = "Changed after preflight";
+  await writeFile(manifestPath, `${JSON.stringify(changedManifest)}\n`);
+  await assert.rejects(
+    () => verifyBola(manifestPath, {
+      confirmed: true,
+      templatePath,
+      checkPath: receiptPath,
+      environment: throwingEnvironment,
+      requester: throwingRequester,
+    }),
+    /does not match the supplied manifest and template/u,
+  );
+  assert.equal(credentialReads, 0);
+  assert.equal(requests, 0);
+
+  await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+  await writeFile(templatePath, `${JSON.stringify(legacyTemplate(template))}\n`);
+  await assert.rejects(
+    () => verifyBola(manifestPath, {
+      confirmed: true,
+      templatePath,
+      checkPath: receiptPath,
+      environment: throwingEnvironment,
+      requester: throwingRequester,
+    }),
+    /does not match the supplied manifest and template/u,
+  );
+  assert.equal(credentialReads, 0);
+  assert.equal(requests, 0);
+
+  await writeFile(templatePath, `${JSON.stringify(template)}\n`);
+  const changedReceipt = structuredClone(receipt);
+  changedReceipt.environment = "test";
+  await writeFile(receiptPath, `${JSON.stringify(changedReceipt)}\n`);
+  await assert.rejects(
+    () => verifyBola(manifestPath, {
+      confirmed: true,
+      templatePath,
+      checkPath: receiptPath,
+      environment: throwingEnvironment,
+      requester: throwingRequester,
+    }),
+    /does not match the supplied manifest and template/u,
+  );
+  assert.equal(credentialReads, 0);
+  assert.equal(requests, 0);
+
+  await writeFile(receiptPath, `${JSON.stringify(checkBolaAuthorization(manifest))}\n`);
+  await assert.rejects(
+    () => verifyBola(manifestPath, {
+      confirmed: true,
+      templatePath,
+      checkPath: receiptPath,
+      environment: throwingEnvironment,
+      requester: throwingRequester,
+    }),
+    /requires a template-bound authorization check/u,
+  );
+  assert.equal(credentialReads, 0);
+  assert.equal(requests, 0);
+
+  await writeFile(receiptPath, `${JSON.stringify(receipt)}\n`);
+  const credentials = {
+    AISEC_BOLA_BINDING_OWNER_USERNAME: "fixture_owner",
+    AISEC_BOLA_BINDING_OWNER_PASSWORD: "owner_password",
+    AISEC_BOLA_BINDING_OTHER_USERNAME: "fixture_other",
+    AISEC_BOLA_BINDING_OTHER_PASSWORD: "other_password",
+  };
+  const requester = async (input: { url: string; headers?: Record<string, string>; body?: string }) => {
+    requests += 1;
+    if (input.url.endsWith("/auth/login")) {
+      const login = JSON.parse(input.body ?? "{}") as { username?: string };
+      const owner = login.username === "fixture_owner";
+      return {
+        url: input.url,
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ data: {
+          access_token: owner ? "owner-token" : "other-token",
+          user_id: owner ? "owner-id" : "other-id",
+        } }),
+      };
+    }
+    if (input.headers?.authorization === "Bearer owner-token") {
+      return {
+        url: input.url,
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ data: { fixture_owner: "owner-id" } }),
+      };
+    }
+    return {
+      url: input.url,
+      status: 403,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ detail: "forbidden" }),
+    };
+  };
+  const report = await verifyBola(manifestPath, {
+    confirmed: true,
+    templatePath,
+    checkPath: receiptPath,
+    environment: credentials,
+    requester,
+  });
+  assert.equal(report.requestCount, 4);
+  assert.equal(report.cases[0]?.status, "protected");
+  assert.equal(requests, 4);
 });
 
 test("template binding accepts concrete GET route forms and rejects ambiguous route changes", async () => {
@@ -626,8 +862,19 @@ acknowledgment: I am authorized to test this non-production target with two low-
       throw new Error("active verification must validate placeholders before reading credentials");
     },
   });
+  const gateTemplate = createBolaAuthorizationTemplate(await selectedDraft());
+  const gateManifest = completedManifest(gateTemplate);
+  const gateTemplatePath = join(temporary, "template.json");
+  const gateCheckPath = join(temporary, "check.json");
+  await writeFile(gateTemplatePath, `${JSON.stringify(gateTemplate)}\n`);
+  await writeFile(gateCheckPath, `${JSON.stringify(checkBolaAuthorization(gateManifest, gateTemplate))}\n`);
   await assert.rejects(
-    () => verifyBola(unresolvedPath, true, throwingEnvironment),
+    () => verifyBola(unresolvedPath, {
+      confirmed: true,
+      templatePath: gateTemplatePath,
+      checkPath: gateCheckPath,
+      environment: throwingEnvironment,
+    }),
     /unresolved instruction placeholder/u,
   );
   assert.equal(credentialReads, 0);
@@ -684,8 +931,101 @@ test("prepare-bola and check-bola CLI return strict JSON without confirmation or
     templatePath,
   ]);
   assert.equal(bound.code, 0, bound.stderr);
-  assert.equal(JSON.parse(bound.stdout).schemaVersion, "1.1.0");
-  assert.equal(JSON.parse(bound.stdout).templateBinding.status, "verified");
+  const boundCheck = JSON.parse(bound.stdout) as BolaAuthorizationCheck;
+  assert.equal(boundCheck.schemaVersion, "1.2.0");
+  assert.equal(boundCheck.templateBinding?.status, "verified");
+  const boundCheckPath = join(temporary, "bound-check.json");
+  await writeFile(boundCheckPath, `${JSON.stringify(boundCheck)}\n`);
+
+  const unconfirmedVerify = await run([
+    "verify-bola",
+    "--authorization",
+    boundManifestPath,
+    "--template",
+    templatePath,
+    "--check",
+    boundCheckPath,
+  ]);
+  assert.equal(unconfirmedVerify.code, 64);
+  assert.equal(unconfirmedVerify.stdout, "");
+  assert.match(unconfirmedVerify.stderr, /requires --confirm/u);
+  const missingVerifyCheck = await run([
+    "verify-bola",
+    "--authorization",
+    boundManifestPath,
+    "--template",
+    templatePath,
+    "--confirm",
+  ]);
+  assert.equal(missingVerifyCheck.code, 64);
+  assert.match(missingVerifyCheck.stderr, /--check is required/u);
+  const missingVerifyTemplate = await run([
+    "verify-bola",
+    "--authorization",
+    boundManifestPath,
+    "--check",
+    boundCheckPath,
+    "--confirm",
+  ]);
+  assert.equal(missingVerifyTemplate.code, 64);
+  assert.match(missingVerifyTemplate.stderr, /--template is required/u);
+  const duplicateVerifyCheck = await run([
+    "verify-bola",
+    "--authorization",
+    boundManifestPath,
+    "--template",
+    templatePath,
+    "--check",
+    boundCheckPath,
+    "--check",
+    boundCheckPath,
+    "--confirm",
+  ]);
+  assert.equal(duplicateVerifyCheck.code, 64);
+  assert.match(duplicateVerifyCheck.stderr, /accepts --check at most once/u);
+  const unsupportedVerifyFlag = await run([
+    "verify-bola",
+    "--authorization",
+    boundManifestPath,
+    "--template",
+    templatePath,
+    "--check",
+    boundCheckPath,
+    "--confirm",
+    "--unsafe",
+  ]);
+  assert.equal(unsupportedVerifyFlag.code, 64);
+  assert.match(unsupportedVerifyFlag.stderr, /does not support --unsafe/u);
+
+  const unboundCheckPath = join(temporary, "unbound-check.json");
+  await writeFile(unboundCheckPath, `${JSON.stringify(checkBolaAuthorization(completedManifest(template)))}\n`);
+  const unboundVerify = await run([
+    "verify-bola",
+    "--authorization",
+    boundManifestPath,
+    "--template",
+    templatePath,
+    "--check",
+    unboundCheckPath,
+    "--confirm",
+  ]);
+  assert.equal(unboundVerify.code, 64);
+  assert.equal(unboundVerify.stdout, "");
+  assert.match(unboundVerify.stderr, /requires a template-bound authorization check/u);
+
+  const matchedVerify = await run([
+    "verify-bola",
+    "--authorization",
+    boundManifestPath,
+    "--template",
+    templatePath,
+    "--check",
+    boundCheckPath,
+    "--confirm",
+  ]);
+  assert.equal(matchedVerify.code, 64);
+  assert.equal(matchedVerify.stdout, "");
+  assert.match(matchedVerify.stderr, /Both BOLA test-account usernames must be provided/u);
 
   const mismatch = await run([
     "check-bola",

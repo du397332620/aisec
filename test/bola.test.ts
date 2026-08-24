@@ -325,8 +325,13 @@ test("authorized local BOLA verification performs exactly two logins and two rea
   };
   await writeFile(manifestPath, JSON.stringify(localManifest));
   try {
-    await assert.rejects(() => verifyBola(manifestPath, false, credentials), /requires --confirm/);
-    const report = await verifyBola(manifestPath, true, credentials);
+    await assert.rejects(() => verifyBola(manifestPath, {
+      confirmed: false,
+      templatePath: join(temporary, "missing-template.json"),
+      checkPath: join(temporary, "missing-check.json"),
+      environment: credentials,
+    }), /requires --confirm/);
+    const report = await executeBolaVerification(localManifest, credentials);
     assert.equal(report.requestCount, 4);
     assert.equal(report.cases[0]?.status, "protected");
     assert.deepEqual(requests.map((item) => item.path), ["/user/login", "/user/login", "/project/detail", "/project/detail"]);

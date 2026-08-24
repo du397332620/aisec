@@ -507,7 +507,7 @@ export function validateBolaAuthorizationCheck(value: unknown): BolaAuthorizatio
     "BolaAuthorizationCheck",
     bolaAuthorizationCheckValidator,
     value,
-    "1.1.0",
+    "1.2.0",
   );
   const summary = check.summary;
   if (check.caseIds.length !== summary.cases

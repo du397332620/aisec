@@ -5,7 +5,8 @@ export const RULE_PACK_PREVIEW_SCHEMA_VERSION = "1.0.0" as const;
 export const INTERFACE_VERIFICATION_QUEUE_SCHEMA_VERSION = "1.0.0" as const;
 export const BOLA_DRAFT_SCHEMA_VERSION = "1.1.0" as const;
 export const BOLA_AUTHORIZATION_TEMPLATE_SCHEMA_VERSION = "1.1.0" as const;
-export const BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION = "1.1.0" as const;
+export const BOLA_AUTHORIZATION_CHECK_LEGACY_BOUND_SCHEMA_VERSION = "1.1.0" as const;
+export const BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION = "1.2.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type EvidenceLevel = "verified" | "static_confirmed" | "inferred";
@@ -894,7 +895,10 @@ export interface BolaAuthorizationTemplateBindingCheck {
 }
 
 export interface BolaAuthorizationCheck {
-  schemaVersion: typeof SCHEMA_VERSION | typeof BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION;
+  schemaVersion:
+    | typeof SCHEMA_VERSION
+    | typeof BOLA_AUTHORIZATION_CHECK_LEGACY_BOUND_SCHEMA_VERSION
+    | typeof BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION;
   checkId: string;
   checkedAt: string;
   status: "valid_review_required";
@@ -915,7 +919,9 @@ export interface BolaAuthorizationCheck {
   environmentValuesRead: 0;
   dnsLookups: 0;
   reviewRequired: string[];
-  nextCommand: "aisec verify-bola --authorization <same-reviewed-manifest.yml> --confirm";
+  nextCommand:
+    | "aisec verify-bola --authorization <same-reviewed-manifest.yml> --confirm"
+    | "aisec verify-bola --authorization <same-reviewed-manifest.yml> --template <same-template.json> --check <this-check.json> --confirm";
   disclaimer: string;
 }
 

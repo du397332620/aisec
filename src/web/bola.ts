@@ -9,10 +9,23 @@ import type {
 import { SCHEMA_VERSION } from "../schema.js";
 import { createSignal, newId } from "../core/utils.js";
 import { assertAllowedResponseUrl, loadBolaAuthorization } from "./authorization.js";
+import {
+  assertBolaVerificationPreflight,
+  loadBolaAuthorizationCheck,
+  loadBolaAuthorizationTemplate,
+} from "./bola-preflight.js";
 import { boundedHttpRequest, type BoundedHttpRequest, type BoundedHttpResponse } from "./http.js";
 
 export type BolaRequester = (input: BoundedHttpRequest) => Promise<BoundedHttpResponse>;
 export type BolaEnvironment = Record<string, string | undefined>;
+
+export interface VerifyBolaOptions {
+  confirmed: boolean;
+  templatePath: string;
+  checkPath: string;
+  environment?: BolaEnvironment;
+  requester?: BolaRequester;
+}
 
 interface AuthenticatedAccount {
   label: string;
@@ -273,10 +286,20 @@ export async function executeBolaVerification(
 
 export async function verifyBola(
   authorizationPath: string,
-  confirmed: boolean,
-  environment: BolaEnvironment = process.env,
+  options: VerifyBolaOptions,
 ): Promise<BolaVerificationReport> {
-  if (!confirmed) throw new Error("BOLA verification requires --confirm after reviewing the authorization manifest and test data");
-  const manifest = await loadBolaAuthorization(authorizationPath);
-  return executeBolaVerification(manifest, environment);
+  if (!options.confirmed) {
+    throw new Error("BOLA verification requires --confirm after reviewing the authorization manifest, template, check and test data");
+  }
+  const [manifest, template, check] = await Promise.all([
+    loadBolaAuthorization(authorizationPath),
+    loadBolaAuthorizationTemplate(options.templatePath),
+    loadBolaAuthorizationCheck(options.checkPath),
+  ]);
+  assertBolaVerificationPreflight(manifest, template, check);
+  return executeBolaVerification(
+    manifest,
+    options.environment ?? process.env,
+    options.requester ?? boundedHttpRequest,
+  );
 }

@@ -99,4 +99,7 @@ object-ID fields, account roles, status codes and evidence mode; mismatch must f
 fall back to an unbound check. Its output must stay sanitized and explicitly
 review-required. Keep strict template/check 1.0 compatibility and update both
 public schemas, placeholder/route rejection tests, CLI/API docs and
-installed-package smoke together.
+installed-package smoke together. Active `verify-bola` changes must retain the
+required manifest/template/bound-check handoff, accept strict bound check 1.1
+compatibility, reject unbound 1.0 for execution, and complete all receipt
+matching before reading credentials or invoking networking.

@@ -37,13 +37,24 @@ const TEMPLATE_REVIEW_CHECKLIST = [
   "Keep this wrapper unchanged and run check-bola with both the completed manifest and this same template before any active verification.",
 ] as const;
 
-const CHECK_REVIEW_REQUIREMENTS = [
+const LEGACY_CHECK_REVIEW_REQUIREMENTS = [
   "Confirm the exact non-production target and written authorization with the named owner.",
   "Provide two distinct low-privilege accounts through the declared environment variable names.",
   "Confirm every object identifier references only a pre-created synthetic owner fixture; never enumerate identifiers.",
   "Confirm every case is read-only and its response evidence is server-derived rather than request-echoed.",
   "Run verify-bola with --confirm only after this manual review.",
 ] as const;
+
+const CHECK_REVIEW_REQUIREMENTS = [
+  "Confirm the exact non-production target and written authorization with the named owner.",
+  "Provide two distinct low-privilege accounts through the declared environment variable names.",
+  "Confirm every object identifier references only a pre-created synthetic owner fixture; never enumerate identifiers.",
+  "Confirm every case is read-only and its response evidence is server-derived rather than request-echoed.",
+  "Run verify-bola with this manifest, unchanged template, saved check and --confirm only after this manual review.",
+] as const;
+
+const LEGACY_VERIFY_COMMAND = "aisec verify-bola --authorization <same-reviewed-manifest.yml> --confirm" as const;
+const BOUND_VERIFY_COMMAND = "aisec verify-bola --authorization <same-reviewed-manifest.yml> --template <same-template.json> --check <this-check.json> --confirm" as const;
 
 function caseId(candidate: BolaDraftCandidate): string {
   return `case_${candidate.id.slice(-16)}`;
@@ -217,6 +228,21 @@ export async function loadBolaAuthorizationTemplate(path: string): Promise<BolaA
     throw new Error("BOLA authorization template must be valid JSON");
   }
   return validateBolaAuthorizationTemplate(parsed);
+}
+
+export async function loadBolaAuthorizationCheck(path: string): Promise<BolaAuthorizationCheck> {
+  const text = await readBoundedUtf8File(
+    path,
+    MAX_BOLA_PREFLIGHT_DOCUMENT_BYTES,
+    "BOLA authorization check",
+  );
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(text) as unknown;
+  } catch {
+    throw new Error("BOLA authorization check must be valid JSON");
+  }
+  return validateBolaAuthorizationCheck(parsed);
 }
 
 function canonicalJson(value: unknown): string {
@@ -463,11 +489,39 @@ export function checkBolaAuthorization(value: unknown, templateValue?: unknown):
     networkRequests: 0,
     environmentValuesRead: 0,
     dnsLookups: 0,
-    reviewRequired: [...CHECK_REVIEW_REQUIREMENTS],
-    nextCommand: "aisec verify-bola --authorization <same-reviewed-manifest.yml> --confirm",
+    reviewRequired: [...(template ? CHECK_REVIEW_REQUIREMENTS : LEGACY_CHECK_REVIEW_REQUIREMENTS)],
+    nextCommand: template ? BOUND_VERIFY_COMMAND : LEGACY_VERIFY_COMMAND,
     disclaimer: "This offline check validates manifest structure and declared safety constraints only. It performs no environment-value reads, DNS lookups or network requests and does not prove authorization, reachability, protection or vulnerability.",
   };
   return validateBolaAuthorizationCheck(check);
+}
+
+function verificationReceiptProjection(check: BolaAuthorizationCheck): unknown {
+  return {
+    checkId: check.checkId,
+    manifestDigestSha256: check.manifestDigestSha256,
+    environment: check.environment,
+    summary: check.summary,
+    caseIds: check.caseIds,
+    templateBinding: check.templateBinding,
+  };
+}
+
+export function assertBolaVerificationPreflight(
+  manifestValue: unknown,
+  templateValue: unknown,
+  checkValue: unknown,
+): BolaAuthorizationCheck {
+  const receipt = validateBolaAuthorizationCheck(checkValue);
+  if (receipt.schemaVersion === SCHEMA_VERSION || !receipt.templateBinding) {
+    throw new Error("BOLA active verification requires a template-bound authorization check 1.1.0 or 1.2.0");
+  }
+  const expected = checkBolaAuthorization(manifestValue, templateValue);
+  if (canonicalJson(verificationReceiptProjection(receipt))
+    !== canonicalJson(verificationReceiptProjection(expected))) {
+    throw new Error("BOLA verification preflight receipt does not match the supplied manifest and template");
+  }
+  return receipt;
 }
 
 export async function checkBola(path: string, templatePath?: string): Promise<BolaAuthorizationCheck> {

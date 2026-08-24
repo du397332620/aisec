@@ -152,6 +152,13 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   `review_required`, not proof of authorization, reachability, protection or a
   vulnerability. Template IDs and digests provide local integrity evidence, not
   origin authentication or a signature; keep the template operator-owned.
+- `verify-bola` requires the same completed manifest, unchanged template and a
+  saved template-bound check 1.1/1.2 receipt in addition to `--confirm`. It loads
+  each bounded file once, recomputes the canonical manifest digest and complete
+  template binding, and rejects unbound, malformed, forged or drifted inputs
+  before reading credential values, resolving DNS or invoking the requester.
+  Receipt IDs/digests are consistency evidence, not a signature, freshness
+  proof or origin authentication; keep all three artifacts operator-owned.
 - Passive web requests pin a validated DNS answer to the socket and redirects
   must retain the exact authorized origin. Local verification is deliberately
   allowed to reach private addresses; staging/test verification is not.
@@ -161,7 +168,8 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   manifests or reports. Query-style POST routes remain an explicit trusted
   manifest assertion and should be executed only against disposable fixtures.
   Confirmed active verification also rejects any residual instruction or route
-  parameter placeholder rather than sending it literally.
+  parameter placeholder rather than sending it literally, and executes the
+  already checked in-memory manifest without reopening its path.
 
 ## Current limitations
 

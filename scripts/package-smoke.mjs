@@ -215,6 +215,7 @@ try {
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /prepare-bola --draft <selected-bola-draft\.json>/);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /check-bola --authorization <completed-manifest\.yml>/);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /--template same-template\.json/);
+  assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /verify-bola --authorization <manifest\.yml> --template <same-template\.json> --check <authorization-check\.json> --confirm/);
 
   process.stdout.write("Running the installed CLI against safe and vulnerable fixtures...\n");
   const safe = parseReport(run(executable, [
@@ -426,7 +427,7 @@ suppressions: []
     "--template",
     authorizationTemplatePath,
   ], { cwd: consumer, env: scanEnvironment }), "installed offline BOLA authorization check");
-  assert.equal(authorizationCheck.schemaVersion, "1.1.0");
+  assert.equal(authorizationCheck.schemaVersion, "1.2.0");
   assert.equal(authorizationCheck.status, "valid_review_required");
   assert.equal(authorizationCheck.templateBinding.status, "verified");
   assert.equal(authorizationCheck.templateBinding.templateId, authorizationTemplate.templateId);
@@ -434,6 +435,18 @@ suppressions: []
   assert.equal(authorizationCheck.environmentValuesRead, 0);
   assert.equal(authorizationCheck.dnsLookups, 0);
   assert.doesNotMatch(JSON.stringify(authorizationCheck), /127\.0\.0\.1|\/project\/detail|project_id/u);
+  const authorizationCheckPath = join(temporary, "installed-bola-authorization-check.json");
+  await writeFile(authorizationCheckPath, `${JSON.stringify(authorizationCheck)}\n`);
+  assert.equal(run(executable, [
+    "verify-bola",
+    "--authorization",
+    completedAuthorizationPath,
+    "--template",
+    authorizationTemplatePath,
+    "--check",
+    authorizationCheckPath,
+    "--confirm",
+  ], { cwd: consumer, env: scanEnvironment, expectedStatus: 64 }), "");
 
   const selectedDraftApi = parseReport(run(process.execPath, [
     "--input-type=module",
@@ -449,14 +462,15 @@ suppressions: []
   const bolaPreflightApi = parseReport(run(process.execPath, [
     "--input-type=module",
     "--eval",
-    `import { readFileSync } from "node:fs"; import { checkBola, createBolaAuthorizationTemplate, loadBolaAuthorizationTemplate, validateBolaAuthorizationCheck, validateBolaAuthorizationTemplate } from ${JSON.stringify(packageMetadata.name)}; const draft = JSON.parse(readFileSync(${JSON.stringify(selectedDraftPath)}, "utf8")); const template = validateBolaAuthorizationTemplate(createBolaAuthorizationTemplate(draft)); const loaded = await loadBolaAuthorizationTemplate(${JSON.stringify(authorizationTemplatePath)}); const check = validateBolaAuthorizationCheck(await checkBola(${JSON.stringify(completedAuthorizationPath)}, ${JSON.stringify(authorizationTemplatePath)})); process.stdout.write(JSON.stringify({ template: template.status, loaded: loaded.templateId === template.templateId, check: check.status, binding: check.templateBinding.status, version: check.schemaVersion, requests: template.networkRequests + check.networkRequests }));`,
+    `import { readFileSync } from "node:fs"; import { assertBolaVerificationPreflight, checkBola, createBolaAuthorizationTemplate, loadBolaAuthorizationCheck, loadBolaAuthorizationTemplate, validateBolaAuthorizationCheck, validateBolaAuthorizationTemplate } from ${JSON.stringify(packageMetadata.name)}; const draft = JSON.parse(readFileSync(${JSON.stringify(selectedDraftPath)}, "utf8")); const manifest = JSON.parse(readFileSync(${JSON.stringify(completedAuthorizationPath)}, "utf8")); const template = validateBolaAuthorizationTemplate(createBolaAuthorizationTemplate(draft)); const loaded = await loadBolaAuthorizationTemplate(${JSON.stringify(authorizationTemplatePath)}); const check = validateBolaAuthorizationCheck(await checkBola(${JSON.stringify(completedAuthorizationPath)}, ${JSON.stringify(authorizationTemplatePath)})); const receipt = await loadBolaAuthorizationCheck(${JSON.stringify(authorizationCheckPath)}); const matched = assertBolaVerificationPreflight(manifest, loaded, receipt); process.stdout.write(JSON.stringify({ template: template.status, loaded: loaded.templateId === template.templateId, check: check.status, binding: check.templateBinding.status, matched: matched.checkId === receipt.checkId, version: check.schemaVersion, requests: template.networkRequests + check.networkRequests }));`,
   ], { cwd: consumer, env: scanEnvironment }), "installed BOLA preflight API");
   assert.deepEqual(bolaPreflightApi, {
     template: "placeholders_required",
     loaded: true,
     check: "valid_review_required",
     binding: "verified",
-    version: "1.1.0",
+    matched: true,
+    version: "1.2.0",
     requests: 0,
   });
 
