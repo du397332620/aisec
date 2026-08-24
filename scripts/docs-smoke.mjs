@@ -64,6 +64,7 @@ try {
     "node dist/src/cli.js local-gate ../target",
     "never advanced automatically",
     "does not accept `--output`",
+    "deterministic inventory exclusions",
     "stable machine-readable reasons",
     "also makes every active pack's required scan coverage `partial`",
     "emitWhen: absent",

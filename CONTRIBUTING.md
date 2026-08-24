@@ -41,6 +41,11 @@ ambiguous state, preserve owner-only files and never advance a pinned baseline
 automatically. A blocked or incomplete run must remain compared with the same
 baseline on repetition.
 
+External-adapter changes must keep target-controlled ignores ineffective while
+preserving AIsec's deterministic inventory exclusions. Add both a captured
+adapter-input regression and a verified real-engine fixture when target
+selection semantics change.
+
 Declarative rule-pack changes must preserve the non-executable extension
 boundary. Packs are explicit operator-owned files outside the target and may
 only add bounded literal findings and required coverage. Do not add dynamic

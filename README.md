@@ -538,7 +538,10 @@ result. AIsec passes its own Trivy/Gitleaks/Opengrep configuration and ignore
 files; target-controlled configuration, `gitleaks:allow` and `nosemgrep`
 suppressions cannot weaken these adapters. A target `trivy:ignore` directive is
 reported conservatively as partial coverage because Trivy has no equivalent
-global disable switch.
+global disable switch. Opengrep's trusted temporary ignore mirrors AIsec's
+deterministic inventory exclusions such as `.venv`, `node_modules` and build
+caches, so vendored/generated dependencies do not create unstable application
+findings; it never imports target `.gitignore` or `.semgrepignore` content.
 
 Opengrep is LGPL-2.1, Gitleaks is MIT, and Trivy is Apache-2.0. MobSF is GPL-3.0
 and remains a separately managed service; it is deliberately not bundled.
@@ -666,7 +669,7 @@ finding fingerprints and accepted suppressions for compatible consumers.
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; exact FastAPI route origins propagate through direct handlers, unique local/relative imports and directly invoked lexical closures; comments, returned closures, ambiguous/dynamic dispatch and unproven request origins remain unattributed with stable machine-readable reasons in JSON/CI plus bounded terminal/Markdown/HTML summaries; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, global and broad route-local exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
 | Working tree and optional Git-history secrets | Gitleaks `8.30.1` | Required in pre-deploy mode; history is scanned only with `--git-history` |
-| General SAST | Opengrep `1.26.0` | Required in pre-deploy mode; uses AIsec-owned rules and suppression controls |
+| General SAST | Opengrep `1.26.0` | Required in pre-deploy mode; uses AIsec-owned rules, suppression controls and deterministic inventory exclusions while rejecting target ignore files |
 | Dependency, IaC and secondary secret checks | Trivy `0.73.0` | Required in pre-deploy mode; requires an explicitly prepared, fresh schema-v2 database and scans offline |
 | APK/IPA static resources | Native archive adapter | Optional input; required for pre-deploy mobile artifact coverage when a mobile project/artifact is expected; prioritizes app manifests/plists, DEX/resource tables, JS bundles and the iOS main executable, semantically decodes bounded binary plists, recovers bounded ASCII/UTF-16 strings in memory, and performs no installation, on-disk member extraction or runtime instrumentation |
 | Passive test/staging Web checks | `verify-web` | Explicit authorization plus `--confirm`; bounded GET/header/cookie checks only, no auth/IDOR/injection testing |
@@ -959,6 +962,8 @@ boundary.
   files with AIsec-owned temporary inputs; inline scanner suppressions are also
   disabled where the engine exposes that control. If Trivy inline ignore
   directives are present, its coverage is conservatively reported as `partial`.
+  Opengrep's temporary ignore contains only AIsec's fixed inventory exclusions;
+  target `.gitignore` and `.semgrepignore` files are not copied or consulted.
 - Credential-shaped ambient variables are removed from every scanner child
   process. Engine-specific variables are also removed so ambient
   Trivy/Gitleaks/Opengrep policy cannot weaken acceptance.

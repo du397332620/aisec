@@ -7,7 +7,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
 import type { RouteSecurityComparisonEntry } from "../src/schema.js";
-import { scanProject } from "../src/core/scan.js";
+import { normalizeScanOptions, scanProject } from "../src/core/scan.js";
 import { createFixContract } from "../src/core/contracts.js";
 import { compareReports } from "../src/core/compare.js";
 import { buildRouteSecuritySnapshot, routeSecurityIssueKey } from "../src/core/route-security.js";
@@ -17,9 +17,10 @@ import { serializeReport } from "../src/reporters/index.js";
 import { engineStatus, installManagedEngine, resolveEngineCommand } from "../src/engines/manager.js";
 import { sha256 } from "../src/core/utils.js";
 import { engineCompatibility, parseEngineVersion } from "../src/engines/compatibility.js";
-import { normalizeOpengrepRuleId } from "../src/engines/opengrep.js";
+import { normalizeOpengrepRuleId, runOpengrep } from "../src/engines/opengrep.js";
 import { trivyDatabaseStatus } from "../src/engines/trivy-db.js";
 import { materializeFixture, SYNTHETIC_STRIPE_LIVE_KEY } from "./helpers/materialize-fixture.js";
+import { DEFAULT_EXCLUDES } from "../src/core/constants.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const fixtures = join(here, "..", "..", "test", "fixtures");
@@ -7030,6 +7031,50 @@ test("bundled Opengrep rule IDs are stable across installed config paths", () =>
   assert.equal(normalizeOpengrepRuleId("third-party.rule"), "third-party.rule");
   assert.equal(normalizeOpengrepRuleId("third-party.notaisec.rule"), "third-party.notaisec.rule");
   assert.equal(normalizeOpengrepRuleId(undefined), "opengrep.unknown");
+});
+
+test("Opengrep uses AIsec-owned inventory exclusions without trusting target ignores", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-opengrep-ignore-"));
+  const project = join(temporary, "project");
+  const command = join(temporary, "opengrep");
+  const capturedIgnore = join(temporary, "captured-semgrepignore");
+  const oldOpengrep = process.env.AISEC_OPENGREP_PATH;
+  const oldCapture = process.env.AISEC_TEST_OPENGREP_IGNORE_CAPTURE;
+  try {
+    await mkdir(project);
+    await writeFile(join(project, ".semgrepignore"), "main.py\n");
+    await writeFile(join(project, "main.py"), "print('application source')\n");
+    await writeFile(command, `#!/bin/sh
+if [ "$1" = "--version" ]; then printf '1.26.0\\n'; exit 0; fi
+previous=''
+for argument in "$@"; do
+  if [ "$previous" = "--semgrepignore-filename" ]; then
+    cp "$argument" "$AISEC_TEST_OPENGREP_IGNORE_CAPTURE"
+  fi
+  previous="$argument"
+done
+printf '{"results":[],"errors":[]}\\n'
+`);
+    await chmod(command, 0o700);
+    process.env.AISEC_OPENGREP_PATH = command;
+    process.env.AISEC_TEST_OPENGREP_IGNORE_CAPTURE = capturedIgnore;
+
+    const result = await runOpengrep({
+      root: project,
+      options: normalizeScanOptions({ persist: false }),
+    } as Parameters<typeof runOpengrep>[0]);
+    assert.equal(result.coverage.status, "complete");
+    const trustedIgnore = await readFile(capturedIgnore, "utf8");
+    const patterns = trustedIgnore.split("\n").filter((line) => line && !line.startsWith("#"));
+    assert.deepEqual(patterns, [...DEFAULT_EXCLUDES].sort().map((name) => `${name}/`));
+    assert.doesNotMatch(trustedIgnore, /main\.py/u, "target-controlled .semgrepignore content must not be copied");
+  } finally {
+    if (oldOpengrep === undefined) delete process.env.AISEC_OPENGREP_PATH;
+    else process.env.AISEC_OPENGREP_PATH = oldOpengrep;
+    if (oldCapture === undefined) delete process.env.AISEC_TEST_OPENGREP_IGNORE_CAPTURE;
+    else process.env.AISEC_TEST_OPENGREP_IGNORE_CAPTURE = oldCapture;
+    await rm(temporary, { recursive: true, force: true });
+  }
 });
 
 test("unverified external engine versions fail closed", async () => {

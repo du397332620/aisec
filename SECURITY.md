@@ -76,7 +76,10 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
 - Target-controlled Gitleaks, Opengrep and Trivy configuration/ignore files are
   not trusted by the adapters and cannot silently suppress acceptance findings.
   This includes Gitleaks allow comments, Opengrep `nosemgrep`/ignore files and
-  Trivy general, ignore and secret-scanner configuration.
+  Trivy general, ignore and secret-scanner configuration. Opengrep instead uses
+  an AIsec-owned temporary ignore containing only the same deterministic
+  dependency, virtual-environment, cache and build-directory exclusions as the
+  native inventory; target ignore content is never imported.
 - A release policy is never discovered from the target. AIsec resolves its real
   path, rejects files or symlinks inside the scan root, validates a strict
   versioned schema and expiry, and records the applied SHA-256 digest. A target

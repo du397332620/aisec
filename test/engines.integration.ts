@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
@@ -26,6 +27,9 @@ test("verified real engines reject target-controlled suppressions and normalize 
     value: SYNTHETIC_EXTERNAL_STRIPE_LIVE_KEY,
   }]);
   try {
+    const ignoredVirtualEnvironment = join(fixture.path, ".venv", "lib", "python3.13", "site-packages");
+    await mkdir(ignoredVirtualEnvironment, { recursive: true });
+    await writeFile(join(ignoredVirtualEnvironment, "ignored.py"), "import pickle\npickle.loads(untrusted_payload)\n");
     const { report } = await scanProject(fixture.path, { persist: false });
     const coverage = new Map(report.coverage.map((item) => [item.engine, item]));
     for (const name of ["gitleaks", "opengrep", "trivy"] as const) assert.equal(coverage.get(name)?.status, "complete");
@@ -38,6 +42,9 @@ test("verified real engines reject target-controlled suppressions and normalize 
       "aisec.javascript.dynamic-code-execution",
       "aisec.python.unsafe-pickle-load",
     ]), ".semgrepignore and nosemgrep must not hide any shipped Opengrep rule");
+    assert.ok(report.signals.filter((signal) => signal.engine === "opengrep")
+      .every((signal) => !signal.locations.some((location) => location.path.startsWith(".venv/"))),
+    "AIsec-owned inventory exclusions must keep third-party virtual environments out of Opengrep");
     assert.ok([...byEngine.keys()].some((key) => key.startsWith("trivy:CVE-")), "target trivy.yaml, .trivyignore and trivy-secret.yaml must not hide a known vulnerable dependency");
     assert.equal(report.decision, "block");
     assert.doesNotMatch(serializeReport(report, "json"), new RegExp(SYNTHETIC_EXTERNAL_STRIPE_LIVE_KEY));

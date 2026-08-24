@@ -9,7 +9,7 @@ import { runProcess } from "./process.js";
 import { externalSignal, isOptionalArrayOf, isOptionalFiniteNumber, isOptionalString, isRecord, isString, normalizeSeverity } from "./common.js";
 import { resolveEngineCommand, sanitizedEngineEnv } from "./manager.js";
 import { inspectEngineCompatibility } from "./compatibility.js";
-import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
+import { DEFAULT_EXCLUDES, MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
 
 interface OpengrepResult {
   check_id?: string;
@@ -61,6 +61,14 @@ function rulesPath(): string {
   return join(here, "..", "..", "..", "rules", "opengrep", "security.yml");
 }
 
+function trustedIgnoreContents(): string {
+  return [
+    "# AIsec ignores only its own deterministic inventory exclusions.",
+    ...[...DEFAULT_EXCLUDES].sort().map((name) => `${name}/`),
+    "",
+  ].join("\n");
+}
+
 export function normalizeOpengrepRuleId(checkId: string | undefined): string {
   if (!checkId) return "opengrep.unknown";
   const bundledRule = /(?:^|[./])(aisec\.[a-z0-9][a-z0-9._-]*)$/i.exec(checkId);
@@ -79,7 +87,7 @@ export async function runOpengrep(context: ScanContext): Promise<DetectorResult>
   }
   const temporary = await mkdtemp(join(tmpdir(), "aisec-opengrep-"));
   const trustedIgnore = join(temporary, "semgrepignore");
-  await writeFile(trustedIgnore, "# AIsec intentionally accepts no target-controlled path suppressions.\n", { mode: 0o600 });
+  await writeFile(trustedIgnore, trustedIgnoreContents(), { mode: 0o600 });
   let result;
   try {
     result = await runProcess(command, ["scan", "--json", "--disable-version-check", "--no-git-ignore", "--disable-nosem", "--oss-only", "--experimental", "--semgrepignore-filename", trustedIgnore, "-f", rulesPath(), context.root], {
