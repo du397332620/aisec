@@ -6,10 +6,11 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import type { BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, ScanReport } from "../src/schema.js";
+import type { BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaVerificationAudit, ScanReport } from "../src/schema.js";
 import {
   validateBolaAuthorizationCheck,
   validateBolaAuthorizationTemplate,
+  validateBolaVerificationAudit,
   validateBolaVerificationReport,
 } from "../src/core/schema-validation.js";
 import { scanProject } from "../src/core/scan.js";
@@ -17,6 +18,12 @@ import { createSelectedBolaDraftPlan, createBolaDraftPlan } from "../src/web/bol
 import { createInterfaceVerificationQueue } from "../src/web/interface-verification-queue.js";
 import { validateBolaAuthorization } from "../src/web/authorization.js";
 import { verifyBola } from "../src/web/bola.js";
+import {
+  MAX_BOLA_AUDIT_DOCUMENT_BYTES,
+  auditBola,
+  auditBolaVerification,
+  loadBolaVerificationReport,
+} from "../src/web/bola-audit.js";
 import {
   MAX_BOLA_PREFLIGHT_DOCUMENT_BYTES,
   assertBolaVerificationPreflight,
@@ -748,6 +755,279 @@ test("verify-bola checks bound files before credentials or requests and executes
   assert.equal(legacyReport.provenance?.receipt.checkId, receipt.checkId);
   assert.equal(validateBolaVerificationReport(legacyReport), legacyReport);
   assert.equal(requests, 8);
+});
+
+test("audit-bola proves exact retained artifact binding offline and emits only a sanitized receipt", async (context) => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-bola-offline-audit-"));
+  context.after(() => rm(temporary, { recursive: true, force: true }));
+  const template = createBolaAuthorizationTemplate(await selectedDraft());
+  const manifest = completedManifest(template);
+  const currentReceipt = checkBolaAuthorization(manifest, template);
+  const legacyReceipt = legacyBoundCheck(currentReceipt);
+  const manifestPath = join(temporary, "authorization.json");
+  const templatePath = join(temporary, "template.json");
+  const checkPath = join(temporary, "check.json");
+  const reportPath = join(temporary, "report.json");
+  await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
+  await writeFile(templatePath, `${JSON.stringify(template)}\n`);
+
+  const credentials = {
+    AISEC_BOLA_BINDING_OWNER_USERNAME: "audit_fixture_owner",
+    AISEC_BOLA_BINDING_OWNER_PASSWORD: "audit_owner_password",
+    AISEC_BOLA_BINDING_OTHER_USERNAME: "audit_fixture_other",
+    AISEC_BOLA_BINDING_OTHER_PASSWORD: "audit_other_password",
+  };
+  let activeRequesterCalls = 0;
+  const requester = async (input: { url: string; headers?: Record<string, string>; body?: string }) => {
+    activeRequesterCalls += 1;
+    if (input.url.endsWith("/auth/login")) {
+      const login = JSON.parse(input.body ?? "{}") as { username?: string };
+      const owner = login.username === credentials.AISEC_BOLA_BINDING_OWNER_USERNAME;
+      return {
+        url: input.url,
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ data: {
+          access_token: owner ? "audit-owner-token" : "audit-other-token",
+          user_id: owner ? "audit-owner-id" : "audit-other-id",
+        } }),
+      };
+    }
+    if (input.headers?.authorization === "Bearer audit-owner-token") {
+      return {
+        url: input.url,
+        status: 200,
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ data: { fixture_owner: "audit-owner-id" } }),
+      };
+    }
+    return {
+      url: input.url,
+      status: 403,
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ detail: "audit-forbidden-response" }),
+    };
+  };
+
+  await writeFile(checkPath, `${JSON.stringify(currentReceipt)}\n`);
+  const currentReport = await verifyBola(manifestPath, {
+    confirmed: true,
+    templatePath,
+    checkPath,
+    environment: credentials,
+    requester,
+  });
+  await writeFile(checkPath, `${JSON.stringify(legacyReceipt)}\n`);
+  const legacyBoundReport = await verifyBola(manifestPath, {
+    confirmed: true,
+    templatePath,
+    checkPath,
+    environment: credentials,
+    requester,
+  });
+  assert.equal(activeRequesterCalls, 8);
+  await writeFile(checkPath, `${JSON.stringify(currentReceipt)}\n`);
+  await writeFile(reportPath, `${JSON.stringify(currentReport)}\n`);
+  assert.deepEqual(await loadBolaVerificationReport(reportPath), currentReport);
+
+  const originalEnvironment = process.env;
+  const originalFetch = globalThis.fetch;
+  let credentialReads = 0;
+  let fetchCalls = 0;
+  process.env = new Proxy(originalEnvironment, {
+    get(target, property, receiver) {
+      if (typeof property === "string" && property.startsWith("AISEC_BOLA_")) {
+        credentialReads += 1;
+        throw new Error(`offline audit read credential environment value ${property}`);
+      }
+      return Reflect.get(target, property, receiver) as unknown;
+    },
+  });
+  globalThis.fetch = (() => {
+    fetchCalls += 1;
+    throw new Error("audit-bola must never call fetch");
+  }) as typeof fetch;
+  try {
+    const direct = auditBolaVerification(manifest, template, currentReceipt, currentReport);
+    const loaded = await auditBola(manifestPath, {
+      templatePath,
+      checkPath,
+      reportPath,
+    });
+    assert.equal(validateBolaVerificationAudit(direct), direct);
+    assert.equal(validateBolaVerificationAudit(loaded), loaded);
+    assert.equal(loaded.schemaVersion, "1.0.0");
+    assert.equal(loaded.status, "artifacts_verified");
+    assert.equal(loaded.auditId, direct.auditId);
+    assert.equal(loaded.report.digestSha256, direct.report.digestSha256);
+    assert.equal(loaded.report.summary.cases, 1);
+    assert.equal(loaded.report.summary.protected, 1);
+    assert.equal(loaded.report.summary.verifiedSignals, 0);
+    assert.equal(loaded.report.requestCount, 4);
+    assert.equal(loaded.report.requiredRequests, 4);
+    assert.equal(loaded.report.authorizedMaxRequests, 4);
+    assert.equal(loaded.receipt.schemaVersion, "1.2.0");
+    assert.deepEqual(loaded.io, {
+      environmentValuesRead: 0,
+      dnsLookups: 0,
+      requesterCalls: 0,
+      networkRequests: 0,
+    });
+
+    const reorderedReport = Object.fromEntries(Object.entries(currentReport).reverse());
+    const reorderedAudit = auditBolaVerification(manifest, template, currentReceipt, reorderedReport);
+    assert.equal(reorderedAudit.report.digestSha256, direct.report.digestSha256);
+    assert.equal(reorderedAudit.auditId, direct.auditId);
+
+    const legacyAudit = auditBolaVerification(manifest, template, legacyReceipt, legacyBoundReport);
+    assert.equal(legacyAudit.receipt.schemaVersion, "1.1.0");
+    assert.notEqual(legacyAudit.report.digestSha256, direct.report.digestSha256);
+
+    const serialized = JSON.stringify(loaded);
+    for (const forbidden of [
+      "staging.binding.invalid",
+      "/document/detail",
+      "910000",
+      "aisec-binding-case-1",
+      "AISEC_BOLA_BINDING_OWNER_USERNAME",
+      "data.fixture_owner",
+      "audit_fixture_owner",
+      "audit_owner_password",
+      "audit-owner-token",
+      "audit-owner-id",
+      "audit-forbidden-response",
+      "cross-account request was denied",
+    ]) assert.ok(!serialized.includes(forbidden), `offline audit leaked ${forbidden}`);
+    assert.equal(credentialReads, 0);
+    assert.equal(fetchCalls, 0);
+
+    const changedProvenance = structuredClone(currentReport);
+    changedProvenance.provenance!.receipt.checkedAt = "2020-01-01T00:00:00.000Z";
+    assert.doesNotThrow(() => validateBolaVerificationReport(changedProvenance));
+    assert.throws(
+      () => auditBolaVerification(manifest, template, currentReceipt, changedProvenance),
+      /provenance does not match/u,
+    );
+
+    const changedTarget = structuredClone(currentReport);
+    changedTarget.target = "https://different-audit.invalid/";
+    assert.doesNotThrow(() => validateBolaVerificationReport(changedTarget));
+    assert.throws(
+      () => auditBolaVerification(manifest, template, currentReceipt, changedTarget),
+      /source fields do not match/u,
+    );
+    const changedAccounts = structuredClone(currentReport);
+    changedAccounts.accounts.reverse();
+    assert.doesNotThrow(() => validateBolaVerificationReport(changedAccounts));
+    assert.throws(
+      () => auditBolaVerification(manifest, template, currentReceipt, changedAccounts),
+      /source fields do not match/u,
+    );
+    const changedPath = structuredClone(currentReport);
+    changedPath.cases[0]!.path = "/different/object/910000";
+    assert.doesNotThrow(() => validateBolaVerificationReport(changedPath));
+    assert.throws(
+      () => auditBolaVerification(manifest, template, currentReceipt, changedPath),
+      /source fields differ at case index 0/u,
+    );
+    const changedLabel = structuredClone(currentReport);
+    changedLabel.cases[0]!.testDataLabel = "aisec-forged-label";
+    assert.doesNotThrow(() => validateBolaVerificationReport(changedLabel));
+    assert.throws(
+      () => auditBolaVerification(manifest, template, currentReceipt, changedLabel),
+      /source fields differ at case index 0/u,
+    );
+
+    const legacyReport = structuredClone(currentReport) as typeof currentReport & { provenance?: unknown };
+    legacyReport.schemaVersion = "1.0.0";
+    delete legacyReport.provenance;
+    assert.doesNotThrow(() => validateBolaVerificationReport(legacyReport));
+    assert.throws(
+      () => auditBolaVerification(manifest, template, currentReceipt, legacyReport),
+      /requires a provenance-bound BolaVerificationReport 1\.1\.0/u,
+    );
+
+    const forgedAuditId = structuredClone(loaded);
+    forgedAuditId.auditId = "bola_audit_0000000000000000";
+    assert.throws(() => validateBolaVerificationAudit(forgedAuditId), /stable audit ID is inconsistent/u);
+    const forgedReceiptTime = structuredClone(loaded);
+    forgedReceiptTime.receipt.checkedAt = "2020-01-01T00:00:00.000Z";
+    assert.throws(() => validateBolaVerificationAudit(forgedReceiptTime), /stable audit ID is inconsistent/u);
+    const forgedSummary = structuredClone(loaded);
+    forgedSummary.report.summary.protected = 0;
+    assert.throws(() => validateBolaVerificationAudit(forgedSummary), /summary totals are inconsistent/u);
+    const forgedRequestCount = structuredClone(loaded);
+    forgedRequestCount.report.requestCount = 0;
+    assert.throws(() => validateBolaVerificationAudit(forgedRequestCount), /request budget is inconsistent/u);
+    const leakedAudit = structuredClone(loaded) as BolaVerificationAudit & { target?: string };
+    leakedAudit.target = manifest.targetBaseUrl;
+    assert.throws(() => validateBolaVerificationAudit(leakedAudit), /additional properties.*target/u);
+  } finally {
+    process.env = originalEnvironment;
+    globalThis.fetch = originalFetch;
+  }
+
+  const invalidReportPath = join(temporary, "invalid-report.json");
+  await writeFile(invalidReportPath, "schemaVersion: 1.1.0\n");
+  await assert.rejects(() => loadBolaVerificationReport(invalidReportPath), /valid JSON/u);
+  const oversizedReportPath = join(temporary, "oversized-report.json");
+  await writeFile(oversizedReportPath, "x".repeat(MAX_BOLA_AUDIT_DOCUMENT_BYTES + 1));
+  await assert.rejects(() => loadBolaVerificationReport(oversizedReportPath), /exceeds 1048576 bytes/u);
+  await assert.rejects(() => loadBolaVerificationReport(temporary), /regular file/u);
+
+  const cli = join(here, "..", "src", "cli.js");
+  async function runAudit(args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+    const child = spawn(process.execPath, [cli, ...args], {
+      env: Object.fromEntries(Object.entries(process.env).filter(([name]) => !name.startsWith("AISEC_BOLA_"))),
+      stdio: ["ignore", "pipe", "pipe"],
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk: string) => { stdout += chunk; });
+    child.stderr.on("data", (chunk: string) => { stderr += chunk; });
+    const [code] = await once(child, "close");
+    return { code: code as number | null, stdout, stderr };
+  }
+  const audited = await runAudit([
+    "audit-bola",
+    "--authorization", manifestPath,
+    "--template", templatePath,
+    "--check", checkPath,
+    "--report", reportPath,
+  ]);
+  assert.equal(audited.code, 0, audited.stderr);
+  const auditedJson: unknown = JSON.parse(audited.stdout);
+  assert.equal(validateBolaVerificationAudit(auditedJson), auditedJson);
+  const missingReport = await runAudit([
+    "audit-bola",
+    "--authorization", manifestPath,
+    "--template", templatePath,
+    "--check", checkPath,
+  ]);
+  assert.equal(missingReport.code, 64);
+  assert.match(missingReport.stderr, /--report is required/u);
+  const duplicateReport = await runAudit([
+    "audit-bola",
+    "--authorization", manifestPath,
+    "--template", templatePath,
+    "--check", checkPath,
+    "--report", reportPath,
+    "--report", reportPath,
+  ]);
+  assert.equal(duplicateReport.code, 64);
+  assert.match(duplicateReport.stderr, /accepts --report at most once/u);
+  const unsupportedConfirm = await runAudit([
+    "audit-bola",
+    "--authorization", manifestPath,
+    "--template", templatePath,
+    "--check", checkPath,
+    "--report", reportPath,
+    "--confirm",
+  ]);
+  assert.equal(unsupportedConfirm.code, 64);
+  assert.match(unsupportedConfirm.stderr, /does not support --confirm/u);
 });
 
 test("template binding accepts concrete GET route forms and rejects ambiguous route changes", async () => {

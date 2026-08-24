@@ -1,7 +1,7 @@
 export * from "./schema.js";
 export { DEFAULT_SCAN_OPTIONS, inspectOnly, scanProject } from "./core/scan.js";
 export { createFixContract } from "./core/contracts.js";
-export { validateAuthorizationManifestSchema, validateBolaAuthorizationCheck, validateBolaAuthorizationManifestSchema, validateBolaAuthorizationTemplate, validateBolaDraftPlan, validateBolaVerificationReport, validateCiReport, validateFixContract, validateInterfaceVerificationQueue, validateRuleCatalog, validateRulePack, validateRulePackPreview, validateScanReport, validateSecurityPolicy } from "./core/schema-validation.js";
+export { validateAuthorizationManifestSchema, validateBolaAuthorizationCheck, validateBolaAuthorizationManifestSchema, validateBolaAuthorizationTemplate, validateBolaDraftPlan, validateBolaVerificationAudit, validateBolaVerificationReport, validateCiReport, validateFixContract, validateInterfaceVerificationQueue, validateRuleCatalog, validateRulePack, validateRulePackPreview, validateScanReport, validateSecurityPolicy } from "./core/schema-validation.js";
 export { loadTrustedPolicy, parseSecurityPolicy } from "./core/config.js";
 export { loadRuleCatalog, renderRuleCatalog } from "./rules/catalog.js";
 export { loadTrustedRulePack, loadTrustedRulePacks, parseRulePack } from "./rules/pack.js";
@@ -13,6 +13,7 @@ export { validateAuthorization, validateBolaAuthorization } from "./web/authoriz
 export { createBolaDraftPlan, createSelectedBolaDraftPlan, draftBola } from "./web/bola-draft.js";
 export { MAX_BOLA_PREFLIGHT_DOCUMENT_BYTES, assertBolaVerificationPreflight, checkBola, checkBolaAuthorization, createBolaAuthorizationTemplate, loadBolaAuthorizationCheck, loadBolaAuthorizationTemplate, loadSelectedBolaDraft, prepareBola } from "./web/bola-preflight.js";
 export { verifyBola, type BolaEnvironment, type BolaRequester, type VerifyBolaOptions } from "./web/bola.js";
+export { MAX_BOLA_AUDIT_DOCUMENT_BYTES, auditBola, auditBolaVerification, loadBolaVerificationReport, type AuditBolaOptions } from "./web/bola-audit.js";
 export { createInterfaceVerificationQueue, interfaceVerificationQueue } from "./web/interface-verification-queue.js";
 export { serializeReport } from "./reporters/index.js";
 export { buildCiReport, renderGithubAnnotations, renderMarkdownSummary } from "./reporters/ci.js";

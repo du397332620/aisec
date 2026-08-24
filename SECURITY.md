@@ -166,6 +166,18 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   identities, tokens and response bodies are excluded from provenance, and
   arbitrary requester error text is never copied into case results. Low-level
   execution remains report 1.0 without provenance and cannot claim this gate.
+- `audit-bola` accepts the retained manifest, template, bound check and saved
+  provenance-bound report as four independently bounded 1 MiB inputs. It
+  reuses the complete offline preflight, then requires exact report provenance,
+  target, account-label order and case ID/method/path/test-label/role binding.
+  It reads no credential values, resolves no DNS, invokes no requester and sends
+  no request. Its strict `BolaVerificationAudit 1.0.0` output contains only
+  stable IDs, canonical digests, aggregate outcomes, fixed binding assertions
+  and zero-I/O counters; concrete targets/routes/fixtures, credential names or
+  values, identities, tokens, responses and case reasons remain excluded.
+  This local consistency record is not a signature, origin/freshness proof or
+  proof that the recorded observations occurred. Legacy report 1.0 is not
+  eligible because it cannot claim preflight provenance.
 - Passive web requests pin a validated DNS answer to the socket and redirects
   must retain the exact authorized origin. Local verification is deliberately
   allowed to reach private addresses; staging/test verification is not.

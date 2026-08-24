@@ -2,14 +2,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import type { AuthorizationManifest, BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaDraftPlan, BolaVerificationReport, CiReport, FixContract, InterfaceVerificationQueue, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
+import type { AuthorizationManifest, BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaDraftPlan, BolaVerificationAudit, BolaVerificationReport, CiReport, FixContract, InterfaceVerificationQueue, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
 import { ROUTE_SECURITY_RULES, routeSecurityIssueKey } from "./route-security.js";
 import { evaluateRouteSecurityBaselineGate } from "./route-security-gate.js";
 import { safeRelativePath } from "../reporters/safety.js";
 import { classifyBolaStaticRoute } from "../web/bola-policy.js";
 import { stableId } from "./utils.js";
 
-type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "BolaVerificationReport" | "InterfaceVerificationQueue" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
+type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "BolaVerificationReport" | "BolaVerificationAudit" | "InterfaceVerificationQueue" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
 
 function loadSchema(filename: string): object {
   const path = fileURLToPath(new URL(`../../../schemas/${filename}`, import.meta.url));
@@ -29,6 +29,7 @@ const bolaAuthorizationTemplateValidator = ajv.compile(loadSchema("bola-authoriz
 const bolaAuthorizationCheckValidator = ajv.compile(loadSchema("bola-authorization-check.schema.json"));
 const bolaDraftPlanValidator = ajv.compile(loadSchema("bola-draft.schema.json"));
 const bolaVerificationReportValidator = ajv.compile(loadSchema("bola-verification-report.schema.json"));
+const bolaVerificationAuditValidator = ajv.compile(loadSchema("bola-verification-audit.schema.json"));
 const interfaceVerificationQueueValidator = ajv.compile(loadSchema("interface-verification-queue.schema.json"));
 const ruleCatalogValidator = ajv.compile(loadSchema("rule-catalog.schema.json"));
 const rulePackValidator = ajv.compile(loadSchema("rule-pack.schema.json"));
@@ -640,6 +641,48 @@ export function validateBolaVerificationReport(value: unknown): BolaVerification
     throw new Error("BolaVerificationReport receipt identity is inconsistent");
   }
   return report;
+}
+
+export function validateBolaVerificationAudit(value: unknown): BolaVerificationAudit {
+  const audit = assertSchema<BolaVerificationAudit>(
+    "BolaVerificationAudit",
+    bolaVerificationAuditValidator,
+    value,
+  );
+  const summary = audit.report.summary;
+  if (summary.vulnerable + summary.protected + summary.inconclusive + summary.notRun !== summary.cases) {
+    throw new Error("BolaVerificationAudit result summary totals are inconsistent");
+  }
+  if (summary.verifiedSignals !== summary.vulnerable) {
+    throw new Error("BolaVerificationAudit verified signal total is inconsistent");
+  }
+  if (audit.report.requiredRequests !== 2 + summary.cases * 2
+    || audit.report.authorizedMaxRequests < audit.report.requiredRequests
+    || audit.report.requestCount < 2 + summary.cases + summary.vulnerable + summary.protected
+    || audit.report.requestCount > audit.report.requiredRequests
+    || audit.report.requestCount > audit.report.authorizedMaxRequests) {
+    throw new Error("BolaVerificationAudit request budget is inconsistent");
+  }
+  const expectedCoverage = summary.inconclusive > 0 || summary.notRun > 0 ? "partial" : "complete";
+  if (audit.report.coverageStatus !== expectedCoverage) {
+    throw new Error("BolaVerificationAudit coverage is inconsistent with result summary");
+  }
+  const expectedAuditId = stableId(
+    "bola_audit",
+    audit.report.verificationId,
+    audit.report.digestSha256,
+    audit.receipt.schemaVersion,
+    audit.receipt.checkId,
+    audit.receipt.checkedAt,
+    audit.manifest.digestSha256,
+    audit.template.schemaVersion,
+    audit.template.templateId,
+    audit.template.digestSha256,
+  );
+  if (audit.auditId !== expectedAuditId) {
+    throw new Error("BolaVerificationAudit stable audit ID is inconsistent");
+  }
+  return audit;
 }
 
 export function validateBolaDraftPlan(value: unknown): BolaDraftPlan {

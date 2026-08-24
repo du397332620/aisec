@@ -8,6 +8,7 @@ export const BOLA_AUTHORIZATION_TEMPLATE_SCHEMA_VERSION = "1.1.0" as const;
 export const BOLA_AUTHORIZATION_CHECK_LEGACY_BOUND_SCHEMA_VERSION = "1.1.0" as const;
 export const BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION = "1.2.0" as const;
 export const BOLA_VERIFICATION_REPORT_SCHEMA_VERSION = "1.1.0" as const;
+export const BOLA_VERIFICATION_AUDIT_SCHEMA_VERSION = "1.0.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type EvidenceLevel = "verified" | "static_confirmed" | "inferred";
@@ -747,6 +748,67 @@ export interface BolaVerificationReport {
   cases: BolaCaseResult[];
   limitations: string[];
   provenance?: BolaVerificationProvenance;
+}
+
+export interface BolaVerificationAudit {
+  schemaVersion: typeof BOLA_VERIFICATION_AUDIT_SCHEMA_VERSION;
+  auditId: string;
+  auditedAt: string;
+  status: "artifacts_verified";
+  report: {
+    schemaVersion: typeof BOLA_VERIFICATION_REPORT_SCHEMA_VERSION;
+    verificationId: string;
+    digestSha256: string;
+    requestCount: number;
+    requiredRequests: number;
+    authorizedMaxRequests: number;
+    coverageStatus: "complete" | "partial";
+    summary: {
+      cases: number;
+      vulnerable: number;
+      protected: number;
+      inconclusive: number;
+      notRun: number;
+      verifiedSignals: number;
+    };
+  };
+  receipt: {
+    schemaVersion:
+      | typeof BOLA_AUTHORIZATION_CHECK_LEGACY_BOUND_SCHEMA_VERSION
+      | typeof BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION;
+    checkId: string;
+    checkedAt: string;
+  };
+  manifest: {
+    schemaVersion: typeof SCHEMA_VERSION;
+    digestSha256: string;
+  };
+  template: {
+    schemaVersion:
+      | typeof SCHEMA_VERSION
+      | typeof BOLA_AUTHORIZATION_TEMPLATE_SCHEMA_VERSION;
+    templateId: string;
+    digestSha256: string;
+  };
+  binding: {
+    preflightReceipt: true;
+    reportProvenance: true;
+    reportSourceFields: true;
+    exactCaseOrder: true;
+    exactRequestBudget: true;
+    resultSemantics: true;
+  };
+  io: {
+    environmentValuesRead: 0;
+    dnsLookups: 0;
+    requesterCalls: 0;
+    networkRequests: 0;
+  };
+  limitations: [
+    "This audit proves local structural and digest consistency only; stable IDs and digests are not signatures and do not authenticate author, origin or freshness.",
+    "This audit does not replay requests or prove that the recorded network observations occurred or still describe the service.",
+    "A protected listed case is not proof that the route or system is secure beyond the exact recorded verification scope.",
+  ];
 }
 
 export type BolaDraftClassification = "read_candidate" | "mutation_excluded" | "manual_review";

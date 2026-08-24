@@ -1,0 +1,122 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/bola-verification-audit-1.0.0.json",
+  "title": "AIsec BOLA Verification Audit 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "auditId", "auditedAt", "status", "report", "receipt",
+    "manifest", "template", "binding", "io", "limitations"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "auditId": { "type": "string", "pattern": "^bola_audit_[0-9a-f]{16}$" },
+    "auditedAt": { "$ref": "#/$defs/dateTime" },
+    "status": { "const": "artifacts_verified" },
+    "report": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "verificationId", "digestSha256", "requestCount",
+        "requiredRequests", "authorizedMaxRequests", "coverageStatus", "summary"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "1.1.0" },
+        "verificationId": {
+          "type": "string",
+          "pattern": "^bola_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "digestSha256": { "$ref": "#/$defs/digest" },
+        "requestCount": { "type": "integer", "minimum": 0, "maximum": 20 },
+        "requiredRequests": { "type": "integer", "minimum": 4, "maximum": 20 },
+        "authorizedMaxRequests": { "type": "integer", "minimum": 4, "maximum": 20 },
+        "coverageStatus": { "enum": ["complete", "partial"] },
+        "summary": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "cases", "vulnerable", "protected", "inconclusive", "notRun",
+            "verifiedSignals"
+          ],
+          "properties": {
+            "cases": { "type": "integer", "minimum": 1, "maximum": 9 },
+            "vulnerable": { "type": "integer", "minimum": 0, "maximum": 9 },
+            "protected": { "type": "integer", "minimum": 0, "maximum": 9 },
+            "inconclusive": { "type": "integer", "minimum": 0, "maximum": 9 },
+            "notRun": { "type": "integer", "minimum": 0, "maximum": 9 },
+            "verifiedSignals": { "type": "integer", "minimum": 0, "maximum": 9 }
+          }
+        }
+      }
+    },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "checkId", "checkedAt"],
+      "properties": {
+        "schemaVersion": { "enum": ["1.1.0", "1.2.0"] },
+        "checkId": { "type": "string", "pattern": "^bola_check_[0-9a-f]{16}$" },
+        "checkedAt": { "$ref": "#/$defs/dateTime" }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "digestSha256"],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "digestSha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "templateId", "digestSha256"],
+      "properties": {
+        "schemaVersion": { "enum": ["1.0.0", "1.1.0"] },
+        "templateId": { "type": "string", "pattern": "^bola_template_[0-9a-f]{16}$" },
+        "digestSha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "preflightReceipt", "reportProvenance", "reportSourceFields",
+        "exactCaseOrder", "exactRequestBudget", "resultSemantics"
+      ],
+      "properties": {
+        "preflightReceipt": { "const": true },
+        "reportProvenance": { "const": true },
+        "reportSourceFields": { "const": true },
+        "exactCaseOrder": { "const": true },
+        "exactRequestBudget": { "const": true },
+        "resultSemantics": { "const": true }
+      }
+    },
+    "io": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "environmentValuesRead", "dnsLookups", "requesterCalls", "networkRequests"
+      ],
+      "properties": {
+        "environmentValuesRead": { "const": 0 },
+        "dnsLookups": { "const": 0 },
+        "requesterCalls": { "const": 0 },
+        "networkRequests": { "const": 0 }
+      }
+    },
+    "limitations": {
+      "const": [
+        "This audit proves local structural and digest consistency only; stable IDs and digests are not signatures and do not authenticate author, origin or freshness.",
+        "This audit does not replay requests or prove that the recorded network observations occurred or still describe the service.",
+        "A protected listed case is not proof that the route or system is secure beyond the exact recorded verification scope."
+      ]
+    }
+  },
+  "$defs": {
+    "dateTime": { "type": "string", "format": "date-time" },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}

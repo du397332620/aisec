@@ -108,3 +108,14 @@ receipt/template provenance, validate case order/count/budget and signal/result
 relationships, and never copy credentials, tokens, identities, response bodies
 or arbitrary requester errors. Keep legacy report 1.0 readable only without a
 preflight claim, and update the public report schema plus installed API smoke.
+
+BOLA offline-audit changes must keep `audit-bola` completely outside the active
+boundary: no confirmation flag, credential-value access, DNS, socket, requester
+or target request. All four files remain independently bounded to 1 MiB. Reuse
+the existing preflight comparison, accept only provenance-bound report 1.1, and
+compare the report's target/account order/case source fields to the supplied
+manifest before emitting a receipt. `BolaVerificationAudit 1.0.0` must remain
+strict and sanitized, bind the canonical complete-report digest, reject forged
+summary/budget/coverage/audit-ID relationships, and explicitly disclaim
+signature, origin, freshness and observation-authenticity claims. Update its
+public schema, CLI/API docs, unit tests and installed-package smoke together.

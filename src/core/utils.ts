@@ -9,6 +9,15 @@ export function sha256(value: string | Buffer): string {
   return createHash("sha256").update(value).digest("hex");
 }
 
+export function canonicalJson(value: unknown): string {
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
+  return `{${Object.entries(value as Record<string, unknown>)
+    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
+    .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`)
+    .join(",")}}`;
+}
+
 export function stableId(prefix: string, ...parts: Array<string | undefined>): string {
   return `${prefix}_${sha256(parts.filter(Boolean).join("\u0000")).slice(0, 16)}`;
 }

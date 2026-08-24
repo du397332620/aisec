@@ -20,7 +20,7 @@ import {
   validateBolaAuthorizationTemplate,
   validateBolaDraftPlan,
 } from "../core/schema-validation.js";
-import { sha256, stableId } from "../core/utils.js";
+import { canonicalJson, sha256, stableId } from "../core/utils.js";
 import {
   MAX_AUTHORIZATION_DOCUMENT_BYTES,
   loadBolaAuthorization,
@@ -243,15 +243,6 @@ export async function loadBolaAuthorizationCheck(path: string): Promise<BolaAuth
     throw new Error("BOLA authorization check must be valid JSON");
   }
   return validateBolaAuthorizationCheck(parsed);
-}
-
-function canonicalJson(value: unknown): string {
-  if (value === null || typeof value !== "object") return JSON.stringify(value);
-  if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
-  return `{${Object.entries(value as Record<string, unknown>)
-    .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
-    .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`)
-    .join(",")}}`;
 }
 
 const ROUTE_PLACEHOLDER = /^(?:\{([A-Za-z_][A-Za-z0-9_]*)\}|:([A-Za-z_][A-Za-z0-9_]*)|\[([A-Za-z_][A-Za-z0-9_]*)\]|\*([A-Za-z_][A-Za-z0-9_]*))$/u;

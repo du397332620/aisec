@@ -1,10 +1,7 @@
 import type {
-  BolaAuthorizationCheck,
   BolaAuthorizationManifest,
-  BolaAuthorizationTemplate,
   BolaCaseResult,
   BolaVerificationCase,
-  BolaVerificationProvenance,
   BolaVerificationReport,
   JsonValue,
   Signal,
@@ -18,6 +15,7 @@ import {
   loadBolaAuthorizationCheck,
   loadBolaAuthorizationTemplate,
 } from "./bola-preflight.js";
+import { createBolaVerificationProvenance } from "./bola-provenance.js";
 import { boundedHttpRequest, type BoundedHttpRequest, type BoundedHttpResponse } from "./http.js";
 
 export type BolaRequester = (input: BoundedHttpRequest) => Promise<BoundedHttpResponse>;
@@ -290,36 +288,6 @@ export async function executeBolaVerification(
   });
 }
 
-function createVerificationProvenance(
-  manifest: BolaAuthorizationManifest,
-  template: BolaAuthorizationTemplate,
-  check: BolaAuthorizationCheck,
-): BolaVerificationProvenance {
-  const binding = check.templateBinding;
-  if (!binding) throw new Error("BOLA verification report provenance requires a template-bound authorization check");
-  return {
-    status: "preflight_verified",
-    receipt: {
-      schemaVersion: check.schemaVersion as BolaVerificationProvenance["receipt"]["schemaVersion"],
-      checkId: check.checkId,
-      checkedAt: check.checkedAt,
-    },
-    manifest: {
-      schemaVersion: manifest.schemaVersion,
-      digestSha256: check.manifestDigestSha256,
-      environment: check.environment,
-    },
-    template: {
-      schemaVersion: template.schemaVersion,
-      ...binding,
-    },
-    authorization: {
-      summary: { ...check.summary },
-      caseIds: [...check.caseIds],
-    },
-  };
-}
-
 export async function verifyBola(
   authorizationPath: string,
   options: VerifyBolaOptions,
@@ -341,6 +309,6 @@ export async function verifyBola(
   return validateBolaVerificationReport({
     ...report,
     schemaVersion: BOLA_VERIFICATION_REPORT_SCHEMA_VERSION,
-    provenance: createVerificationProvenance(manifest, template, receipt),
+    provenance: createBolaVerificationProvenance(manifest, template, receipt),
   });
 }
