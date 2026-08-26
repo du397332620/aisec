@@ -278,6 +278,7 @@ aisec local-gate [path] --policy <trusted-policy.yml> --state-dir <private-direc
 aisec rule-pack check [path] --rule-pack <trusted-rules.yml> [--format terminal|json]
 aisec report <scan-id|report.json> --format terminal|json|html|sarif|ci|github|markdown
 aisec fix-contract --scan <scan-id> --finding <id> --format json
+aisec interface-audit --scan <scan-id|report.json> --output interface-audit.json
 aisec interface-queue --scan <scan-id|report.json> --output interface-queue.json
 aisec draft-bola --scan <scan-id|report.json> [--candidate interface-candidate-id ...] --output bola-draft.json
 aisec prepare-bola --draft <selected-bola-draft.json> --output bola-authorization-template.json
@@ -692,6 +693,7 @@ accepted suppressions for compatible consumers.
 | Dependency, IaC and secondary secret checks | Trivy `0.73.0` | Required in pre-deploy mode; requires an explicitly prepared, fresh schema-v2 database and scans offline; canonical metadata retains recorded direct/indirect/unknown dependency relationship, ecosystem/class and fix availability, while terminal/HTML derive bounded package/version priority groups without claiming reachability or base-image package coverage |
 | APK/IPA static resources | Native archive adapter | Optional input; required for pre-deploy mobile artifact coverage when a mobile project/artifact is expected; prioritizes app manifests/plists, DEX/resource tables, JS bundles and the iOS main executable, semantically decodes bounded binary plists, recovers bounded ASCII/UTF-16 strings in memory, and performs no installation, on-disk member extraction or runtime instrumentation |
 | Passive test/staging Web checks | `verify-web` | Explicit authorization plus `--confirm`; bounded GET/header/cookie checks only, no auth/IDOR/injection testing |
+| Interface security audit ledger | `interface-audit` | Converts every observed, exactly attributed route-security category into strict bounded `InterfaceSecurityAudit 1.0.0` JSON; preserves open versus suppressed-only evidence, route-attribution gaps and deployment-context totals, binds the canonical scan digest, performs zero network/credential/DNS/target-code I/O, and never claims active vulnerability confirmation or API discovery completeness |
 | Interface verification queue | `interface-queue` | Converts exact route-security cards into a strict bounded zero-request plan; only open object-authorization routes with proven source, recorded object IDs and BOLA-compatible read semantics become candidates, while every other reviewed route gets machine-readable exclusion reasons |
 | Static-to-active BOLA planning | `draft-bola` | Legacy mode converts all open static BOLA/IDOR signals into a non-executable 1.0 worksheet; selected 1.1 mode accepts one to nine same-report interface candidate IDs and binds queue, exact route, source signal and BOLA candidate. Both keep object IDs/markers as placeholders and send no requests |
 | BOLA authorization preflight | `prepare-bola` / `check-bola` | Converts only a selected 1.1 worksheet into a strict, deliberately non-executable template, then validates a separately completed manifest offline. Passing that unchanged template back to `check-bola` proves exact case order, method, route-template, object-field and evidence-mode binding and produces a saved 1.2 receipt. Each input is limited to 1 MiB; no credential values are read and no DNS or requests occur |
@@ -768,6 +770,37 @@ Run only after reviewing the target:
 ```bash
 aisec verify-web --authorization authorization.yml --confirm
 ```
+
+## Interface security audit ledger
+
+Generate a standalone machine-readable review of the interface evidence already
+present in a strict saved scan:
+
+```bash
+aisec interface-audit \
+  --scan <scan-id-or-report.json> \
+  --output interface-audit.json
+```
+
+`interface-audit` performs no network requests, DNS lookups, credential reads or
+target-code execution. `InterfaceSecurityAudit 1.0.0` binds the canonical
+ScanReport SHA-256 and separates each exact framework, route and category across
+authentication, object and privileged authorization, SQL injection, SSRF,
+untrusted file paths, server credential forwarding and exception disclosure.
+Open and suppressed-only evidence remain distinct. Python dataflow that cannot
+be attributed to a route and project-level deployment context are reported only
+as aggregate evidence and are never assigned to an endpoint without proof.
+
+The artifact emits at most 200 route-category entries, 20 sources per entry and
+20 open plus 20 suppressed finding IDs per source. Any route/source/finding
+omission, unsafe source location or attribution gap changes coverage to
+`partial`; `coverageScope: observed_attributed_routes_only` means even
+`complete` is not endpoint-discovery completeness. The output excludes the scan
+target, source snippets, arbitrary metadata, URLs, request/response bodies,
+credentials, tokens and executable request templates. It deliberately retains
+route templates and safe relative source paths for local review, so treat it as
+an internal artifact and review it before sharing. It is static evidence, not a
+proof of reachability, exploitability, safety or successful active testing.
 
 ## Interface verification candidate queue
 
@@ -1175,7 +1208,7 @@ as resolved, with no new high/critical finding.
 
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, CI
 reports, fix contracts, the rule catalog, declarative rule packs and their selector previews, trusted security policies, passive-web
-authorization, the bounded `InterfaceVerificationQueue 1.0.0`, `BolaDraftPlan 1.1.0` and legacy 1.0 BOLA draft plans, `BolaAuthorizationTemplate 1.1.0`, `BolaAuthorizationCheck 1.2.0`, its strict bound 1.1 predecessor, their strict legacy 1.0 forms, BOLA authorization manifests, `BolaVerificationReport 1.1.0` with its strict legacy 1.0 form, `BolaVerificationAudit 1.0.0`, `BolaVerificationLineageAudit 1.0.0`, and `BolaVerificationLineageCheck 1.0.0` in
+authorization, the bounded `InterfaceSecurityAudit 1.0.0`, `InterfaceVerificationQueue 1.0.0`, `BolaDraftPlan 1.1.0` and legacy 1.0 BOLA draft plans, `BolaAuthorizationTemplate 1.1.0`, `BolaAuthorizationCheck 1.2.0`, its strict bound 1.1 predecessor, their strict legacy 1.0 forms, BOLA authorization manifests, `BolaVerificationReport 1.1.0` with its strict legacy 1.0 form, `BolaVerificationAudit 1.0.0`, `BolaVerificationLineageAudit 1.0.0`, and `BolaVerificationLineageCheck 1.0.0` in
 [`schemas/`](schemas/). `SecurityPolicy 1.1.0` adds the optional additive
 route-security baseline gate and strictly preserves legacy `1.0.0` policies.
 `RulePack 1.1.0` adds bounded required-literal absence
@@ -1185,6 +1218,9 @@ Node API and MCP selector-preview operation. `BolaDraftPlan 1.1.0` adds the
 required same-report interface-queue selection binding while the validator keeps
 legacy `1.0.0` plans readable only when `selection` is absent. Other unchanged
 contracts remain at `1.0.0`.
+`InterfaceSecurityAudit 1.0.0` is a canonical-scan-digest-bound local ledger of
+bounded attributed static route evidence. Its stable IDs provide consistency,
+not a signature or proof that the target was executed or tested.
 `BolaAuthorizationTemplate 1.1.0` changes only the handoff instructions so the
 same wrapper is retained for binding; strict 1.0 wrappers remain readable.
 `BolaAuthorizationCheck 1.1.0` added the required sanitized `templateBinding`
@@ -1230,6 +1266,8 @@ The package also exports `validateScanReport`, `validateCiReport`,
 `validateRuleCatalog`, `validateRulePack`, `validateRulePackPreview`, `validateSecurityPolicy`, `loadRuleCatalog`,
 `renderRuleCatalog`, `parseRulePack`, `loadTrustedRulePack`,
 `loadTrustedRulePacks`, `previewRulePacks`, `renderRulePackPreview`, `parseSecurityPolicy`, `loadTrustedPolicy`,
+`createInterfaceSecurityAudit`, `interfaceSecurityAudit`,
+`loadInterfaceSecurityScanReport`, `validateInterfaceSecurityAudit`,
 `createInterfaceVerificationQueue`, `interfaceVerificationQueue`,
 `validateInterfaceVerificationQueue`, `createBolaDraftPlan`,
 `createSelectedBolaDraftPlan`, `draftBola`, `createBolaAuthorizationTemplate`,

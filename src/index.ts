@@ -1,7 +1,7 @@
 export * from "./schema.js";
 export { DEFAULT_SCAN_OPTIONS, inspectOnly, scanProject } from "./core/scan.js";
 export { createFixContract } from "./core/contracts.js";
-export { validateAuthorizationManifestSchema, validateBolaAuthorizationCheck, validateBolaAuthorizationManifestSchema, validateBolaAuthorizationTemplate, validateBolaDraftPlan, validateBolaVerificationAudit, validateBolaVerificationLineageAudit, validateBolaVerificationLineageCheck, validateBolaVerificationReport, validateCiReport, validateFixContract, validateInterfaceVerificationQueue, validateRuleCatalog, validateRulePack, validateRulePackPreview, validateScanReport, validateSecurityPolicy } from "./core/schema-validation.js";
+export { validateAuthorizationManifestSchema, validateBolaAuthorizationCheck, validateBolaAuthorizationManifestSchema, validateBolaAuthorizationTemplate, validateBolaDraftPlan, validateBolaVerificationAudit, validateBolaVerificationLineageAudit, validateBolaVerificationLineageCheck, validateBolaVerificationReport, validateCiReport, validateFixContract, validateInterfaceSecurityAudit, validateInterfaceVerificationQueue, validateRuleCatalog, validateRulePack, validateRulePackPreview, validateScanReport, validateSecurityPolicy } from "./core/schema-validation.js";
 export { loadTrustedPolicy, parseSecurityPolicy } from "./core/config.js";
 export { loadRuleCatalog, renderRuleCatalog } from "./rules/catalog.js";
 export { loadTrustedRulePack, loadTrustedRulePacks, parseRulePack } from "./rules/pack.js";
@@ -17,6 +17,7 @@ export { MAX_BOLA_AUDIT_DOCUMENT_BYTES, auditBola, auditBolaVerification, loadBo
 export { MAX_BOLA_LINEAGE_SCAN_REPORT_BYTES, auditBolaLineage, auditBolaVerificationLineage, loadBolaLineageScanReport, type AuditBolaLineageOptions } from "./web/bola-lineage-audit.js";
 export { MAX_BOLA_LINEAGE_RECEIPT_BYTES, checkBolaLineage, checkBolaVerificationLineageReceipt, loadBolaVerificationLineageAudit, type CheckBolaLineageOptions } from "./web/bola-lineage-check.js";
 export { createInterfaceVerificationQueue, interfaceVerificationQueue } from "./web/interface-verification-queue.js";
+export { createInterfaceSecurityAudit, interfaceSecurityAudit, loadInterfaceSecurityScanReport, MAX_INTERFACE_SECURITY_SCAN_REPORT_BYTES } from "./web/interface-security-audit.js";
 export { serializeReport } from "./reporters/index.js";
 export { buildCiReport, renderGithubAnnotations, renderMarkdownSummary } from "./reporters/ci.js";
 export { renderHtml } from "./reporters/html.js";

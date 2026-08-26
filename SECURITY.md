@@ -123,6 +123,17 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   explicit `engines prepare trivy` setup command.
 - A local, test or staging URL is accessed only through an explicit
   authorization manifest plus `--confirm`.
+- `interface-audit` accepts one strict ScanReport regular JSON file capped at
+  64 MiB (or a stored scan ID) and derives only bounded static evidence. It
+  reads no credential values, resolves no DNS, executes no target code and
+  sends no request. Its strict `InterfaceSecurityAudit 1.0.0` omits the scan
+  target, source snippets, arbitrary metadata, URLs, request/response bodies,
+  tokens, credentials and request templates. Route templates and normalized
+  relative source paths remain because this is a local reviewer artifact;
+  review it before sharing. Omitted evidence, unsafe locations and unattributed
+  dangerous-dataflow signals make coverage partial. IDs/digests are local
+  consistency evidence, not a signature, discovery guarantee or proof of
+  reachability, exploitability, safety or active testing.
 - `interface-queue` is a separate static planning operation over a stored scan
   report. It resolves no host, reads no credentials, emits no concrete object
   identifier or request template, and records zero network requests. Only exact

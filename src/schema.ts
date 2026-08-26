@@ -3,6 +3,7 @@ export const SCAN_REPORT_SCHEMA_VERSION = "1.4.0" as const;
 export const CI_REPORT_SCHEMA_VERSION = "1.4.0" as const;
 export const RULE_PACK_PREVIEW_SCHEMA_VERSION = "1.0.0" as const;
 export const INTERFACE_VERIFICATION_QUEUE_SCHEMA_VERSION = "1.0.0" as const;
+export const INTERFACE_SECURITY_AUDIT_SCHEMA_VERSION = "1.0.0" as const;
 export const BOLA_DRAFT_SCHEMA_VERSION = "1.1.0" as const;
 export const BOLA_AUTHORIZATION_TEMPLATE_SCHEMA_VERSION = "1.1.0" as const;
 export const BOLA_AUTHORIZATION_CHECK_LEGACY_BOUND_SCHEMA_VERSION = "1.1.0" as const;
@@ -450,6 +451,95 @@ export interface InterfaceVerificationQueue {
   ];
   limitations: string[];
   nextCommand: "aisec draft-bola --scan <same-scan-id-or-report.json> --output bola-draft.json";
+  disclaimer: string;
+}
+
+export type InterfaceSecurityFindingStatus = "open" | "suppressed_only";
+
+export interface InterfaceSecurityAuditSource {
+  signalId: string;
+  ruleId: string;
+  fingerprint: string;
+  evidenceLevel: EvidenceLevel;
+  handler?: string;
+  location?: {
+    path: string;
+    line?: number;
+    column?: number;
+  };
+  openFindingIds: string[];
+  omittedOpenFindingIds: number;
+  suppressedFindingIds: string[];
+  omittedSuppressedFindingIds: number;
+}
+
+export interface InterfaceSecurityAuditEntry {
+  id: string;
+  framework: RouteSecurityFramework;
+  route: string;
+  method: string;
+  path: string;
+  category: RouteSecurityCategory;
+  severity: Severity;
+  findingStatus: InterfaceSecurityFindingStatus;
+  sourceCount: number;
+  sources: InterfaceSecurityAuditSource[];
+  omittedSources: number;
+}
+
+export interface InterfaceSecurityAudit {
+  schemaVersion: typeof INTERFACE_SECURITY_AUDIT_SCHEMA_VERSION;
+  auditId: string;
+  generatedAt: string;
+  status: "review_required";
+  scan: {
+    schemaVersion: ScanReport["schemaVersion"];
+    scanId: string;
+    projectId: string;
+    digestSha256: string;
+  };
+  coverage: "complete" | "partial";
+  coverageScope: "observed_attributed_routes_only";
+  networkRequests: 0;
+  dnsLookups: 0;
+  credentialEnvironmentReads: 0;
+  targetCodeExecutions: 0;
+  summary: {
+    reviewedRoutes: number;
+    routeCategoryEntries: number;
+    openEntries: number;
+    suppressedOnlyEntries: number;
+    emittedEntries: number;
+    omittedEntries: number;
+    omittedSourceRecords: number;
+    omittedFindingIdReferences: number;
+    unlocatedSourceRecords: number;
+    sourceOmissions: {
+      routeAliases: number;
+      associations: number;
+    };
+    categories: Array<{
+      category: RouteSecurityCategory;
+      entries: number;
+      openEntries: number;
+    }>;
+    attribution: {
+      eligibleSignals: number;
+      attributedSignals: number;
+      unattributedSignals: number;
+      unattributedFindings: number;
+      reasons: Array<{
+        reason: RouteAttributionGapReason;
+        signals: number;
+      }>;
+    };
+    deploymentContexts: {
+      observed: number;
+      open: number;
+    };
+  };
+  entries: InterfaceSecurityAuditEntry[];
+  limitations: string[];
   disclaimer: string;
 }
 

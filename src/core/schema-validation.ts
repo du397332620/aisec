@@ -2,14 +2,15 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import type { AuthorizationManifest, BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaDraftPlan, BolaVerificationAudit, BolaVerificationLineageAudit, BolaVerificationLineageCheck, BolaVerificationReport, CiReport, FixContract, InterfaceVerificationQueue, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
-import { ROUTE_SECURITY_RULES, routeSecurityIssueKey } from "./route-security.js";
+import type { AuthorizationManifest, BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaDraftPlan, BolaVerificationAudit, BolaVerificationLineageAudit, BolaVerificationLineageCheck, BolaVerificationReport, CiReport, FixContract, InterfaceSecurityAudit, InterfaceSecurityAuditEntry, InterfaceVerificationQueue, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
+import { SEVERITY_RANK } from "./constants.js";
+import { ROUTE_SECURITY_CATEGORY_ORDER, ROUTE_SECURITY_RULES, routeSecurityIssueKey } from "./route-security.js";
 import { evaluateRouteSecurityBaselineGate } from "./route-security-gate.js";
 import { safeRelativePath } from "../reporters/safety.js";
 import { classifyBolaStaticRoute } from "../web/bola-policy.js";
 import { stableId } from "./utils.js";
 
-type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "BolaVerificationReport" | "BolaVerificationAudit" | "BolaVerificationLineageAudit" | "BolaVerificationLineageCheck" | "InterfaceVerificationQueue" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
+type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "BolaVerificationReport" | "BolaVerificationAudit" | "BolaVerificationLineageAudit" | "BolaVerificationLineageCheck" | "InterfaceVerificationQueue" | "InterfaceSecurityAudit" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
 
 function loadSchema(filename: string): object {
   const path = fileURLToPath(new URL(`../../../schemas/${filename}`, import.meta.url));
@@ -33,6 +34,7 @@ const bolaVerificationAuditValidator = ajv.compile(loadSchema("bola-verification
 const bolaVerificationLineageAuditValidator = ajv.compile(loadSchema("bola-verification-lineage-audit.schema.json"));
 const bolaVerificationLineageCheckValidator = ajv.compile(loadSchema("bola-verification-lineage-check.schema.json"));
 const interfaceVerificationQueueValidator = ajv.compile(loadSchema("interface-verification-queue.schema.json"));
+const interfaceSecurityAuditValidator = ajv.compile(loadSchema("interface-security-audit.schema.json"));
 const ruleCatalogValidator = ajv.compile(loadSchema("rule-catalog.schema.json"));
 const rulePackValidator = ajv.compile(loadSchema("rule-pack.schema.json"));
 const rulePackPreviewValidator = ajv.compile(loadSchema("rule-pack-preview.schema.json"));
@@ -986,6 +988,238 @@ export function validateInterfaceVerificationQueue(value: unknown): InterfaceVer
     throw new Error("InterfaceVerificationQueue exclusion reason coverage is inconsistent");
   }
   return queue;
+}
+
+const INTERFACE_AUDIT_ATTRIBUTION_REASON_ORDER = [
+  "commented_out_call",
+  "ambiguous_or_dynamic_dispatch",
+  "request_origin_not_proven",
+  "no_proven_route_path",
+  "not_recorded",
+] as const;
+
+function compareInterfaceAuditEntries(
+  left: InterfaceSecurityAuditEntry,
+  right: InterfaceSecurityAuditEntry,
+): number {
+  return (left.findingStatus === right.findingStatus ? 0 : left.findingStatus === "open" ? -1 : 1)
+    || SEVERITY_RANK[right.severity] - SEVERITY_RANK[left.severity]
+    || left.framework.localeCompare(right.framework)
+    || left.route.localeCompare(right.route)
+    || ROUTE_SECURITY_CATEGORY_ORDER.indexOf(left.category) - ROUTE_SECURITY_CATEGORY_ORDER.indexOf(right.category);
+}
+
+function assertSortedUniqueStrings(values: readonly string[], label: string): void {
+  for (let index = 0; index < values.length; index += 1) {
+    if (index > 0 && values[index - 1]!.localeCompare(values[index]!) >= 0) {
+      throw new Error(`InterfaceSecurityAudit ${label} must be sorted and unique`);
+    }
+  }
+}
+
+export function validateInterfaceSecurityAudit(value: unknown): InterfaceSecurityAudit {
+  const audit = assertSchema<InterfaceSecurityAudit>(
+    "InterfaceSecurityAudit",
+    interfaceSecurityAuditValidator,
+    value,
+  );
+  const summary = audit.summary;
+  const expectedAuditId = stableId(
+    "interface_audit",
+    audit.scan.schemaVersion,
+    audit.scan.scanId,
+    audit.scan.projectId,
+    audit.scan.digestSha256,
+  );
+  if (audit.auditId !== expectedAuditId) {
+    throw new Error("InterfaceSecurityAudit stable audit ID is inconsistent");
+  }
+  if (summary.routeCategoryEntries !== summary.openEntries + summary.suppressedOnlyEntries
+    || summary.routeCategoryEntries !== summary.emittedEntries + summary.omittedEntries
+    || summary.emittedEntries !== audit.entries.length
+    || (summary.routeCategoryEntries === 0) !== (summary.reviewedRoutes === 0)
+    || summary.reviewedRoutes > summary.routeCategoryEntries
+    || summary.routeCategoryEntries > summary.reviewedRoutes * ROUTE_SECURITY_CATEGORY_ORDER.length) {
+    throw new Error("InterfaceSecurityAudit entry totals are inconsistent");
+  }
+  if (summary.attribution.eligibleSignals
+      !== summary.attribution.attributedSignals + summary.attribution.unattributedSignals
+    || (summary.attribution.unattributedSignals === 0)
+      !== (summary.attribution.unattributedFindings === 0)) {
+    throw new Error("InterfaceSecurityAudit attribution totals are inconsistent");
+  }
+  if (summary.deploymentContexts.open > summary.deploymentContexts.observed) {
+    throw new Error("InterfaceSecurityAudit deployment-context totals are inconsistent");
+  }
+
+  const attributionReasons = new Set<string>();
+  let previousAttributionReason = -1;
+  let attributedReasonSignals = 0;
+  for (const entry of summary.attribution.reasons) {
+    const reasonIndex = INTERFACE_AUDIT_ATTRIBUTION_REASON_ORDER.indexOf(entry.reason);
+    if (reasonIndex <= previousAttributionReason || attributionReasons.has(entry.reason)) {
+      throw new Error("InterfaceSecurityAudit attribution reasons are not deterministic");
+    }
+    previousAttributionReason = reasonIndex;
+    attributionReasons.add(entry.reason);
+    attributedReasonSignals += entry.signals;
+  }
+  if (attributedReasonSignals !== summary.attribution.unattributedSignals
+    || (summary.attribution.unattributedSignals === 0) !== (summary.attribution.reasons.length === 0)) {
+    throw new Error("InterfaceSecurityAudit attribution reason totals are inconsistent");
+  }
+
+  const routeCategoryIdentities = new Set<string>();
+  const visibleRoutes = new Set<string>();
+  const visibleCategoryCounts = new Map<string, { entries: number; openEntries: number }>();
+  let visibleOpenEntries = 0;
+  let visibleOmittedSourceRecords = 0;
+  let visibleOmittedFindingIdReferences = 0;
+  let visibleUnlocatedSourceRecords = 0;
+  for (let entryIndex = 0; entryIndex < audit.entries.length; entryIndex += 1) {
+    const entry = audit.entries[entryIndex]!;
+    const identity = `${entry.framework}\u0000${entry.route}\u0000${entry.category}`;
+    if (routeCategoryIdentities.has(identity)) {
+      throw new Error("InterfaceSecurityAudit contains a duplicate route-category identity");
+    }
+    routeCategoryIdentities.add(identity);
+    visibleRoutes.add(`${entry.framework}\u0000${entry.route}`);
+    if (entryIndex > 0 && compareInterfaceAuditEntries(audit.entries[entryIndex - 1]!, entry) > 0) {
+      throw new Error("InterfaceSecurityAudit entries are not deterministic");
+    }
+    if (entry.route !== `${entry.method} ${entry.path}`) {
+      throw new Error(`InterfaceSecurityAudit entry ${entry.id} route fields are inconsistent`);
+    }
+    const expectedEntryId = stableId(
+      "interface_audit_entry",
+      audit.scan.scanId,
+      entry.framework,
+      entry.route,
+      entry.category,
+    );
+    if (entry.id !== expectedEntryId) {
+      throw new Error(`InterfaceSecurityAudit entry ${entry.id} stable entry ID is inconsistent`);
+    }
+    if (entry.sourceCount !== entry.sources.length + entry.omittedSources) {
+      throw new Error(`InterfaceSecurityAudit entry ${entry.id} source totals are inconsistent`);
+    }
+    visibleOmittedSourceRecords += entry.omittedSources;
+    if (entry.findingStatus === "open") visibleOpenEntries += 1;
+    const categoryCount = visibleCategoryCounts.get(entry.category) ?? { entries: 0, openEntries: 0 };
+    categoryCount.entries += 1;
+    if (entry.findingStatus === "open") categoryCount.openEntries += 1;
+    visibleCategoryCounts.set(entry.category, categoryCount);
+
+    const sourceIds = new Set<string>();
+    let visibleOpenFindingReferences = 0;
+    for (let sourceIndex = 0; sourceIndex < entry.sources.length; sourceIndex += 1) {
+      const source = entry.sources[sourceIndex]!;
+      if (sourceIds.has(source.signalId)) {
+        throw new Error(`InterfaceSecurityAudit entry ${entry.id} contains duplicate source signals`);
+      }
+      sourceIds.add(source.signalId);
+      if (sourceIndex > 0) {
+        const previous = entry.sources[sourceIndex - 1]!;
+        if (previous.ruleId.localeCompare(source.ruleId) > 0
+          || (previous.ruleId === source.ruleId && previous.signalId.localeCompare(source.signalId) >= 0)) {
+          throw new Error(`InterfaceSecurityAudit entry ${entry.id} sources are not deterministic`);
+        }
+      }
+      const presentation = ROUTE_SECURITY_RULES[source.ruleId];
+      if (presentation?.category !== entry.category || presentation.framework !== entry.framework) {
+        throw new Error(`InterfaceSecurityAudit entry ${entry.id} source category or framework is inconsistent`);
+      }
+      if (source.location) {
+        if (safeRelativePath(source.location.path) !== source.location.path) {
+          throw new Error(`InterfaceSecurityAudit entry ${entry.id} contains an unsafe or non-normalized source path`);
+        }
+      } else {
+        visibleUnlocatedSourceRecords += 1;
+      }
+      assertSortedUniqueStrings(source.openFindingIds, `${entry.id} open finding IDs`);
+      assertSortedUniqueStrings(source.suppressedFindingIds, `${entry.id} suppressed finding IDs`);
+      const openSet = new Set(source.openFindingIds);
+      if (source.suppressedFindingIds.some((findingId) => openSet.has(findingId))) {
+        throw new Error(`InterfaceSecurityAudit entry ${entry.id} contains contradictory finding status references`);
+      }
+      const openReferences = source.openFindingIds.length + source.omittedOpenFindingIds;
+      const suppressedReferences = source.suppressedFindingIds.length + source.omittedSuppressedFindingIds;
+      if (openReferences + suppressedReferences === 0) {
+        throw new Error(`InterfaceSecurityAudit entry ${entry.id} source lacks finding evidence`);
+      }
+      visibleOpenFindingReferences += openReferences;
+      visibleOmittedFindingIdReferences += source.omittedOpenFindingIds + source.omittedSuppressedFindingIds;
+    }
+    if ((entry.findingStatus === "suppressed_only" && visibleOpenFindingReferences > 0)
+      || (entry.findingStatus === "open" && visibleOpenFindingReferences === 0 && entry.omittedSources === 0)) {
+      throw new Error(`InterfaceSecurityAudit entry ${entry.id} finding status is inconsistent`);
+    }
+  }
+
+  if (visibleOpenEntries > summary.openEntries
+    || (summary.omittedEntries === 0 && visibleOpenEntries !== summary.openEntries)) {
+    throw new Error("InterfaceSecurityAudit visible open-entry total is inconsistent");
+  }
+  if (visibleRoutes.size > summary.reviewedRoutes
+    || (summary.omittedEntries === 0 && visibleRoutes.size !== summary.reviewedRoutes)) {
+    throw new Error("InterfaceSecurityAudit reviewed route total is inconsistent");
+  }
+  if (summary.omittedSourceRecords < visibleOmittedSourceRecords
+    || (summary.omittedEntries === 0 && summary.omittedSourceRecords !== visibleOmittedSourceRecords)) {
+    throw new Error("InterfaceSecurityAudit omitted source totals are inconsistent");
+  }
+  if (summary.omittedFindingIdReferences < visibleOmittedFindingIdReferences
+    || (summary.omittedEntries === 0 && summary.omittedSourceRecords === 0
+      && summary.omittedFindingIdReferences !== visibleOmittedFindingIdReferences)) {
+    throw new Error("InterfaceSecurityAudit omitted finding reference totals are inconsistent");
+  }
+  if (summary.unlocatedSourceRecords < visibleUnlocatedSourceRecords
+    || (summary.omittedEntries === 0 && summary.omittedSourceRecords === 0
+      && summary.unlocatedSourceRecords !== visibleUnlocatedSourceRecords)) {
+    throw new Error("InterfaceSecurityAudit unlocated source totals are inconsistent");
+  }
+
+  const summaryCategories = new Set<string>();
+  let previousCategory = -1;
+  let totalCategoryEntries = 0;
+  let totalCategoryOpenEntries = 0;
+  for (const category of summary.categories) {
+    const categoryIndex = ROUTE_SECURITY_CATEGORY_ORDER.indexOf(category.category);
+    if (categoryIndex <= previousCategory || summaryCategories.has(category.category)) {
+      throw new Error("InterfaceSecurityAudit category summaries are not deterministic");
+    }
+    previousCategory = categoryIndex;
+    summaryCategories.add(category.category);
+    if (category.openEntries > category.entries) {
+      throw new Error(`InterfaceSecurityAudit category totals are inconsistent for ${category.category}`);
+    }
+    const visible = visibleCategoryCounts.get(category.category) ?? { entries: 0, openEntries: 0 };
+    if (category.entries < visible.entries || category.openEntries < visible.openEntries
+      || (summary.omittedEntries === 0
+        && (category.entries !== visible.entries || category.openEntries !== visible.openEntries))) {
+      throw new Error(`InterfaceSecurityAudit category totals are inconsistent for ${category.category}`);
+    }
+    totalCategoryEntries += category.entries;
+    totalCategoryOpenEntries += category.openEntries;
+  }
+  if ([...visibleCategoryCounts.keys()].some((category) => !summaryCategories.has(category))
+    || totalCategoryEntries !== summary.routeCategoryEntries
+    || totalCategoryOpenEntries !== summary.openEntries
+    || (summary.routeCategoryEntries === 0) !== (summary.categories.length === 0)) {
+    throw new Error("InterfaceSecurityAudit category summary totals are inconsistent");
+  }
+
+  const shouldBePartial = summary.omittedEntries > 0
+    || summary.omittedSourceRecords > 0
+    || summary.omittedFindingIdReferences > 0
+    || summary.unlocatedSourceRecords > 0
+    || summary.sourceOmissions.routeAliases > 0
+    || summary.sourceOmissions.associations > 0
+    || summary.attribution.unattributedSignals > 0;
+  if ((audit.coverage === "partial") !== shouldBePartial) {
+    throw new Error("InterfaceSecurityAudit coverage is inconsistent with recorded evidence gaps");
+  }
+  return audit;
 }
 
 export function validateRuleCatalog(value: unknown): RuleCatalog {

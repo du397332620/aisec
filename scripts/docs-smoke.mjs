@@ -103,6 +103,7 @@ function completedBolaManifest(template) {
 }
 
 try {
+  await access(join(repositoryRoot, "schemas", "interface-security-audit.schema.json"));
   await access(join(repositoryRoot, "schemas", "bola-verification-report.schema.json"));
   await access(join(repositoryRoot, "schemas", "bola-verification-audit.schema.json"));
   await access(join(repositoryRoot, "schemas", "bola-verification-lineage-audit.schema.json"));
@@ -119,6 +120,8 @@ try {
     "--policy ../trusted/security-policy.yml",
     "--rule-pack ../trusted/rule-pack.yml",
     "aisec rule-pack check ../target",
+    "aisec interface-audit",
+    "InterfaceSecurityAudit 1.0.0",
     "aisec interface-queue",
     "InterfaceVerificationQueue 1.0.0",
     "BolaDraftPlan 1.1.0",
@@ -177,10 +180,12 @@ try {
   assert.match(help, /audit-bola --authorization <same-manifest\.yml> --template <same-template\.json> --check <authorization-check\.json> --report <verification-report\.json>/);
   assert.match(help, /audit-bola-lineage --scan-report <scan-report\.json> --draft <selected-draft\.json> --authorization <same-manifest\.yml>/);
   assert.match(help, /check-bola-lineage --scan-report <scan-report\.json> --draft <selected-draft\.json> --authorization <same-manifest\.yml>.*--lineage-audit <lineage-audit\.json>/);
+  assert.match(help, /interface-audit --scan <scan-id\|report\.json>/);
   assert.match(help, /audit-bola rechecks retained artifacts offline and emits a sanitized audit receipt/u);
   assert.match(help, /audit-bola-lineage also regenerates the scan queue, selected draft and template source binding/u);
   assert.match(help, /check-bola-lineage revalidates a saved lineage receipt against all six retained inputs offline/u);
   assert.match(help, /saved lineage audit JSON file at most 1 MiB/u);
+  assert.match(help, /interface-audit reads a strict ScanReport JSON file at most 64 MiB and performs no requests/u);
   assert.match(help, /strict 1\.1 result binds sanitized receipt\/template provenance/u);
   assert.match(help, /interface-queue --scan <scan-id\|report\.json>/);
   assert.match(help, /draft-bola --scan <scan-id\|report\.json>.*--candidate interface-candidate-id/);
@@ -234,6 +239,16 @@ try {
   assert.equal(interfaceQueue.status, "review_required");
   assert.equal(interfaceQueue.networkRequests, 0);
   assert.equal(interfaceQueue.summary.reviewedRoutes, interfaceQueue.summary.eligibleRoutes + interfaceQueue.summary.excludedRoutes);
+
+  const interfaceAudit = report(run(["interface-audit", "--scan", vulnerable.scanId]), "interface security audit");
+  assert.equal(interfaceAudit.schemaVersion, "1.0.0");
+  assert.equal(interfaceAudit.scan.scanId, vulnerable.scanId);
+  assert.equal(interfaceAudit.coverageScope, "observed_attributed_routes_only");
+  assert.equal(interfaceAudit.networkRequests, 0);
+  assert.equal(interfaceAudit.dnsLookups, 0);
+  assert.equal(interfaceAudit.credentialEnvironmentReads, 0);
+  assert.equal(interfaceAudit.targetCodeExecutions, 0);
+  assert.ok(!("target" in interfaceAudit.scan));
 
   const bolaDraft = report(run(["draft-bola", "--scan", vulnerable.scanId]), "BOLA draft");
   assert.equal(bolaDraft.scanId, vulnerable.scanId);

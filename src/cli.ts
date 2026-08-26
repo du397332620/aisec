@@ -17,6 +17,7 @@ import { checkBolaLineage } from "./web/bola-lineage-check.js";
 import { draftBola } from "./web/bola-draft.js";
 import { checkBola, prepareBola } from "./web/bola-preflight.js";
 import { interfaceVerificationQueue } from "./web/interface-verification-queue.js";
+import { interfaceSecurityAudit } from "./web/interface-security-audit.js";
 import { TOOL_VERSION } from "./core/constants.js";
 import { parsePositiveInt } from "./core/utils.js";
 import { prepareTrivyDatabase, trivyDatabaseStatus } from "./engines/trivy-db.js";
@@ -32,6 +33,7 @@ Usage:
   aisec local-gate [path] --policy <trusted-policy.yml> --state-dir <private-directory> [gate scan options]
   aisec report <scan-id|report.json> [--format terminal|json|html|sarif|ci|github|markdown] [--output file]
   aisec fix-contract --scan <scan-id|report.json> --finding <id|fingerprint> [--format terminal|json] [--output file]
+  aisec interface-audit --scan <scan-id|report.json> [--output file]
   aisec interface-queue --scan <scan-id|report.json> [--output file]
   aisec draft-bola --scan <scan-id|report.json> [--candidate interface-candidate-id ...] [--output file]
   aisec prepare-bola --draft <selected-bola-draft.json> [--output file]
@@ -58,6 +60,7 @@ Scan safety:
   prepare-bola and every BOLA draft/manifest/template/check/report input accept at most 1 MiB.
   audit-bola-lineage accepts a strict ScanReport JSON file at most 64 MiB.
   check-bola-lineage accepts a strict saved lineage audit JSON file at most 1 MiB.
+  interface-audit reads a strict ScanReport JSON file at most 64 MiB and performs no requests.
   Preflight reads no credential values, resolves no DNS and sends no requests.
   audit-bola rechecks retained artifacts offline and emits a sanitized audit receipt.
   audit-bola-lineage also regenerates the scan queue, selected draft and template source binding.
@@ -416,6 +419,13 @@ async function main(): Promise<void> {
   if (parsed.command === "interface-queue") {
     const result = await interfaceVerificationQueue(requireFlag(parsed, "scan"));
     await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, flag(parsed, "output"));
+    return;
+  }
+
+  if (parsed.command === "interface-audit") {
+    const options = assertSimpleFileCommand(parsed, "interface-audit", "scan");
+    const result = await interfaceSecurityAudit(options.input);
+    await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, options.output);
     return;
   }
 
