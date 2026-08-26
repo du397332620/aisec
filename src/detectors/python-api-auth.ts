@@ -6,10 +6,12 @@ import { createSignal } from "../core/utils.js";
 import { MAX_SIGNALS_PER_DETECTOR } from "../core/constants.js";
 
 const EXPLICIT_PUBLIC_PATH = /(?:^|\/)(?:login|log-in|register|sign-up|signup|health|healthz|ready|readiness|live|liveness|favicon\.ico|docs|redoc|openapi\.json)\/?$/i;
-const SENSITIVE_PATH = /(?:^|\/)(?:admin|internal|manage|users?|permissions?|roles?|projects?|documents?|reports?|chapters?|templates?|knowledge|signatures?|chat|generate|review|uploads?|downloads?|tokens?|sessions?|billing|payments?)(?:\/|$)/i;
+const EXPLICIT_PUBLIC_AUTH_POST = /(?:^|\/)(?:login\/access-token|password-recovery(?:\/[^/]+)?|reset-password|token(?:\/oauth2|\/2fa\/(?:totp|fido2\/(?:begin|complete)))?|users?\/(?:reset[_-]password|verify)(?:\/finalize)?)\/?$/i;
+const SENSITIVE_PATH = /(?:^|\/)(?:admin|internal|manage|users?|permissions?|roles?|projects?|documents?|reports?|chapters?|templates?|knowledge|signatures?|chat|generate|review|uploads?|downloads?|tokens?|access-token|password-recovery|reset-password|sessions?|billing|payments?)(?:\/|$)/i;
 
 function isSensitiveRoute(route: FastApiRoute): boolean {
   if (EXPLICIT_PUBLIC_PATH.test(route.path)) return false;
+  if (route.method === "POST" && EXPLICIT_PUBLIC_AUTH_POST.test(route.path)) return false;
   if (["POST", "PUT", "PATCH", "DELETE"].includes(route.method)) return true;
   return SENSITIVE_PATH.test(route.path);
 }

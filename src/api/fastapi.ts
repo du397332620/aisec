@@ -333,14 +333,129 @@ function discoverAuthFunctions(files: ProjectFile[]): Set<string> {
   return names;
 }
 
-function hasAuthGuard(source: string, authNames: Set<string>): boolean {
-  const clean = stripComments(source);
-  for (const name of authNames) {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (new RegExp(`(?:Depends|Security)\\s*\\(\\s*(?:[A-Za-z_]\\w*\\.)*${escaped}\\b`).test(clean)) return true;
-    if (new RegExp(`\\b${escaped}\\s*\\(`).test(clean)) return true;
+interface DependencyCall {
+  kind: "Depends" | "Security";
+  argumentsText: string;
+  start: number;
+  end: number;
+}
+
+interface CallableGuards {
+  authNames: Set<string>;
+  privilegeNames: Set<string>;
+  scopedPrivilegeNames: Set<string>;
+}
+
+function escapePattern(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function dependencyCalls(source: string): DependencyCall[] {
+  const calls: DependencyCall[] = [];
+  const pattern = /\b(Depends|Security)\s*\(/g;
+  const offsets = new Set(executableOffsets(source, new RegExp(pattern.source, pattern.flags)));
+  for (const match of source.matchAll(pattern)) {
+    if (!offsets.has(match.index ?? -1)) continue;
+    const opening = (match.index ?? 0) + match[0].length - 1;
+    const closing = findClosing(source, opening);
+    if (closing === -1) continue;
+    calls.push({
+      kind: match[1] as DependencyCall["kind"],
+      argumentsText: source.slice(opening + 1, closing),
+      start: match.index ?? 0,
+      end: closing + 1,
+    });
+  }
+  return calls;
+}
+
+function firstArgument(argumentsText: string): string {
+  let round = 0;
+  let square = 0;
+  let curly = 0;
+  let quote = "";
+  let escaped = false;
+  for (let index = 0; index < argumentsText.length; index += 1) {
+    const character = argumentsText[index]!;
+    if (quote) {
+      if (escaped) escaped = false;
+      else if (character === "\\") escaped = true;
+      else if (character === quote) quote = "";
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character === "(") round += 1;
+    else if (character === ")") round -= 1;
+    else if (character === "[") square += 1;
+    else if (character === "]") square -= 1;
+    else if (character === "{") curly += 1;
+    else if (character === "}") curly -= 1;
+    else if (character === "," && round === 0 && square === 0 && curly === 0) return argumentsText.slice(0, index).trim();
+  }
+  return argumentsText.trim();
+}
+
+function dependencyName(expression: string): string | undefined {
+  return expression.match(/^\s*(?:[A-Za-z_]\w*\s*\.\s*)*([A-Za-z_]\w*)/)?.[1];
+}
+
+function disabledDependencyExpression(expression: string): boolean {
+  return /\b(?:token_required|auto_error|enabled)\s*=\s*False\b/.test(pythonCodeMask(expression));
+}
+
+function hasNamedGuard(source: string, names: Set<string>): boolean {
+  const clean = pythonCodeMask(source);
+  const calls = dependencyCalls(clean);
+  for (const call of calls) {
+    const expression = firstArgument(call.argumentsText);
+    const name = dependencyName(expression);
+    if (name && names.has(name) && !disabledDependencyExpression(expression)) return true;
+  }
+  const directCharacters = [...clean];
+  for (const call of calls) directCharacters.fill(" ", call.start, call.end);
+  const direct = directCharacters.join("");
+  for (const name of names) {
+    const escaped = escapePattern(name);
+    if (new RegExp(`\\b${escaped}\\s*\\(`).test(direct)) return true;
   }
   return false;
+}
+
+function hasTypeAliasGuard(source: string, aliases: Set<string>): boolean {
+  const clean = pythonCodeMask(source);
+  const definition = /\b(?:async\s+)?def\s+[A-Za-z_]\w*\s*\(/.exec(clean);
+  if (!definition || definition.index === undefined) return false;
+  const opening = definition.index + definition[0].length - 1;
+  const closing = findClosing(source, opening);
+  if (closing === -1) return false;
+  const parameters = clean.slice(opening + 1, closing);
+  for (const alias of aliases) {
+    if (new RegExp(`:\\s*[^,)=\\n]{0,160}\\b${escapePattern(alias)}\\b`).test(parameters)) return true;
+  }
+  return false;
+}
+
+function explicitConfiguredPrivilegeDependency(source: string): boolean {
+  for (const call of dependencyCalls(source)) {
+    const expression = firstArgument(call.argumentsText);
+    if (disabledDependencyExpression(expression)) continue;
+    const constructor = expression.match(/^(?:[A-Za-z_]\w*\s*\.\s*)*(Protected|RoleChecker|PermissionChecker|AuthorizationChecker|AccessChecker)\s*\(([\s\S]*)\)\s*$/i);
+    if (!constructor?.[2]) continue;
+    const configuration = constructor[2];
+    const explicitRequirement = /\b(?:required_roles?|required_permissions?|required_checker|allowed_roles?|allowed_permissions?)\s*=\s*/i.test(configuration);
+    const emptyRequirement = /\b(?:required_roles?|required_permissions?|required_checker|allowed_roles?|allowed_permissions?)\s*=\s*(?:None\b|False\b|\[\s*\]|\(\s*\)|\{\s*\})/i.test(configuration);
+    if (explicitRequirement && !emptyRequirement) return true;
+  }
+  return false;
+}
+
+function hasAuthGuard(source: string, authNames: Set<string>, authAliases: Set<string> = new Set()): boolean {
+  return hasNamedGuard(source, authNames)
+    || hasTypeAliasGuard(source, authAliases)
+    || explicitConfiguredPrivilegeDependency(source);
 }
 
 function discoverOwnershipFunctions(files: ProjectFile[]): Set<string> {
@@ -384,7 +499,7 @@ function hasDirectPrivilegeSemantics(source: string, authNames: Set<string> = ne
   if (!denial.test(clean)) return false;
   if (principalAuthority.test(clean) || authorityCall.test(clean)) return true;
   for (const name of authNames) {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const escaped = escapePattern(name);
     const assignment = new RegExp(String.raw`^\s*([A-Za-z_]\w*)\s*(?::[^=\n]+)?=\s*(?:await\s+)?(?:[A-Za-z_]\w*\.)*${escaped}\s*\(`, "gm");
     for (const match of clean.matchAll(assignment)) {
       const alias = match[1]?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -394,26 +509,121 @@ function hasDirectPrivilegeSemantics(source: string, authNames: Set<string> = ne
   return false;
 }
 
+function hasScopeEnforcementSemantics(source: string): boolean {
+  const clean = pythonCodeMask(source);
+  if (!/\bSecurityScopes\b/.test(clean) || !/\bsecurity_scopes\s*\.\s*scopes\b/.test(clean)) return false;
+  const authority = /\b(?:user|current_user|principal|identity|token|token_data|claims?|payload)\b[\s\S]{0,200}\b(?:scopes?|permissions?|roles?|is_superuser)\b/i;
+  const comparison = /\b(?:not\s+in|in)\b|\.issubset\s*\(|\b(?:all|any)\s*\(/i;
+  const denial = /(?:HTTPException\s*\(\s*(?:status_code\s*=\s*)?(?:401|403)\b|status_code\s*=\s*(?:401|403|status\s*\.\s*HTTP_40[13]_[A-Z_]+)\b|HTTP_40[13]_[A-Z_]+\b|\bForbidden\b|\bPermissionDenied\b)/i;
+  return authority.test(clean) && comparison.test(clean) && denial.test(clean);
+}
+
+function discoverScopeFunctions(files: ProjectFile[]): Set<string> {
+  const names = new Set<string>();
+  for (const file of files.filter((candidate) => candidate.relativePath.endsWith(".py"))) {
+    const pattern = /^(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/gm;
+    for (const match of file.content.matchAll(pattern)) {
+      if (hasScopeEnforcementSemantics(functionSource(file.content, match.index ?? 0))) names.add(match[1]!);
+    }
+  }
+  return names;
+}
+
+function discoverCallableGuards(files: ProjectFile[]): CallableGuards {
+  const authNames = new Set<string>();
+  const privilegeNames = new Set<string>();
+  const scopedPrivilegeNames = new Set<string>();
+  const authClasses = new Set<string>();
+  const privilegeClasses = new Set<string>();
+  const scopedClasses = new Set<string>();
+  for (const file of files.filter((candidate) => candidate.relativePath.endsWith(".py"))) {
+    const pattern = /^class\s+([A-Za-z_]\w*)\b/gm;
+    for (const match of file.content.matchAll(pattern)) {
+      const name = match[1]!;
+      const source = classSource(file.content, name);
+      if (!source) continue;
+      const clean = pythonCodeMask(source);
+      const callable = /\b(?:async\s+)?def\s+__call__\s*\(/.test(clean);
+      if (!callable) continue;
+      const authBoundary = /\b(?:Depends|Security)\s*\(|\b(?:OAuth2\w*|HTTPBearer|APIKey\w*)\b|\brequest\s*\.\s*session\b|\b(?:authorization|header_token|access_token)\b/i.test(clean);
+      const denial = /(?:HTTPException\s*\(\s*(?:status_code\s*=\s*)?(?:401|403)\b|status_code\s*=\s*(?:401|403|status\s*\.\s*HTTP_40[13]_[A-Z_]+)\b|HTTP_40[13]_[A-Z_]+\b|\bForbidden\b|\bPermissionDenied\b)/i.test(clean);
+      const authority = /\b(?:required_roles?|required_permissions?|required_checker|allowed_roles?|allowed_permissions?)\b|\b(?:user|current_user|principal|identity|token)\b\s*\.\s*(?:roles?|permissions?|is_admin|is_superuser|has_role|has_permission)\b/i.test(clean);
+      const scopes = /\bSecurityScopes\b/.test(clean) && /\bsecurity_scopes\s*\.\s*scopes\b/.test(clean);
+      const scopeDelegation = /\b(?:find_user_and_check_permissions|check_permissions|authorize_scopes?|enforce_scopes?|verify_scopes?)\s*\(/i.test(clean);
+      const directScopeEnforcement = hasScopeEnforcementSemantics(source);
+      const enforcedScopes = scopes && (directScopeEnforcement || scopeDelegation);
+      if ((authBoundary && denial) || (authority && denial) || enforcedScopes) authClasses.add(name);
+      if (authority && denial && !directScopeEnforcement) privilegeClasses.add(name);
+      if (enforcedScopes) scopedClasses.add(name);
+    }
+  }
+
+  for (const name of authClasses) authNames.add(name);
+  for (const name of privilegeClasses) privilegeNames.add(name);
+  for (const name of scopedClasses) scopedPrivilegeNames.add(name);
+
+  for (const file of files.filter((candidate) => candidate.relativePath.endsWith(".py"))) {
+    const pattern = /^([A-Za-z_]\w*)\s*(?::[^=\n]+)?=\s*(?:[A-Za-z_]\w*\s*\.\s*)*([A-Za-z_]\w*)\s*\(/gm;
+    const offsets = new Set(executableOffsets(file.content, new RegExp(pattern.source, pattern.flags)));
+    for (const match of file.content.matchAll(pattern)) {
+      if (!offsets.has(match.index ?? -1)) continue;
+      const variable = match[1]!;
+      const constructor = match[2]!;
+      if (!authClasses.has(constructor) && !privilegeClasses.has(constructor) && !scopedClasses.has(constructor)) continue;
+      const opening = (match.index ?? 0) + match[0].length - 1;
+      const closing = findClosing(file.content, opening);
+      if (closing === -1) continue;
+      const argumentsText = file.content.slice(opening + 1, closing);
+      const optional = /\b(?:token_required|auto_error|enabled)\s*=\s*False\b/.test(pythonCodeMask(argumentsText));
+      if (optional) continue;
+      if (authClasses.has(constructor)) authNames.add(variable);
+      if (privilegeClasses.has(constructor)) privilegeNames.add(variable);
+      if (scopedClasses.has(constructor)) scopedPrivilegeNames.add(variable);
+    }
+  }
+  return { authNames, privilegeNames, scopedPrivilegeNames };
+}
+
 function discoverPrivilegeFunctions(files: ProjectFile[], authNames: Set<string>): Set<string> {
   const names = new Set<string>();
   for (const file of files.filter((candidate) => candidate.relativePath.endsWith(".py"))) {
     const pattern = /^(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/gm;
     for (const match of file.content.matchAll(pattern)) {
       const name = match[1]!;
-      if (hasDirectPrivilegeSemantics(functionSource(file.content, match.index ?? 0), authNames)) names.add(name);
+      const source = functionSource(file.content, match.index ?? 0);
+      if (hasDirectPrivilegeSemantics(source, authNames) && !hasScopeEnforcementSemantics(source)) names.add(name);
     }
   }
   return names;
 }
 
-function hasPrivilegeGuard(source: string, privilegeNames: Set<string>, authNames: Set<string>): boolean {
-  const clean = pythonCodeMask(source);
-  for (const name of privilegeNames) {
-    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    if (new RegExp(`(?:Depends|Security)\\s*\\(\\s*(?:[A-Za-z_]\\w*\\.)*${escaped}\\b`).test(clean)) return true;
-    if (new RegExp(`\\b${escaped}\\s*\\(`).test(clean)) return true;
+function hasScopedSecurityGuard(source: string, scopedPrivilegeNames: Set<string>): boolean {
+  for (const call of dependencyCalls(source)) {
+    if (call.kind !== "Security") continue;
+    const expression = firstArgument(call.argumentsText);
+    if (disabledDependencyExpression(expression)) continue;
+    const name = dependencyName(expression);
+    if (!name || !scopedPrivilegeNames.has(name)) continue;
+    const scopes = keywordExpression(call.argumentsText, "scopes")?.trim();
+    if (!scopes || !isStaticNonEmptyScopeCollection(scopes)) continue;
+    return true;
   }
-  return hasDirectPrivilegeSemantics(clean, authNames);
+  return false;
+}
+
+function hasPrivilegeGuard(
+  source: string,
+  privilegeNames: Set<string>,
+  authNames: Set<string>,
+  scopedPrivilegeNames: Set<string> = new Set(),
+  privilegeAliases: Set<string> = new Set(),
+): boolean {
+  const clean = pythonCodeMask(source);
+  return hasNamedGuard(clean, privilegeNames)
+    || hasTypeAliasGuard(clean, privilegeAliases)
+    || hasScopedSecurityGuard(source, scopedPrivilegeNames)
+    || explicitConfiguredPrivilegeDependency(source)
+    || hasDirectPrivilegeSemantics(clean, authNames);
 }
 
 function parseWhitelists(files: ProjectFile[]): FastApiWhitelist[] {
@@ -497,6 +707,70 @@ function classSource(text: string, className: string): string | undefined {
   return functionSource(text, match.index);
 }
 
+function expandImportedNames(parsedFiles: ParsedFile[], names: Set<string>): void {
+  let changed = true;
+  let remaining = parsedFiles.length + 1;
+  while (changed && remaining > 0) {
+    changed = false;
+    remaining -= 1;
+    for (const parsed of parsedFiles) {
+      for (const [alias, targets] of parsed.imports) {
+        if (names.has(alias)) continue;
+        if (targets.some((target) => target.symbol && names.has(target.symbol.split(".").at(-1)!))) {
+          names.add(alias);
+          changed = true;
+        }
+      }
+    }
+  }
+}
+
+function discoverGuardAliases(
+  files: ProjectFile[],
+  authNames: Set<string>,
+  privilegeNames: Set<string>,
+  scopedPrivilegeNames: Set<string>,
+): { authAliases: Set<string>; privilegeAliases: Set<string> } {
+  const entries: Array<{ name: string; body: string }> = [];
+  for (const file of files.filter((candidate) => candidate.relativePath.endsWith(".py"))) {
+    const pattern = /^([A-Za-z_]\w*)\s*=\s*(?:typing\s*\.\s*)?Annotated\s*\[/gm;
+    const offsets = new Set(executableOffsets(file.content, new RegExp(pattern.source, pattern.flags)));
+    for (const match of file.content.matchAll(pattern)) {
+      if (!offsets.has(match.index ?? -1)) continue;
+      const opening = (match.index ?? 0) + match[0].length - 1;
+      const closing = findClosing(file.content, opening, "[", "]");
+      if (closing !== -1) entries.push({ name: match[1]!, body: file.content.slice(opening + 1, closing) });
+    }
+  }
+  const authAliases = new Set<string>();
+  const privilegeAliases = new Set<string>();
+  let changed = true;
+  let remaining = entries.length + 1;
+  while (changed && remaining > 0) {
+    changed = false;
+    remaining -= 1;
+    for (const entry of entries) {
+      const privileged = hasPrivilegeGuard(
+        entry.body,
+        privilegeNames,
+        authNames,
+        scopedPrivilegeNames,
+        privilegeAliases,
+      );
+      const authenticated = privileged || hasAuthGuard(entry.body, authNames, authAliases);
+      if (privileged && !privilegeAliases.has(entry.name)) {
+        privilegeAliases.add(entry.name);
+        changed = true;
+      }
+      if (authenticated && !authAliases.has(entry.name)) {
+        authAliases.add(entry.name);
+        changed = true;
+      }
+    }
+  }
+  return { authAliases, privilegeAliases };
+}
+
 const RESPONSE_OWNER_FIELD = /^(?:owner_id|user_id|tenant_id|creator_id|created_by|account_id|organization_id|org_id)$/i;
 
 function keywordExpression(argumentsText: string, name: string): string | undefined {
@@ -529,6 +803,18 @@ function keywordExpression(argumentsText: string, name: string): string | undefi
     else if (character === "," && round === 0 && square === 0 && curly === 0) return argumentsText.slice(start, index).trim();
   }
   return argumentsText.slice(start).trim();
+}
+
+function isStaticNonEmptyScopeCollection(expression: string): boolean {
+  const value = expression.trim();
+  const opening = value[0];
+  const closing = opening === "[" ? "]" : opening === "(" ? ")" : undefined;
+  if (!closing || findClosing(value, 0, opening, closing) !== value.length - 1) return false;
+  const body = value.slice(1, -1);
+  const stringAtom = String.raw`(?:[rRuU])?(?:"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*')`;
+  const identifierAtom = String.raw`[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*`;
+  const atom = `(?:${stringAtom}|${identifierAtom})`;
+  return new RegExp(`^\\s*${atom}\\s*(?:,\\s*${atom}\\s*)*,?\\s*$`).test(body);
 }
 
 function ownerFieldsInClass(source: string | undefined): string[] {
@@ -585,14 +871,33 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
   };
 
   const authNames = discoverAuthFunctions(pythonFiles);
-  const ownershipNames = discoverOwnershipFunctions(pythonFiles);
+  const scopedPrivilegeNames = discoverScopeFunctions(pythonFiles);
+  const callableGuards = discoverCallableGuards(pythonFiles);
+  for (const name of scopedPrivilegeNames) authNames.add(name);
+  for (const name of callableGuards.authNames) authNames.add(name);
+  for (const name of callableGuards.scopedPrivilegeNames) {
+    scopedPrivilegeNames.add(name);
+    authNames.add(name);
+  }
   const privilegeNames = discoverPrivilegeFunctions(pythonFiles, authNames);
+  for (const name of callableGuards.privilegeNames) privilegeNames.add(name);
   for (const name of privilegeNames) authNames.add(name);
-  const whitelists = parseWhitelists(pythonFiles);
+  const ownershipNames = discoverOwnershipFunctions(pythonFiles);
   const parsedFiles = pythonFiles.map((file) => {
     const module = pythonModule(file.relativePath);
     return { file, module, imports: parseImports(file, module) };
   });
+  for (const names of [authNames, ownershipNames, privilegeNames, scopedPrivilegeNames]) expandImportedNames(parsedFiles, names);
+  const { authAliases, privilegeAliases } = discoverGuardAliases(
+    pythonFiles,
+    authNames,
+    privilegeNames,
+    scopedPrivilegeNames,
+  );
+  expandImportedNames(parsedFiles, authAliases);
+  expandImportedNames(parsedFiles, privilegeAliases);
+  for (const name of privilegeAliases) authAliases.add(name);
+  const whitelists = parseWhitelists(pythonFiles);
   const parsedByModule = new Map(parsedFiles.map((file) => [file.module, file]));
   const nodes = new Map<string, RouterNode>();
   const edges: IncludeEdge[] = [];
@@ -616,9 +921,9 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         variable,
         kind: match[2] === "FastAPI" ? "app" : "router",
         prefix: keywordString(argumentsText, "prefix"),
-        dependencyProtected: hasAuthGuard(argumentsText, authNames),
+        dependencyProtected: hasAuthGuard(argumentsText, authNames, authAliases),
         dependencyOwnershipProtected: hasOwnershipGuard(argumentsText, ownershipNames),
-        dependencyPrivilegeProtected: hasPrivilegeGuard(argumentsText, privilegeNames, authNames),
+        dependencyPrivilegeProtected: hasPrivilegeGuard(argumentsText, privilegeNames, authNames, scopedPrivilegeNames, privilegeAliases),
         middlewareProtected: false,
         middlewareUsesWhitelist: false,
         sourcePath: parsed.file.relativePath,
@@ -657,9 +962,9 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         parentKey: `${parsed.module}:${match[1]}`,
         childExpression,
         prefix: keywordString(argumentsText, "prefix"),
-        dependencyProtected: hasAuthGuard(argumentsText, authNames),
+        dependencyProtected: hasAuthGuard(argumentsText, authNames, authAliases),
         dependencyOwnershipProtected: hasOwnershipGuard(argumentsText, ownershipNames),
-        dependencyPrivilegeProtected: hasPrivilegeGuard(argumentsText, privilegeNames, authNames),
+        dependencyPrivilegeProtected: hasPrivilegeGuard(argumentsText, privilegeNames, authNames, scopedPrivilegeNames, privilegeAliases),
         module: parsed.module,
       });
     }
@@ -693,9 +998,9 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         location: makeLocation(parsed.file.relativePath, text, match.index ?? 0, match[0] + argumentsText.slice(0, 120)),
         responseOwnerFields: responseFields,
         handlerSource: source,
-        handlerProtected: hasAuthGuard(`${argumentsText}\n${source}`, authNames),
+        handlerProtected: hasAuthGuard(`${argumentsText}\n${source}`, authNames, authAliases),
         ownershipProtected: hasOwnershipGuard(`${argumentsText}\n${source}`, ownershipNames),
-        privilegeProtected: hasPrivilegeGuard(`${argumentsText}\n${source}`, privilegeNames, authNames),
+        privilegeProtected: hasPrivilegeGuard(`${argumentsText}\n${source}`, privilegeNames, authNames, scopedPrivilegeNames, privilegeAliases),
       });
     }
   }
@@ -733,9 +1038,9 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
     const traversalKey = [app.key, node.key, nodePrefix, dependencyProtected, ownershipProtected, privilegeProtected].join("\u0000");
     if (seenTraversal.has(traversalKey)) return;
     seenTraversal.add(traversalKey);
-    const nodeProtected = dependencyProtected || node.dependencyProtected;
-    const nodeOwnershipProtected = ownershipProtected || node.dependencyOwnershipProtected;
     const nodePrivilegeProtected = privilegeProtected || node.dependencyPrivilegeProtected;
+    const nodeProtected = dependencyProtected || node.dependencyProtected || nodePrivilegeProtected;
+    const nodeOwnershipProtected = ownershipProtected || node.dependencyOwnershipProtected || nodePrivilegeProtected;
     for (const route of routesByRouter.get(node.key) ?? []) {
       const path = joinPath(nodePrefix, route.path);
       routes.push({
@@ -749,7 +1054,7 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         responseOwnerFields: route.responseOwnerFields,
         handlerSource: route.handlerSource,
         locallyProtected: nodeProtected || route.handlerProtected,
-        ownershipProtected: nodeOwnershipProtected || route.ownershipProtected,
+        ownershipProtected: nodeOwnershipProtected || route.ownershipProtected || route.privilegeProtected,
         privilegeProtected: nodePrivilegeProtected || route.privilegeProtected,
         middlewareProtected: app.middlewareProtected,
         whitelist: app.middlewareProtected && app.middlewareUsesWhitelist ? whitelistFor(path, whitelists) : undefined,
@@ -762,7 +1067,7 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         child,
         joinPath(nodePrefix, edge.prefix),
         nodeProtected || edge.dependencyProtected,
-        nodeOwnershipProtected || edge.dependencyOwnershipProtected,
+        nodeOwnershipProtected || edge.dependencyOwnershipProtected || edge.dependencyPrivilegeProtected,
         nodePrivilegeProtected || edge.dependencyPrivilegeProtected,
       );
     }

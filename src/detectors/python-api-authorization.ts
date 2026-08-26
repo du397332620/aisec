@@ -81,7 +81,7 @@ export async function runPythonApiAuthorization(context: ScanContext): Promise<D
   const signals: Signal[] = [];
   let truncated = false;
   for (const route of analysis.routes) {
-    if (!isAuthenticated(route) || route.ownershipProtected || !hasObjectOperation(route)) continue;
+    if (!isAuthenticated(route) || route.ownershipProtected || route.privilegeProtected || !hasObjectOperation(route)) continue;
     if (signals.length >= MAX_SIGNALS_PER_DETECTOR) {
       truncated = true;
       break;

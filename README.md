@@ -35,7 +35,14 @@ Depth is intentionally concentrated in:
 FastAPI coverage currently resolves common `FastAPI`/`APIRouter` declarations,
 `include_router` prefixes, authentication middleware, exact/prefix whitelists,
 router dependencies and route-level `Depends` or explicit identity guards. It
-detects sensitive routes that a global whitelist makes public and separately
+also follows locally defined `Annotated[..., Depends(...)]` authentication
+aliases, enforced `SecurityScopes` dependencies with non-empty static list/tuple
+scope collections, and callable dependency objects whose local `__call__` implementation
+contains a bounded role/permission denial. Explicit third-party
+`Protected(required_roles=...)` / `required_permission` configuration is
+recognized without importing that package; empty requirements, optional
+authentication instances and name-only guards remain untrusted. It detects
+sensitive routes that a global whitelist makes public and separately
 flags standalone services with no visible authentication boundary. It also
 identifies authenticated object operations without a visible owner/tenant/role
 constraint and explicit administrator, internal, role or permission-management
@@ -693,7 +700,7 @@ accepted suppressions for compatible consumers.
 | Secrets in selected source files | Native | Deterministic provider patterns plus fully redacted concrete sensitive-environment interpolation fallbacks; working tree only, not Git history |
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; BaaS analysis recognizes bounded PostgreSQL RLS and Firebase Firestore/Storage authorization expressions, while unsupported helpers or syntax make coverage `partial`; some findings are explicitly `inferred` and require review |
-| FastAPI authentication and authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, while standalone unguarded services, missing object ownership and explicit privileged operations without a proven local role/permission check are inferred; imported/dynamic guards and external policy engines remain partial coverage |
+| FastAPI authentication and authorization | Native Python analyzer | Resolves common router composition, `Annotated` authentication aliases, enforced non-empty static-list/tuple `SecurityScopes`, locally visible callable role/permission dependencies and explicit configured third-party `Protected` dependencies; whitelist bypasses are static-confirmed, while standalone unguarded services, missing object ownership and explicit privileged operations without a proven role/permission check are inferred; empty/dynamic scopes, optional auth, dynamic callables and external policy-engine behavior remain partial coverage |
 | Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local or one-hop directly imported immutable ESM route tables used by `forEach` and direct synchronous `for...of`, including at most two direct inline statically evaluable `filter`/`map` transforms, and NestJS controllers/guards/providers through local module imports, exports, re-exports and application-global visibility; accepts direct official `forwardRef` tokens/modules, visible synchronous static dynamic-module metadata, fully resolved direct official `NestFactory.create` roots from conventional runtime entry files, same-container direct `useGlobalGuards`, `setGlobalPrefix` and URI `enableVersioning` calls on their awaited `const` application instances, plus direct official static `RouterModule.register` trees from real module imports; composes independently scoped global/version/module/controller paths for shared controllers and otherwise retains bounded inferred-root routes without trusting imperative configuration, with both module and RouterModule traversal capped at eight edges and 256 entries; follows up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced, consumed through one single-condition `const`, or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, arbitrary collection transforms, unsupported operators/scopes or bootstrap graphs, unresolved providers/registration/bootstrap/global-guard/application-routing/RouterModule sites, package or mixin bases, complex wrappers and external policy engines still require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; exact FastAPI route origins propagate through direct handlers, unique local/relative imports and directly invoked lexical closures; comments, returned closures, ambiguous/dynamic dispatch and unproven request origins remain unattributed with stable machine-readable reasons in JSON/CI plus bounded terminal/Markdown/HTML summaries; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, global and broad route-local exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
@@ -1574,6 +1581,37 @@ execute target code, start services, send target HTTP requests, or retain raw
 reports. A passing result confirms the recorded route/finding expectations for
 those commits; it is neither proof of exploitability nor proof that a project is
 secure.
+
+### Fixed-commit FastAPI RBAC calibration
+
+Maintainers can repeat the reviewed static scans of the official Full Stack
+FastAPI Template, Bitcart and `zopyx/fastapi-auth`. The manifest fixes each
+repository to a complete commit, records its SPDX license and license-file path,
+and checks exact FastAPI route/finding expectations for `Annotated` identity
+aliases, enforced `SecurityScopes` and callable/configured RBAC dependencies:
+
+```bash
+# Explicitly downloads all three licensed repositories at fixed commits
+npm run calibrate:fastapi-rbac -- --confirm-download
+
+# Download and scan one target
+npm run calibrate:fastapi-rbac -- --confirm-download --target bitcart
+
+# Reuse a clean local repository at the expected commit
+npm run calibrate:fastapi-rbac -- \
+  --target zopyx-fastapi-auth \
+  --local zopyx-fastapi-auth=/absolute/path/to/fastapi-auth
+```
+
+Network access is denied unless `--confirm-download` is present. A local source
+must be the exact clean Git root; configured scan and license paths must remain
+inside it. The runner does not install dependencies, import/build/execute target
+code, start a service, send a target request or retain raw reports, and removes
+downloaded worktrees afterward. The remaining inferred findings in the fixed
+expectations include deliberately public, optional-authentication or
+deployment-conditional routes and therefore remain review candidates rather
+than vulnerability claims. The runner and manifest are excluded from the npm
+package.
 
 ### Fixed-asset mobile artifact calibration
 

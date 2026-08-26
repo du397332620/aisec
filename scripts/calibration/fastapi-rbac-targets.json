@@ -1,0 +1,154 @@
+{
+  "schemaVersion": 1,
+  "description": "Fixed-commit, static-only FastAPI RBAC calibration. Passing checks demonstrates bounded recognition of selected authentication and privilege patterns on these revisions; it does not prove exploitability, deployment exposure, or overall security.",
+  "targets": [
+    {
+      "id": "full-stack-fastapi-template",
+      "repository": "https://github.com/fastapi/full-stack-fastapi-template.git",
+      "commit": "8063fe54f17d19f01720e055103af9cad3d8f55d",
+      "license": "MIT",
+      "licenseFile": "LICENSE",
+      "scanPath": "backend",
+      "expected": {
+        "routeCount": 23,
+        "requiredRoutes": [
+          "DELETE /users/{user_id}",
+          "GET /users",
+          "PATCH /users/{user_id}",
+          "POST /items",
+          "POST /login/test-token",
+          "POST /private/users",
+          "POST /users"
+        ],
+        "decision": "block",
+        "coverage": [
+          {
+            "domain": "fastapi-authentication",
+            "status": "complete"
+          },
+          {
+            "domain": "fastapi-object-authorization",
+            "status": "partial"
+          },
+          {
+            "domain": "fastapi-privileged-authorization",
+            "status": "partial"
+          }
+        ],
+        "fastapiFindings": [
+          {
+            "ruleId": "fastapi.auth.sensitive-route-without-guard",
+            "count": 1,
+            "routes": [
+              "POST /private/users"
+            ]
+          }
+        ],
+        "requiredSignalCounts": [
+          {
+            "ruleId": "python.dataflow.ssrf",
+            "count": 2
+          }
+        ]
+      }
+    },
+    {
+      "id": "bitcart",
+      "repository": "https://github.com/bitcart/bitcart.git",
+      "commit": "9b0213bb37fc0f320c7d3fce53a838950777fd02",
+      "license": "MIT",
+      "licenseFile": "LICENSE",
+      "expected": {
+        "routeCount": 106,
+        "requiredRoutes": [
+          "DELETE /token/{token_id}",
+          "GET /manage/policies",
+          "POST /manage/backups/restore",
+          "POST /manage/restart",
+          "POST /plugins/install",
+          "POST /products",
+          "POST /wallets/{model_id}/lnpay"
+        ],
+        "decision": "block",
+        "coverage": [
+          {
+            "domain": "fastapi-authentication",
+            "status": "partial"
+          },
+          {
+            "domain": "fastapi-object-authorization",
+            "status": "partial"
+          },
+          {
+            "domain": "fastapi-privileged-authorization",
+            "status": "partial"
+          }
+        ],
+        "fastapiFindings": [
+          {
+            "ruleId": "fastapi.auth.sensitive-route-without-guard",
+            "count": 14,
+            "routes": [
+              "GET /cryptos/tokens/{currency}",
+              "GET /cryptos/tokens/{currency}/abi",
+              "GET /manage/backups/frequencies",
+              "GET /manage/backups/providers",
+              "GET /manage/policies",
+              "GET /manage/stores",
+              "GET /templates/list",
+              "PATCH /invoices/{model_id}/customer",
+              "PATCH /invoices/{model_id}/details",
+              "POST /configurator/deploy",
+              "POST /configurator/server-settings",
+              "POST /invoices/order_id/{order_id:path}",
+              "POST /invoices/refunds/{refund_id}/submit",
+              "POST /users"
+            ]
+          }
+        ],
+        "requiredSignalCounts": [
+          {
+            "ruleId": "python.dataflow.ssrf",
+            "count": 2
+          },
+          {
+            "ruleId": "python.dataflow.untrusted-file-path",
+            "count": 11
+          }
+        ]
+      }
+    },
+    {
+      "id": "zopyx-fastapi-auth",
+      "repository": "https://github.com/zopyx/fastapi-auth.git",
+      "commit": "f1ee445cfcef0670afb4c96430796adcc6e9bc6f",
+      "license": "WTFPL",
+      "licenseFile": "LICENSE.txt",
+      "expected": {
+        "routeCount": 4,
+        "requiredRoutes": [
+          "GET /admin",
+          "GET /admin2",
+          "GET /admin3"
+        ],
+        "decision": "incomplete",
+        "coverage": [
+          {
+            "domain": "fastapi-authentication",
+            "status": "complete"
+          },
+          {
+            "domain": "fastapi-object-authorization",
+            "status": "partial"
+          },
+          {
+            "domain": "fastapi-privileged-authorization",
+            "status": "partial"
+          }
+        ],
+        "fastapiFindings": [],
+        "requiredSignalCounts": []
+      }
+    }
+  ]
+}

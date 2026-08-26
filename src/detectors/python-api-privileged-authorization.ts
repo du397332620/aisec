@@ -68,7 +68,7 @@ export async function runPythonApiPrivilegedAuthorization(context: ScanContext):
   }
   const reasons = [
     analysis.unresolvedIncludes > 0 ? `${analysis.unresolvedIncludes} include_router edge(s) could not be resolved` : undefined,
-    "Privileged operations and role/permission enforcement are inferred from bounded local source patterns; imported or dynamic dependencies, complex policy control flow, and external authorization engines require manual review",
+    "Privileged operations and role/permission enforcement are inferred from bounded local source patterns; empty or non-literal scopes, optional-auth fallbacks, imported callables without an explicit supported requirement, dynamic dependencies, complex policy control flow, and external authorization engines require manual review",
     truncated ? `finding output reached the ${MAX_SIGNALS_PER_DETECTOR} signal safety limit` : undefined,
   ].filter((value): value is string => Boolean(value));
   return {

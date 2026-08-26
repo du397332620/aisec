@@ -141,6 +141,8 @@ try {
   assert.ok(!packedPaths.has("scripts/calibration/baas-targets.json"), "real BaaS calibration manifest must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/node-api-calibration.mjs"), "networked calibration runner must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/calibration/node-api-targets.json"), "real-project calibration manifest must stay out of the npm package");
+  assert.ok(!packedPaths.has("scripts/fastapi-rbac-calibration.mjs"), "FastAPI RBAC calibration runner must stay out of the npm package");
+  assert.ok(!packedPaths.has("scripts/calibration/fastapi-rbac-targets.json"), "FastAPI RBAC calibration manifest must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/mobile-artifact-calibration.mjs"), "mobile artifact calibration runner must stay out of the npm package");
   assert.ok(!packedPaths.has("scripts/calibration/mobile-artifact-targets.json"), "real mobile artifact manifest must stay out of the npm package");
   assert.ok(![...packedPaths].some((path) => /\.(?:apk|ipa)$/i.test(path)), "third-party mobile binaries must stay out of the npm package");

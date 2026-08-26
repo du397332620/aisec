@@ -325,6 +325,195 @@ def preview_admin_config():
   }
 });
 
+test("FastAPI privilege analysis understands enforced SecurityScopes and Annotated guard aliases", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-fastapi-security-scopes-"));
+  try {
+    await writeFile(join(temporary, "main.py"), `
+from typing import Annotated
+from fastapi import Depends, FastAPI, HTTPException, Security
+from fastapi.security import SecurityScopes
+
+def get_current_user():
+    return load_principal()
+
+def enforce_scopes(
+    security_scopes: SecurityScopes,
+    current_user=Depends(get_current_user),
+):
+    for required_scope in security_scopes.scopes:
+        if required_scope not in current_user.permissions:
+            raise HTTPException(status_code=403)
+    return current_user
+
+class ScopeGuard:
+    def __init__(self, auto_error=True):
+        self.auto_error = auto_error
+
+    async def __call__(
+        self,
+        security_scopes: SecurityScopes,
+        current_user=Depends(get_current_user),
+    ):
+        for required_scope in security_scopes.scopes:
+            if required_scope not in current_user.permissions:
+                raise HTTPException(status_code=403)
+        return current_user
+
+scope_guard = ScopeGuard()
+optional_scope_guard = ScopeGuard(auto_error=False)
+CurrentUser = Annotated[object, Depends(get_current_user)]
+AdminUser = Annotated[object, Security(enforce_scopes, scopes=["admin"])]
+
+app = FastAPI()
+
+@app.post("/profile/update")
+def update_profile(current_user: CurrentUser):
+    return save_profile(current_user)
+
+@app.post("/admin/scoped")
+def scoped_admin(current_user=Security(enforce_scopes, scopes=["admin"])):
+    return run_admin_task()
+
+@app.post("/admin/annotated")
+def annotated_admin(current_user: AdminUser):
+    return run_admin_task()
+
+@app.post("/admin/callable-scoped")
+def callable_scoped_admin(current_user=Security(scope_guard, scopes=["admin"])):
+    return run_admin_task()
+
+@app.post("/admin/optional-scoped")
+def optional_scoped_admin(current_user=Security(optional_scope_guard, scopes=["admin"])):
+    return run_admin_task()
+
+@app.post("/admin/empty-scopes")
+def empty_scopes(current_user=Security(enforce_scopes, scopes=[])):
+    return run_admin_task()
+
+@app.post("/admin/dynamic-scopes")
+def dynamic_scopes(current_user=Security(enforce_scopes, scopes=[scope for scope in runtime_scopes])):
+    return run_admin_task()
+
+@app.post("/admin/alias-decoy")
+def alias_decoy():
+    unused: AdminUser
+    return run_admin_task()
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const authRoutes = report.signals
+      .filter((signal) => signal.ruleId === "fastapi.auth.sensitive-route-without-guard")
+      .map((signal) => signal.metadata?.route);
+    const privilegeRoutes = report.signals
+      .filter((signal) => signal.ruleId === "fastapi.authorization.privileged-operation-without-role-check")
+      .map((signal) => signal.metadata?.route);
+    assert.deepEqual(authRoutes, ["POST /admin/alias-decoy", "POST /admin/optional-scoped"]);
+    assert.deepEqual(privilegeRoutes, ["POST /admin/dynamic-scopes", "POST /admin/empty-scopes"]);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("FastAPI privilege analysis understands callable and explicitly configured third-party RBAC dependencies", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-fastapi-callable-rbac-"));
+  try {
+    await writeFile(join(temporary, "main.py"), `
+from fastapi import Depends, FastAPI, HTTPException
+from vendor_rbac import Protected
+
+def get_current_user():
+    return load_principal()
+
+class PermissionGuard:
+    def __init__(self, required_permission):
+        self.required_permission = required_permission
+
+    async def __call__(self, user=Depends(get_current_user)):
+        if self.required_permission not in user.permissions:
+            raise HTTPException(status_code=403)
+        return user
+
+manage_guard = PermissionGuard("manage")
+app = FastAPI()
+
+@app.post("/admin/callable", dependencies=[Depends(manage_guard)])
+def callable_admin():
+    return run_admin_task()
+
+@app.post("/admin/vendor", dependencies=[Depends(Protected(required_roles=["admin"]))])
+def vendor_admin():
+    return run_admin_task()
+
+@app.post("/admin/disabled", dependencies=[Depends(Protected(required_roles=["admin"], enabled=False))])
+def disabled_admin():
+    return run_admin_task()
+
+@app.patch("/users/{user_id}", dependencies=[Depends(manage_guard)])
+def update_user(user_id, session=Depends(get_db)):
+    user = session.get(User, user_id)
+    return update(user)
+
+@app.post("/admin/unproven", dependencies=[Depends(Protected(required_roles=[]))])
+def unproven_admin():
+    return run_admin_task()
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const authRoutes = report.signals
+      .filter((signal) => signal.ruleId === "fastapi.auth.sensitive-route-without-guard")
+      .map((signal) => signal.metadata?.route);
+    assert.deepEqual(authRoutes, ["POST /admin/disabled", "POST /admin/unproven"]);
+    assert.ok(!report.signals.some((signal) => signal.ruleId === "fastapi.authorization.privileged-operation-without-role-check"));
+    assert.ok(!report.signals.some((signal) => signal.ruleId === "fastapi.authorization.object-without-ownership-check"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("FastAPI authentication distinguishes public token flows from token and user management", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-fastapi-public-auth-flows-"));
+  try {
+    await writeFile(join(temporary, "main.py"), `
+from fastapi import FastAPI
+
+app = FastAPI()
+
+@app.post("/token")
+def issue_token():
+    return create_access_token()
+
+@app.post("/token/2fa/fido2/begin")
+def begin_login():
+    return begin_fido_login()
+
+@app.post("/users/reset_password/finalize")
+def finalize_reset():
+    return consume_reset_code()
+
+@app.post("/password-recovery/{email}")
+def recover_password(email):
+    return issue_reset_code(email)
+
+@app.get("/token")
+def list_tokens():
+    return load_all_tokens()
+
+@app.get("/password-recovery/{email}")
+def inspect_password_recovery(email):
+    return load_reset_state(email)
+
+@app.post("/users")
+def create_managed_user():
+    return create_user()
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const authRoutes = report.signals
+      .filter((signal) => signal.ruleId === "fastapi.auth.sensitive-route-without-guard")
+      .map((signal) => signal.metadata?.route);
+    assert.deepEqual(authRoutes, ["GET /password-recovery/{email}", "GET /token", "POST /users"]);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("FastAPI analysis ignores route-like decorators inside triple-quoted disabled code", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-fastapi-disabled-route-"));
   try {
