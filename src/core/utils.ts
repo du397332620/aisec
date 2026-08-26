@@ -10,9 +10,13 @@ export function sha256(value: string | Buffer): string {
 }
 
 export function canonicalJson(value: unknown): string {
+  if (value === undefined || typeof value === "function" || typeof value === "symbol") return "null";
   if (value === null || typeof value !== "object") return JSON.stringify(value);
   if (Array.isArray(value)) return `[${value.map(canonicalJson).join(",")}]`;
   return `{${Object.entries(value as Record<string, unknown>)
+    .filter(([, nested]) => nested !== undefined
+      && typeof nested !== "function"
+      && typeof nested !== "symbol")
     .sort(([left], [right]) => left < right ? -1 : left > right ? 1 : 0)
     .map(([key, nested]) => `${JSON.stringify(key)}:${canonicalJson(nested)}`)
     .join(",")}}`;

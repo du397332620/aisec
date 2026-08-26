@@ -1,16 +1,18 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import type { BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaVerificationAudit, ScanReport } from "../src/schema.js";
+import type { BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaVerificationAudit, BolaVerificationLineageAudit, ScanReport } from "../src/schema.js";
 import {
   validateBolaAuthorizationCheck,
   validateBolaAuthorizationTemplate,
+  validateBolaDraftPlan,
   validateBolaVerificationAudit,
+  validateBolaVerificationLineageAudit,
   validateBolaVerificationReport,
 } from "../src/core/schema-validation.js";
 import { scanProject } from "../src/core/scan.js";
@@ -24,6 +26,12 @@ import {
   auditBolaVerification,
   loadBolaVerificationReport,
 } from "../src/web/bola-audit.js";
+import {
+  MAX_BOLA_LINEAGE_SCAN_REPORT_BYTES,
+  auditBolaLineage,
+  auditBolaVerificationLineage,
+  loadBolaLineageScanReport,
+} from "../src/web/bola-lineage-audit.js";
 import {
   MAX_BOLA_PREFLIGHT_DOCUMENT_BYTES,
   assertBolaVerificationPreflight,
@@ -760,7 +768,14 @@ test("verify-bola checks bound files before credentials or requests and executes
 test("audit-bola proves exact retained artifact binding offline and emits only a sanitized receipt", async (context) => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-bola-offline-audit-"));
   context.after(() => rm(temporary, { recursive: true, force: true }));
-  const template = createBolaAuthorizationTemplate(await selectedDraft());
+  const scan = await fastApiReport();
+  const sourceSignal = scan.signals.find((item) => item.ruleId === "fastapi.authorization.object-without-ownership-check");
+  assert.ok(sourceSignal?.metadata);
+  sourceSignal.metadata.routes = [String(sourceSignal.metadata.route), "GET /document/{report_id}"];
+  const queue = createInterfaceVerificationQueue(scan);
+  assert.ok(queue.candidates.length >= 2);
+  const draft = createSelectedBolaDraftPlan(scan, [queue.candidates[0]!.id]);
+  const template = createBolaAuthorizationTemplate(draft);
   const manifest = completedManifest(template);
   const currentReceipt = checkBolaAuthorization(manifest, template);
   const legacyReceipt = legacyBoundCheck(currentReceipt);
@@ -768,6 +783,10 @@ test("audit-bola proves exact retained artifact binding offline and emits only a
   const templatePath = join(temporary, "template.json");
   const checkPath = join(temporary, "check.json");
   const reportPath = join(temporary, "report.json");
+  const scanPath = join(temporary, "scan-report.json");
+  const draftPath = join(temporary, "selected-draft.json");
+  await writeFile(scanPath, `${JSON.stringify(scan)}\n`);
+  await writeFile(draftPath, `${JSON.stringify(draft)}\n`);
   await writeFile(manifestPath, `${JSON.stringify(manifest)}\n`);
   await writeFile(templatePath, `${JSON.stringify(template)}\n`);
 
@@ -1028,6 +1047,239 @@ test("audit-bola proves exact retained artifact binding offline and emits only a
   ]);
   assert.equal(unsupportedConfirm.code, 64);
   assert.match(unsupportedConfirm.stderr, /does not support --confirm/u);
+
+  await context.test("audit-bola-lineage proves the full retained chain without exposing source or active data", async () => {
+    const compatibleLegacyTemplate = legacyTemplate(template);
+    const compatibleLegacyReceipt = checkBolaAuthorization(manifest, compatibleLegacyTemplate);
+    const compatibleLegacyTemplatePath = join(temporary, "legacy-lineage-template.json");
+    const compatibleLegacyCheckPath = join(temporary, "legacy-lineage-check.json");
+    const compatibleLegacyReportPath = join(temporary, "legacy-lineage-report.json");
+    await writeFile(compatibleLegacyTemplatePath, `${JSON.stringify(compatibleLegacyTemplate)}\n`);
+    await writeFile(compatibleLegacyCheckPath, `${JSON.stringify(compatibleLegacyReceipt)}\n`);
+    const compatibleLegacyReport = await verifyBola(manifestPath, {
+      confirmed: true,
+      templatePath: compatibleLegacyTemplatePath,
+      checkPath: compatibleLegacyCheckPath,
+      environment: credentials,
+      requester,
+    });
+    await writeFile(compatibleLegacyReportPath, `${JSON.stringify(compatibleLegacyReport)}\n`);
+
+    const originalLineageEnvironment = process.env;
+    const originalLineageFetch = globalThis.fetch;
+    let lineageCredentialReads = 0;
+    let lineageFetchCalls = 0;
+    process.env = new Proxy(originalLineageEnvironment, {
+      get(target, property, receiver) {
+        if (typeof property === "string" && property.startsWith("AISEC_BOLA_")) {
+          lineageCredentialReads += 1;
+          throw new Error(`lineage audit read credential environment value ${property}`);
+        }
+        return Reflect.get(target, property, receiver) as unknown;
+      },
+    });
+    globalThis.fetch = (() => {
+      lineageFetchCalls += 1;
+      throw new Error("audit-bola-lineage must never call fetch");
+    }) as typeof fetch;
+    try {
+      const direct = auditBolaVerificationLineage(
+        scan,
+        draft,
+        manifest,
+        template,
+        currentReceipt,
+        currentReport,
+      );
+      const loaded = await auditBolaLineage({
+        scanReportPath: scanPath,
+        draftPath,
+        authorizationPath: manifestPath,
+        templatePath,
+        checkPath,
+        reportPath,
+      });
+      assert.equal(validateBolaVerificationLineageAudit(direct), direct);
+      assert.equal(validateBolaVerificationLineageAudit(loaded), loaded);
+      assert.equal(loaded.schemaVersion, "1.0.0");
+      assert.equal(loaded.status, "lineage_verified");
+      assert.equal(loaded.lineageAuditId, direct.lineageAuditId);
+      assert.equal(loaded.scan.scanId, scan.scanId);
+      assert.equal(loaded.scan.projectId, scan.profile.projectId);
+      assert.equal(loaded.queue.queueId, queue.queueId);
+      assert.equal(loaded.queue.selectedCandidates, 1);
+      assert.equal(loaded.draft.draftId, draft.draftId);
+      assert.equal(loaded.template.templateId, template.templateId);
+      assert.equal(loaded.verificationAudit.auditId, auditBolaVerification(
+        manifest,
+        template,
+        currentReceipt,
+        currentReport,
+      ).auditId);
+      assert.deepEqual(loaded.io, {
+        environmentValuesRead: 0,
+        dnsLookups: 0,
+        requesterCalls: 0,
+        networkRequests: 0,
+      });
+      const compatibleLegacy = await auditBolaLineage({
+        scanReportPath: scanPath,
+        draftPath,
+        authorizationPath: manifestPath,
+        templatePath: compatibleLegacyTemplatePath,
+        checkPath: compatibleLegacyCheckPath,
+        reportPath: compatibleLegacyReportPath,
+      });
+      assert.equal(compatibleLegacy.template.schemaVersion, "1.0.0");
+      assert.equal(compatibleLegacy.status, "lineage_verified");
+
+      const reorderedScan = Object.fromEntries(Object.entries(scan).reverse());
+      const reorderedDraft = Object.fromEntries(Object.entries(draft).reverse());
+      const reordered = auditBolaVerificationLineage(
+        reorderedScan,
+        reorderedDraft,
+        manifest,
+        template,
+        currentReceipt,
+        currentReport,
+      );
+      assert.equal(reordered.scan.digestSha256, direct.scan.digestSha256);
+      assert.equal(reordered.draft.digestSha256, direct.draft.digestSha256);
+      assert.equal(reordered.lineageAuditId, direct.lineageAuditId);
+
+      const serialized = JSON.stringify(loaded);
+      for (const forbidden of [
+        scan.target,
+        queue.candidates[0]!.route,
+        draft.candidates[0]!.path,
+        draft.candidates[0]!.handler,
+        draft.candidates[0]!.source.location.path,
+        draft.candidates[0]!.source.ruleId,
+        manifest.targetBaseUrl,
+        manifest.cases[0]!.testDataLabel,
+        credentials.AISEC_BOLA_BINDING_OWNER_USERNAME,
+        "audit-owner-token",
+        "audit-forbidden-response",
+        ...currentReport.cases.map((item) => item.reason),
+      ]) assert.ok(!serialized.includes(forbidden), `lineage audit leaked ${forbidden}`);
+      assert.equal(lineageCredentialReads, 0);
+      assert.equal(lineageFetchCalls, 0);
+
+      const forgedDraft = structuredClone(draft);
+      forgedDraft.candidates[0]!.handler = "forged.handler";
+      assert.doesNotThrow(() => validateBolaDraftPlan(forgedDraft));
+      assert.throws(
+        () => auditBolaVerificationLineage(scan, forgedDraft, manifest, template, currentReceipt, currentReport),
+        /selected draft does not match the regenerated scan selection/u,
+      );
+
+      const changedScan = structuredClone(scan);
+      const changedSignal = changedScan.signals.find((item) => item.id === draft.candidates[0]!.source.signalId);
+      assert.ok(changedSignal?.metadata);
+      changedSignal.metadata.handler = "changed.scan.handler";
+      assert.throws(
+        () => auditBolaVerificationLineage(changedScan, draft, manifest, template, currentReceipt, currentReport),
+        /selected draft does not match the regenerated scan selection/u,
+      );
+
+      const otherDraft = createSelectedBolaDraftPlan(scan, [queue.candidates[1]!.id]);
+      assert.throws(
+        () => auditBolaVerificationLineage(scan, otherDraft, manifest, template, currentReceipt, currentReport),
+        /authorization template does not match the selected draft/u,
+      );
+
+      const legacyDraft = createBolaDraftPlan(scan);
+      assert.throws(
+        () => auditBolaVerificationLineage(scan, legacyDraft, manifest, template, currentReceipt, currentReport),
+        /requires a selected BolaDraftPlan 1\.1\.0/u,
+      );
+
+      const forgedLineageId = structuredClone(loaded);
+      forgedLineageId.lineageAuditId = "bola_lineage_audit_0000000000000000";
+      assert.throws(
+        () => validateBolaVerificationLineageAudit(forgedLineageId),
+        /stable lineage audit ID is inconsistent/u,
+      );
+      const forgedCount = structuredClone(loaded);
+      forgedCount.queue.selectedCandidates += 1;
+      assert.throws(
+        () => validateBolaVerificationLineageAudit(forgedCount),
+        /selected candidate total is inconsistent/u,
+      );
+      const leakedLineage = structuredClone(loaded) as BolaVerificationLineageAudit & { target?: string };
+      leakedLineage.target = manifest.targetBaseUrl;
+      assert.throws(
+        () => validateBolaVerificationLineageAudit(leakedLineage),
+        /additional properties.*target/u,
+      );
+    } finally {
+      process.env = originalLineageEnvironment;
+      globalThis.fetch = originalLineageFetch;
+    }
+
+    assert.deepEqual(
+      await loadBolaLineageScanReport(scanPath),
+      JSON.parse(JSON.stringify(scan)) as ScanReport,
+    );
+    const invalidScanPath = join(temporary, "invalid-scan.json");
+    await writeFile(invalidScanPath, "schemaVersion: 1.4.0\n");
+    await assert.rejects(() => loadBolaLineageScanReport(invalidScanPath), /valid JSON/u);
+    const oversizedScanPath = join(temporary, "oversized-scan.json");
+    await writeFile(oversizedScanPath, "{}");
+    await truncate(oversizedScanPath, MAX_BOLA_LINEAGE_SCAN_REPORT_BYTES + 1);
+    await assert.rejects(
+      () => loadBolaLineageScanReport(oversizedScanPath),
+      /exceeds 67108864 bytes/u,
+    );
+    await assert.rejects(() => loadBolaLineageScanReport(temporary), /regular file/u);
+
+    const lineageCli = await runAudit([
+      "audit-bola-lineage",
+      "--scan-report", scanPath,
+      "--draft", draftPath,
+      "--authorization", manifestPath,
+      "--template", templatePath,
+      "--check", checkPath,
+      "--report", reportPath,
+    ]);
+    assert.equal(lineageCli.code, 0, lineageCli.stderr);
+    const lineageJson: unknown = JSON.parse(lineageCli.stdout);
+    assert.equal(validateBolaVerificationLineageAudit(lineageJson), lineageJson);
+    const missingDraft = await runAudit([
+      "audit-bola-lineage",
+      "--scan-report", scanPath,
+      "--authorization", manifestPath,
+      "--template", templatePath,
+      "--check", checkPath,
+      "--report", reportPath,
+    ]);
+    assert.equal(missingDraft.code, 64);
+    assert.match(missingDraft.stderr, /--draft is required/u);
+    const duplicateScan = await runAudit([
+      "audit-bola-lineage",
+      "--scan-report", scanPath,
+      "--scan-report", scanPath,
+      "--draft", draftPath,
+      "--authorization", manifestPath,
+      "--template", templatePath,
+      "--check", checkPath,
+      "--report", reportPath,
+    ]);
+    assert.equal(duplicateScan.code, 64);
+    assert.match(duplicateScan.stderr, /accepts --scan-report at most once/u);
+    const unsupportedConfirmation = await runAudit([
+      "audit-bola-lineage",
+      "--scan-report", scanPath,
+      "--draft", draftPath,
+      "--authorization", manifestPath,
+      "--template", templatePath,
+      "--check", checkPath,
+      "--report", reportPath,
+      "--confirm",
+    ]);
+    assert.equal(unsupportedConfirmation.code, 64);
+    assert.match(unsupportedConfirmation.stderr, /does not support --confirm/u);
+  });
 });
 
 test("template binding accepts concrete GET route forms and rejects ambiguous route changes", async () => {

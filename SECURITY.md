@@ -178,6 +178,19 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   This local consistency record is not a signature, origin/freshness proof or
   proof that the recorded observations occurred. Legacy report 1.0 is not
   eligible because it cannot claim preflight provenance.
+- `audit-bola-lineage` additionally accepts a strict JSON ScanReport regular
+  file capped at 64 MiB and a selected draft 1.1 regular JSON file capped at
+  1 MiB. It regenerates the interface queue and ordered selected draft from the
+  exact report, compares deterministic draft fields and template source
+  semantics, then reuses the complete `audit-bola` result. It reads no
+  credential values, resolves no DNS, invokes no requester, executes no target
+  code and sends no request. Its strict `BolaVerificationLineageAudit 1.0.0`
+  output exposes only stable IDs, canonical digests, timestamps, aggregate
+  counts, fixed assertions and zero-I/O counters; target/route/source details,
+  rule/finding evidence and active-test data are excluded. The receipt proves
+  retained-file consistency only, not authorship, origin, freshness, scan
+  execution or observation authenticity. Legacy unselected draft 1.0 is not
+  eligible because it has no interface-queue selection binding.
 - Passive web requests pin a validated DNS answer to the socket and redirects
   must retain the exact authorized origin. Local verification is deliberately
   allowed to reach private addresses; staging/test verification is not.

@@ -2,14 +2,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import type { AuthorizationManifest, BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaDraftPlan, BolaVerificationAudit, BolaVerificationReport, CiReport, FixContract, InterfaceVerificationQueue, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
+import type { AuthorizationManifest, BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaDraftPlan, BolaVerificationAudit, BolaVerificationLineageAudit, BolaVerificationReport, CiReport, FixContract, InterfaceVerificationQueue, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
 import { ROUTE_SECURITY_RULES, routeSecurityIssueKey } from "./route-security.js";
 import { evaluateRouteSecurityBaselineGate } from "./route-security-gate.js";
 import { safeRelativePath } from "../reporters/safety.js";
 import { classifyBolaStaticRoute } from "../web/bola-policy.js";
 import { stableId } from "./utils.js";
 
-type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "BolaVerificationReport" | "BolaVerificationAudit" | "InterfaceVerificationQueue" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
+type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "BolaVerificationReport" | "BolaVerificationAudit" | "BolaVerificationLineageAudit" | "InterfaceVerificationQueue" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
 
 function loadSchema(filename: string): object {
   const path = fileURLToPath(new URL(`../../../schemas/${filename}`, import.meta.url));
@@ -30,6 +30,7 @@ const bolaAuthorizationCheckValidator = ajv.compile(loadSchema("bola-authorizati
 const bolaDraftPlanValidator = ajv.compile(loadSchema("bola-draft.schema.json"));
 const bolaVerificationReportValidator = ajv.compile(loadSchema("bola-verification-report.schema.json"));
 const bolaVerificationAuditValidator = ajv.compile(loadSchema("bola-verification-audit.schema.json"));
+const bolaVerificationLineageAuditValidator = ajv.compile(loadSchema("bola-verification-lineage-audit.schema.json"));
 const interfaceVerificationQueueValidator = ajv.compile(loadSchema("interface-verification-queue.schema.json"));
 const ruleCatalogValidator = ajv.compile(loadSchema("rule-catalog.schema.json"));
 const rulePackValidator = ajv.compile(loadSchema("rule-pack.schema.json"));
@@ -681,6 +682,53 @@ export function validateBolaVerificationAudit(value: unknown): BolaVerificationA
   );
   if (audit.auditId !== expectedAuditId) {
     throw new Error("BolaVerificationAudit stable audit ID is inconsistent");
+  }
+  return audit;
+}
+
+export function validateBolaVerificationLineageAudit(
+  value: unknown,
+): BolaVerificationLineageAudit {
+  const audit = assertSchema<BolaVerificationLineageAudit>(
+    "BolaVerificationLineageAudit",
+    bolaVerificationLineageAuditValidator,
+    value,
+  );
+  if (audit.queue.reviewedRoutes !== audit.queue.eligibleRoutes + audit.queue.excludedRoutes) {
+    throw new Error("BolaVerificationLineageAudit route totals are inconsistent");
+  }
+  if (audit.queue.selectedCandidates !== audit.draft.selectedCandidates
+    || audit.queue.selectedCandidates > audit.queue.eligibleRoutes) {
+    throw new Error("BolaVerificationLineageAudit selected candidate total is inconsistent");
+  }
+  const expectedLineageAuditId = stableId(
+    "bola_lineage_audit",
+    audit.scan.schemaVersion,
+    audit.scan.scanId,
+    audit.scan.projectId,
+    audit.scan.digestSha256,
+    audit.queue.schemaVersion,
+    audit.queue.queueId,
+    audit.queue.coverageStatus,
+    audit.queue.coverageScope,
+    String(audit.queue.reviewedRoutes),
+    String(audit.queue.eligibleRoutes),
+    String(audit.queue.excludedRoutes),
+    String(audit.queue.selectedCandidates),
+    audit.draft.schemaVersion,
+    audit.draft.draftId,
+    audit.draft.generatedAt,
+    audit.draft.digestSha256,
+    audit.template.schemaVersion,
+    audit.template.templateId,
+    audit.template.digestSha256,
+    audit.verificationAudit.schemaVersion,
+    audit.verificationAudit.auditId,
+    audit.verificationAudit.verificationId,
+    audit.verificationAudit.reportDigestSha256,
+  );
+  if (audit.lineageAuditId !== expectedLineageAuditId) {
+    throw new Error("BolaVerificationLineageAudit stable lineage audit ID is inconsistent");
   }
   return audit;
 }

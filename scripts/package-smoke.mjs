@@ -128,6 +128,7 @@ try {
   assert.ok(packedPaths.has("schemas/bola-authorization-check.schema.json"), "BOLA authorization check schema must be packaged");
   assert.ok(packedPaths.has("schemas/bola-verification-report.schema.json"), "BOLA verification report schema must be packaged");
   assert.ok(packedPaths.has("schemas/bola-verification-audit.schema.json"), "BOLA verification audit schema must be packaged");
+  assert.ok(packedPaths.has("schemas/bola-verification-lineage-audit.schema.json"), "BOLA verification lineage audit schema must be packaged");
   assert.ok(packedPaths.has("examples/security-policy.example.yml"), "trusted policy example must be packaged");
   assert.ok(packedPaths.has("examples/rule-pack.example.yml"), "declarative rule-pack example must be packaged");
   assert.ok(![...packedPaths].some((path) => path.startsWith("docs/") || path.startsWith(".scratch/")), "local progress documents must stay out of the npm package");
@@ -159,6 +160,7 @@ try {
   await access(join(packageRoot, "schemas", "bola-authorization-check.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "bola-verification-report.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "bola-verification-audit.schema.json"), constants.R_OK);
+  await access(join(packageRoot, "schemas", "bola-verification-lineage-audit.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "rule-catalog.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "rule-pack.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "rule-pack-preview.schema.json"), constants.R_OK);
@@ -221,6 +223,7 @@ try {
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /--template same-template\.json/);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /verify-bola --authorization <manifest\.yml> --template <same-template\.json> --check <authorization-check\.json> --confirm/);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /audit-bola --authorization <same-manifest\.yml> --template <same-template\.json> --check <authorization-check\.json> --report <verification-report\.json>/);
+  assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /audit-bola-lineage --scan-report <scan-report\.json> --draft <selected-draft\.json> --authorization <same-manifest\.yml>/);
 
   process.stdout.write("Running the installed CLI against safe and vulnerable fixtures...\n");
   const safe = parseReport(run(executable, [
@@ -470,7 +473,8 @@ suppressions: []
     "--eval",
     `import { readFileSync, writeFileSync } from "node:fs";
 import * as rootApi from ${JSON.stringify(packageMetadata.name)};
-import { assertBolaVerificationPreflight, auditBola, auditBolaVerification, checkBola, createBolaAuthorizationTemplate, loadBolaAuthorizationCheck, loadBolaAuthorizationTemplate, loadBolaVerificationReport, validateBolaAuthorizationCheck, validateBolaAuthorizationTemplate, validateBolaVerificationAudit, validateBolaVerificationReport, verifyBola } from ${JSON.stringify(packageMetadata.name)};
+import { assertBolaVerificationPreflight, auditBola, auditBolaLineage, auditBolaVerification, auditBolaVerificationLineage, checkBola, createBolaAuthorizationTemplate, loadBolaAuthorizationCheck, loadBolaAuthorizationTemplate, loadBolaVerificationReport, validateBolaAuthorizationCheck, validateBolaAuthorizationTemplate, validateBolaVerificationAudit, validateBolaVerificationLineageAudit, validateBolaVerificationReport, verifyBola } from ${JSON.stringify(packageMetadata.name)};
+const scan = JSON.parse(readFileSync(${JSON.stringify(selectedSourcePath)}, "utf8"));
 const draft = JSON.parse(readFileSync(${JSON.stringify(selectedDraftPath)}, "utf8"));
 const manifest = JSON.parse(readFileSync(${JSON.stringify(completedAuthorizationPath)}, "utf8"));
 const template = validateBolaAuthorizationTemplate(createBolaAuthorizationTemplate(draft));
@@ -525,12 +529,23 @@ const savedAudit = validateBolaVerificationAudit(await auditBola(${JSON.stringif
   checkPath: ${JSON.stringify(authorizationCheckPath)},
   reportPath: ${JSON.stringify(verificationReportPath)},
 }));
+const directLineage = validateBolaVerificationLineageAudit(auditBolaVerificationLineage(scan, draft, manifest, loaded, receipt, active));
+const savedLineage = validateBolaVerificationLineageAudit(await auditBolaLineage({
+  scanReportPath: ${JSON.stringify(selectedSourcePath)},
+  draftPath: ${JSON.stringify(selectedDraftPath)},
+  authorizationPath: ${JSON.stringify(completedAuthorizationPath)},
+  templatePath: ${JSON.stringify(authorizationTemplatePath)},
+  checkPath: ${JSON.stringify(authorizationCheckPath)},
+  reportPath: ${JSON.stringify(verificationReportPath)},
+}));
 const serialized = JSON.stringify(active);
 const provenance = JSON.stringify(active.provenance);
 const auditSerialized = JSON.stringify(savedAudit);
+const lineageSerialized = JSON.stringify(savedLineage);
 const sanitized = ![...Object.values(environment), "owner-token", "other-token", "owner-id", "other-id", "installed-private-response"].some((value) => serialized.includes(value));
 const provenanceSanitized = !/127\\.0\\.0\\.1|\\/auth\\/login|\\/project\\/detail|920000|AISEC_BOLA/u.test(provenance);
 const auditSanitized = !/127\\.0\\.0\\.1|\\/auth\\/login|\\/project\\/detail|920000|AISEC_BOLA|fixture_owner|owner-token|owner-id|installed-private-response/u.test(auditSerialized);
+const lineageSanitized = !["127.0.0.1", "/auth/login", "/project/detail", "main.py", "fastapi.authorization", "920000", "AISEC_BOLA", "fixture_owner", "owner-token", "owner-id", "installed-private-response"].some((value) => lineageSerialized.includes(value));
 process.stdout.write(JSON.stringify({
   template: template.status,
   loaded: loaded.templateId === template.templateId,
@@ -552,6 +567,11 @@ process.stdout.write(JSON.stringify({
   auditMatch: savedAudit.auditId === directAudit.auditId,
   auditRequests: savedAudit.io.networkRequests + savedAudit.io.requesterCalls,
   auditSanitized,
+  lineageVersion: savedLineage.schemaVersion,
+  lineageStatus: savedLineage.status,
+  lineageMatch: savedLineage.lineageAuditId === directLineage.lineageAuditId,
+  lineageRequests: savedLineage.io.networkRequests + savedLineage.io.requesterCalls,
+  lineageSanitized,
   lowLevelExported: Object.hasOwn(rootApi, "executeBolaVerification"),
 }));`,
   ], { cwd: consumer, env: scanEnvironment }), "installed BOLA preflight API");
@@ -576,6 +596,11 @@ process.stdout.write(JSON.stringify({
     auditMatch: true,
     auditRequests: 0,
     auditSanitized: true,
+    lineageVersion: "1.0.0",
+    lineageStatus: "lineage_verified",
+    lineageMatch: true,
+    lineageRequests: 0,
+    lineageSanitized: true,
     lowLevelExported: false,
   });
 
@@ -595,6 +620,30 @@ process.stdout.write(JSON.stringify({
   assert.equal(installedAudit.io.networkRequests, 0);
   assert.equal(installedAudit.io.requesterCalls, 0);
   assert.doesNotMatch(JSON.stringify(installedAudit), /127\.0\.0\.1|\/project\/detail|920000|AISEC_BOLA/u);
+
+  const installedLineageAudit = parseReport(run(executable, [
+    "audit-bola-lineage",
+    "--scan-report",
+    selectedSourcePath,
+    "--draft",
+    selectedDraftPath,
+    "--authorization",
+    completedAuthorizationPath,
+    "--template",
+    authorizationTemplatePath,
+    "--check",
+    authorizationCheckPath,
+    "--report",
+    verificationReportPath,
+  ], { cwd: consumer, env: scanEnvironment }), "installed offline BOLA lineage audit");
+  assert.equal(installedLineageAudit.schemaVersion, "1.0.0");
+  assert.equal(installedLineageAudit.status, "lineage_verified");
+  assert.equal(installedLineageAudit.io.networkRequests, 0);
+  assert.equal(installedLineageAudit.io.requesterCalls, 0);
+  assert.doesNotMatch(
+    JSON.stringify(installedLineageAudit),
+    /127\.0\.0\.1|\/project\/detail|main\.py|fastapi\.authorization|920000|AISEC_BOLA/u,
+  );
 
   process.stdout.write("Running the public corpus from inside the installed package...\n");
   const benchmarkOutput = run(process.execPath, [join(packageRoot, "dist", "src", "benchmark.js")], {

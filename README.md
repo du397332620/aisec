@@ -285,6 +285,7 @@ aisec check-bola --authorization <completed-manifest.yml> --template <same-templ
 aisec verify-web --authorization authorization.yml --confirm
 aisec verify-bola --authorization bola-authorization.yml --template same-template.json --check bola-authorization-check.json --confirm
 aisec audit-bola --authorization bola-authorization.yml --template same-template.json --check bola-authorization-check.json --report bola-report.json
+aisec audit-bola-lineage --scan-report scan-report.json --draft selected-bola-draft.json --authorization bola-authorization.yml --template same-template.json --check bola-authorization-check.json --report bola-report.json
 aisec doctor
 aisec engines status
 aisec engines prepare trivy [--timeout-ms 600000]
@@ -695,6 +696,7 @@ accepted suppressions for compatible consumers.
 | BOLA authorization preflight | `prepare-bola` / `check-bola` | Converts only a selected 1.1 worksheet into a strict, deliberately non-executable template, then validates a separately completed manifest offline. Passing that unchanged template back to `check-bola` proves exact case order, method, route-template, object-field and evidence-mode binding and produces a saved 1.2 receipt. Each input is limited to 1 MiB; no credential values are read and no DNS or requests occur |
 | Two-account BOLA verification | `verify-bola` | Requires the same manifest, unchanged template, matching bound 1.1/1.2 receipt and explicit confirmation before credential access or networking; emits a strict `BolaVerificationReport 1.1.0` bound to sanitized receipt/template provenance and ordered cases; exact non-production target, two low-privilege test accounts and pre-created labeled objects; fixed read-only cases only, no ID enumeration or mutation |
 | Offline BOLA result audit | `audit-bola` | Revalidates a saved report against the retained manifest, unchanged template and bound 1.1/1.2 receipt without credentials, DNS, requester calls or network access; emits a strict sanitized `BolaVerificationAudit 1.0.0` bound to the canonical report digest and exact source fields |
+| Offline BOLA scan-to-result lineage audit | `audit-bola-lineage` | Adds the retained strict ScanReport and selected draft, regenerates the interface queue/draft and proves template source semantics before reusing the complete result audit; emits sanitized `BolaVerificationLineageAudit 1.0.0` with zero credential/requester/DNS/network I/O |
 | Agent integration | stdio MCP | Local read-oriented inspection, bounded rule-pack selector previews, scans, stored reports, fix contracts and rescans; no Web verification or automatic code changes |
 | Reports and release decisions | CLI / JSON / HTML / SARIF / CI JSON / GitHub / Markdown | Strict, bounded CI output plus coverage-aware `block`, `incomplete`, `review`, or `no_blockers_found`; terminal/HTML can group opted-in repeated evidence, derive exact-route security cards and summarize Trivy dependency/IaC/secret evidence by recorded relationship and fix context while retaining every canonical finding; terminal/HTML/CI Markdown keep unattributed FastAPI dataflow visible with bounded reason summaries, and rescans compare exact route/category gaps as newly observed, remaining, resolved or not rechecked without treating suppression as a fix; deployment exposure stays explicitly project-level unless service-to-route ownership is proven; workflow annotations use safe relative paths and escaped project-controlled text; never certification |
 
@@ -1032,6 +1034,44 @@ consistency only: it is not a signature or origin/freshness proof, does not
 authenticate that the recorded requests occurred, and does not turn a
 protected case into proof that a route or system is secure.
 
+## Offline BOLA scan-to-result lineage audit
+
+To extend that check back to the original static evidence, retain the exact
+ScanReport JSON and selected `BolaDraftPlan 1.1.0` used to create the template:
+
+```bash
+aisec audit-bola-lineage \
+  --scan-report scan-report.json \
+  --draft selected-bola-draft.json \
+  --authorization bola-authorization.yml \
+  --template bola-authorization-template.json \
+  --check bola-authorization-check.json \
+  --report bola-report.json \
+  --output bola-lineage-audit.json
+```
+
+`audit-bola-lineage` strictly loads the ScanReport as JSON from a regular file
+of at most 64 MiB; the selected draft and the existing four downstream inputs
+retain their 1 MiB limits. It regenerates `InterfaceVerificationQueue 1.0.0`
+from the exact report, reruns the ordered selected-draft generation, compares
+every deterministic draft field, and proves the unchanged template's selection,
+placeholder manifest and case bindings were derived from that draft. The draft
+generation timestamp is retained as recorded data rather than regenerated.
+Legacy all-candidate draft 1.0 is rejected because it has no queue selection
+binding. Strict legacy template 1.0 remains acceptable when its source semantics
+and all downstream artifacts still match.
+
+The command then reuses the complete `audit-bola` check and binds that stable
+audit ID plus the canonical scan, draft, template and report digests into strict
+`BolaVerificationLineageAudit 1.0.0`. Its output exposes only versions, stable
+IDs, digests, timestamps, coverage/aggregate counts, fixed binding assertions
+and zero-I/O counters—not targets, routes, source paths/snippets, rules,
+findings, object/fixture values, credentials, identities, tokens, responses or
+case reasons. It accepts no `--confirm`, reads no credential values, performs no
+DNS lookup, invokes no requester and sends no request. As with the shorter
+audit, matching files prove only local consistency; hashes do not authenticate
+who produced the artifacts or whether the scan and recorded requests occurred.
+
 ## Findings, suppressions and fixes
 
 Evidence is classified as:
@@ -1093,7 +1133,7 @@ as resolved, with no new high/critical finding.
 
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, CI
 reports, fix contracts, the rule catalog, declarative rule packs and their selector previews, trusted security policies, passive-web
-authorization, the bounded `InterfaceVerificationQueue 1.0.0`, `BolaDraftPlan 1.1.0` and legacy 1.0 BOLA draft plans, `BolaAuthorizationTemplate 1.1.0`, `BolaAuthorizationCheck 1.2.0`, its strict bound 1.1 predecessor, their strict legacy 1.0 forms, BOLA authorization manifests, `BolaVerificationReport 1.1.0` with its strict legacy 1.0 form, and `BolaVerificationAudit 1.0.0` in
+authorization, the bounded `InterfaceVerificationQueue 1.0.0`, `BolaDraftPlan 1.1.0` and legacy 1.0 BOLA draft plans, `BolaAuthorizationTemplate 1.1.0`, `BolaAuthorizationCheck 1.2.0`, its strict bound 1.1 predecessor, their strict legacy 1.0 forms, BOLA authorization manifests, `BolaVerificationReport 1.1.0` with its strict legacy 1.0 form, `BolaVerificationAudit 1.0.0`, and `BolaVerificationLineageAudit 1.0.0` in
 [`schemas/`](schemas/). `SecurityPolicy 1.1.0` adds the optional additive
 route-security baseline gate and strictly preserves legacy `1.0.0` policies.
 `RulePack 1.1.0` adds bounded required-literal absence
@@ -1118,6 +1158,10 @@ active handoff was checked.
 provenance-bound report against the retained manifest/template/check artifacts;
 its canonical report digest and stable audit ID bind the local record without
 claiming cryptographic authorship, origin, freshness or observation authenticity.
+`BolaVerificationLineageAudit 1.0.0` additionally regenerates the interface
+queue and selected draft from a retained ScanReport, verifies template source
+semantics, and binds the resulting shorter audit into a sanitized scan-to-result
+receipt. It likewise proves consistency only, not authenticity or execution.
 `CiReport 1.1.0` added rule-pack records, `CiReport 1.2.0` added the required
 FastAPI route-attribution summary, `CiReport 1.3.0` added a required bounded
 route-security comparison whenever baseline counts are present, and `CiReport
@@ -1146,6 +1190,8 @@ The package also exports `validateScanReport`, `validateCiReport`,
 `checkBolaAuthorization`, `checkBola`, `assertBolaVerificationPreflight`,
 `verifyBola`, `validateBolaVerificationReport`, `loadBolaVerificationReport`,
 `auditBolaVerification`, `auditBola`, `validateBolaVerificationAudit`,
+`auditBolaVerificationLineage`, `auditBolaLineage`,
+`loadBolaLineageScanReport`, `validateBolaVerificationLineageAudit`,
 `validateAuthorizationManifestSchema`, `validateBolaDraftPlan`,
 `validateBolaAuthorizationTemplate`, `validateBolaAuthorizationCheck` and
 `validateBolaAuthorizationManifestSchema` for integrations that consume these
@@ -1225,6 +1271,12 @@ boundary.
   reads no credential values, resolves no DNS, invokes no requester and sends no
   request. Its sanitized receipt binds a canonical digest of the complete report
   while omitting the concrete target, route, fixture and response details.
+- `audit-bola-lineage` adds a regular-file ScanReport capped at 64 MiB and a
+  selected draft capped at 1 MiB. It regenerates the queue/draft and proves the
+  template source binding before reusing the complete four-artifact audit. It
+  remains a zero-credential, zero-DNS, zero-request offline transformation and
+  omits targets, routes, source locations, rule/finding evidence and all active
+  data from its sanitized lineage receipt.
 - APK/IPA inspection validates every listed path, prioritizes at most 25 supported
   members, and streams each selected member through `unzip` without extracting it
   onto disk. Binary recovery is capped at 8 MiB per member and 16 MiB aggregate

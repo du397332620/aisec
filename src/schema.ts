@@ -9,6 +9,7 @@ export const BOLA_AUTHORIZATION_CHECK_LEGACY_BOUND_SCHEMA_VERSION = "1.1.0" as c
 export const BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION = "1.2.0" as const;
 export const BOLA_VERIFICATION_REPORT_SCHEMA_VERSION = "1.1.0" as const;
 export const BOLA_VERIFICATION_AUDIT_SCHEMA_VERSION = "1.0.0" as const;
+export const BOLA_VERIFICATION_LINEAGE_AUDIT_SCHEMA_VERSION = "1.0.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type EvidenceLevel = "verified" | "static_confirmed" | "inferred";
@@ -808,6 +809,69 @@ export interface BolaVerificationAudit {
     "This audit proves local structural and digest consistency only; stable IDs and digests are not signatures and do not authenticate author, origin or freshness.",
     "This audit does not replay requests or prove that the recorded network observations occurred or still describe the service.",
     "A protected listed case is not proof that the route or system is secure beyond the exact recorded verification scope.",
+  ];
+}
+
+export interface BolaVerificationLineageAudit {
+  schemaVersion: typeof BOLA_VERIFICATION_LINEAGE_AUDIT_SCHEMA_VERSION;
+  lineageAuditId: string;
+  auditedAt: string;
+  status: "lineage_verified";
+  scan: {
+    schemaVersion: ScanReport["schemaVersion"];
+    scanId: string;
+    projectId: string;
+    digestSha256: string;
+  };
+  queue: {
+    schemaVersion: typeof INTERFACE_VERIFICATION_QUEUE_SCHEMA_VERSION;
+    queueId: string;
+    coverageStatus: "complete" | "partial";
+    coverageScope: "observed_route_cards_only";
+    reviewedRoutes: number;
+    eligibleRoutes: number;
+    excludedRoutes: number;
+    selectedCandidates: number;
+  };
+  draft: {
+    schemaVersion: typeof BOLA_DRAFT_SCHEMA_VERSION;
+    draftId: string;
+    generatedAt: string;
+    digestSha256: string;
+    selectedCandidates: number;
+  };
+  template: {
+    schemaVersion:
+      | typeof SCHEMA_VERSION
+      | typeof BOLA_AUTHORIZATION_TEMPLATE_SCHEMA_VERSION;
+    templateId: string;
+    digestSha256: string;
+  };
+  verificationAudit: {
+    schemaVersion: typeof BOLA_VERIFICATION_AUDIT_SCHEMA_VERSION;
+    auditId: string;
+    verificationId: string;
+    reportDigestSha256: string;
+  };
+  binding: {
+    scanReport: true;
+    regeneratedQueue: true;
+    selectedDraft: true;
+    draftTemplate: true;
+    retainedArtifacts: true;
+    exactCandidateOrder: true;
+    exactSourceEvidence: true;
+  };
+  io: {
+    environmentValuesRead: 0;
+    dnsLookups: 0;
+    requesterCalls: 0;
+    networkRequests: 0;
+  };
+  limitations: [
+    "This lineage audit proves consistency among the exact retained files only; stable IDs and digests are not signatures and do not authenticate author, origin or freshness.",
+    "This lineage audit does not execute target code, replay requests or prove that the recorded scan and network observations occurred.",
+    "Static selection and protected listed cases do not prove that a route or system is secure or exploitable beyond the exact recorded scope.",
   ];
 }
 

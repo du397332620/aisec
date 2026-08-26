@@ -12,6 +12,7 @@ import { renderFixContract } from "./reporters/terminal.js";
 import { verifyWeb } from "./web/verify.js";
 import { verifyBola } from "./web/bola.js";
 import { auditBola } from "./web/bola-audit.js";
+import { auditBolaLineage } from "./web/bola-lineage-audit.js";
 import { draftBola } from "./web/bola-draft.js";
 import { checkBola, prepareBola } from "./web/bola-preflight.js";
 import { interfaceVerificationQueue } from "./web/interface-verification-queue.js";
@@ -35,6 +36,7 @@ Usage:
   aisec prepare-bola --draft <selected-bola-draft.json> [--output file]
   aisec check-bola --authorization <completed-manifest.yml> [--template same-template.json] [--output file]
   aisec audit-bola --authorization <same-manifest.yml> --template <same-template.json> --check <authorization-check.json> --report <verification-report.json> [--output file]
+  aisec audit-bola-lineage --scan-report <scan-report.json> --draft <selected-draft.json> --authorization <same-manifest.yml> --template <same-template.json> --check <authorization-check.json> --report <verification-report.json> [--output file]
   aisec verify-web --authorization <manifest.yml> --confirm [--output file]
   aisec verify-bola --authorization <manifest.yml> --template <same-template.json> --check <authorization-check.json> --confirm [--output file]
   aisec rule-pack check [path] --rule-pack <trusted-rules.yml> [--format terminal|json] [--output file]
@@ -51,9 +53,11 @@ Scan safety:
   engines without changing the selected profile's artifact policy.
   Defaults: --max-files 20000, --max-file-bytes 2097152,
   --max-total-bytes 67108864, --timeout-ms 120000, at most 10 artifacts.
-  prepare-bola and every BOLA manifest/template/check/report input accept at most 1 MiB.
+  prepare-bola and every BOLA draft/manifest/template/check/report input accept at most 1 MiB.
+  audit-bola-lineage accepts a strict ScanReport JSON file at most 64 MiB.
   Preflight reads no credential values, resolves no DNS and sends no requests.
   audit-bola rechecks retained artifacts offline and emits a sanitized audit receipt.
+  audit-bola-lineage also regenerates the scan queue, selected draft and template source binding.
   verify-bola recomputes the saved bound check before crossing that boundary.
   Its strict 1.1 result binds sanitized receipt/template provenance to case order.
 
@@ -219,6 +223,48 @@ function assertAuditBolaCommand(parsed: ReturnType<typeof parseArgs>): {
   };
 }
 
+function assertAuditBolaLineageCommand(parsed: ReturnType<typeof parseArgs>): {
+  scanReport: string;
+  draft: string;
+  authorization: string;
+  template: string;
+  check: string;
+  report: string;
+  output?: string;
+} {
+  if (parsed.positionals.length > 0) throw new Error("audit-bola-lineage does not accept positional arguments");
+  const allowed = new Set([
+    "scan-report",
+    "draft",
+    "authorization",
+    "template",
+    "check",
+    "report",
+    "output",
+  ]);
+  for (const name of parsed.flags.keys()) {
+    if (!allowed.has(name)) throw new Error(`audit-bola-lineage does not support --${name}`);
+  }
+  for (const name of allowed) {
+    if (flags(parsed, name).length > 1) {
+      throw new Error(`audit-bola-lineage accepts --${name} at most once`);
+    }
+  }
+  const output = flag(parsed, "output");
+  if (output === "true" || (output !== undefined && !output.trim())) {
+    throw new Error("--output requires a file path");
+  }
+  return {
+    scanReport: requireFlag(parsed, "scan-report"),
+    draft: requireFlag(parsed, "draft"),
+    authorization: requireFlag(parsed, "authorization"),
+    template: requireFlag(parsed, "template"),
+    check: requireFlag(parsed, "check"),
+    report: requireFlag(parsed, "report"),
+    ...(output === undefined ? {} : { output }),
+  };
+}
+
 async function writeOrStdout(value: string, output?: string): Promise<void> {
   if (output) await writeFile(resolve(output), value, { mode: 0o600 });
   else process.stdout.write(value);
@@ -353,6 +399,20 @@ async function main(): Promise<void> {
   if (parsed.command === "audit-bola") {
     const options = assertAuditBolaCommand(parsed);
     const result = await auditBola(options.authorization, {
+      templatePath: options.template,
+      checkPath: options.check,
+      reportPath: options.report,
+    });
+    await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, options.output);
+    return;
+  }
+
+  if (parsed.command === "audit-bola-lineage") {
+    const options = assertAuditBolaLineageCommand(parsed);
+    const result = await auditBolaLineage({
+      scanReportPath: options.scanReport,
+      draftPath: options.draft,
+      authorizationPath: options.authorization,
       templatePath: options.template,
       checkPath: options.check,
       reportPath: options.report,

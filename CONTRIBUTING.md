@@ -119,3 +119,16 @@ strict and sanitized, bind the canonical complete-report digest, reject forged
 summary/budget/coverage/audit-ID relationships, and explicitly disclaim
 signature, origin, freshness and observation-authenticity claims. Update its
 public schema, CLI/API docs, unit tests and installed-package smoke together.
+
+BOLA lineage-audit changes must keep `audit-bola-lineage` offline and reuse the
+complete shorter audit rather than duplicating or weakening it. The ScanReport
+is JSON-only and capped at 64 MiB; the selected draft and four downstream files
+retain 1 MiB regular-file bounds. Regenerate the interface queue and selected
+draft from the exact report, compare deterministic draft fields and template
+source semantics, and reject legacy unselected draft 1.0. The strict
+`BolaVerificationLineageAudit 1.0.0` receipt must contain no target, route,
+source path/snippet, rule/finding detail, object/fixture value, credential,
+identity, token, response/evidence or case reason. Canonical digests and stable
+IDs remain local consistency evidence only; preserve explicit zero-I/O counters
+and non-authenticity limitations in schema, validator, tests, docs and installed
+package smoke.

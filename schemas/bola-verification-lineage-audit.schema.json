@@ -1,0 +1,137 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/bola-verification-lineage-audit-1.0.0.json",
+  "title": "AIsec BOLA Verification Lineage Audit 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "lineageAuditId", "auditedAt", "status", "scan",
+    "queue", "draft", "template", "verificationAudit", "binding", "io",
+    "limitations"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "lineageAuditId": {
+      "type": "string",
+      "pattern": "^bola_lineage_audit_[0-9a-f]{16}$"
+    },
+    "auditedAt": { "$ref": "#/$defs/dateTime" },
+    "status": { "const": "lineage_verified" },
+    "scan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "scanId", "projectId", "digestSha256"],
+      "properties": {
+        "schemaVersion": { "enum": ["1.0.0", "1.1.0", "1.2.0", "1.3.0", "1.4.0"] },
+        "scanId": { "$ref": "#/$defs/scanId" },
+        "projectId": { "$ref": "#/$defs/projectId" },
+        "digestSha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "queue": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "queueId", "coverageStatus", "coverageScope",
+        "reviewedRoutes", "eligibleRoutes", "excludedRoutes",
+        "selectedCandidates"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "queueId": { "type": "string", "pattern": "^interface_queue_[0-9a-f]{16}$" },
+        "coverageStatus": { "enum": ["complete", "partial"] },
+        "coverageScope": { "const": "observed_route_cards_only" },
+        "reviewedRoutes": { "$ref": "#/$defs/nonNegative" },
+        "eligibleRoutes": { "$ref": "#/$defs/nonNegative" },
+        "excludedRoutes": { "$ref": "#/$defs/nonNegative" },
+        "selectedCandidates": { "type": "integer", "minimum": 1, "maximum": 9 }
+      }
+    },
+    "draft": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "draftId", "generatedAt", "digestSha256",
+        "selectedCandidates"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "1.1.0" },
+        "draftId": { "type": "string", "pattern": "^bola_draft_[0-9a-f]{16}$" },
+        "generatedAt": { "$ref": "#/$defs/dateTime" },
+        "digestSha256": { "$ref": "#/$defs/digest" },
+        "selectedCandidates": { "type": "integer", "minimum": 1, "maximum": 9 }
+      }
+    },
+    "template": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "templateId", "digestSha256"],
+      "properties": {
+        "schemaVersion": { "enum": ["1.0.0", "1.1.0"] },
+        "templateId": { "type": "string", "pattern": "^bola_template_[0-9a-f]{16}$" },
+        "digestSha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "verificationAudit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "auditId", "verificationId", "reportDigestSha256"],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "auditId": { "type": "string", "pattern": "^bola_audit_[0-9a-f]{16}$" },
+        "verificationId": {
+          "type": "string",
+          "pattern": "^bola_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+        },
+        "reportDigestSha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scanReport", "regeneratedQueue", "selectedDraft", "draftTemplate",
+        "retainedArtifacts", "exactCandidateOrder", "exactSourceEvidence"
+      ],
+      "properties": {
+        "scanReport": { "const": true },
+        "regeneratedQueue": { "const": true },
+        "selectedDraft": { "const": true },
+        "draftTemplate": { "const": true },
+        "retainedArtifacts": { "const": true },
+        "exactCandidateOrder": { "const": true },
+        "exactSourceEvidence": { "const": true }
+      }
+    },
+    "io": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "environmentValuesRead", "dnsLookups", "requesterCalls", "networkRequests"
+      ],
+      "properties": {
+        "environmentValuesRead": { "const": 0 },
+        "dnsLookups": { "const": 0 },
+        "requesterCalls": { "const": 0 },
+        "networkRequests": { "const": 0 }
+      }
+    },
+    "limitations": {
+      "const": [
+        "This lineage audit proves consistency among the exact retained files only; stable IDs and digests are not signatures and do not authenticate author, origin or freshness.",
+        "This lineage audit does not execute target code, replay requests or prove that the recorded scan and network observations occurred.",
+        "Static selection and protected listed cases do not prove that a route or system is secure or exploitable beyond the exact recorded scope."
+      ]
+    }
+  },
+  "$defs": {
+    "dateTime": { "type": "string", "format": "date-time" },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "nonNegative": { "type": "integer", "minimum": 0 },
+    "scanId": {
+      "type": "string",
+      "pattern": "^scan_[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "projectId": { "type": "string", "pattern": "^project_[0-9a-f]{16}$" }
+  }
+}
