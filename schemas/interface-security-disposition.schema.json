@@ -1,0 +1,80 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/interface-security-disposition-1.0.0.json",
+  "title": "AIsec InterfaceSecurityDisposition 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "audit", "preparedAt", "reviewedBy", "entries"],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "audit": { "$ref": "#/$defs/audit" },
+    "preparedAt": { "$ref": "#/$defs/dateTime" },
+    "reviewedBy": { "$ref": "#/$defs/reviewer" },
+    "reviewedAt": { "$ref": "#/$defs/dateTime" },
+    "entries": {
+      "type": "array",
+      "maxItems": 200,
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "dateTime": { "type": "string", "format": "date-time" },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reviewer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]+$"
+    },
+    "framework": { "enum": ["FastAPI", "Express", "NestJS"] },
+    "category": {
+      "enum": [
+        "authentication", "object_authorization", "privileged_authorization",
+        "sql_injection", "ssrf", "untrusted_file_path", "credential_forwarding",
+        "exception_disclosure"
+      ]
+    },
+    "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
+    "decision": {
+      "enum": [
+        "unreviewed", "fix_required", "false_positive", "accepted_risk",
+        "authorized_verification_required"
+      ]
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["schemaVersion", "auditId", "digestSha256"],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "auditId": { "type": "string", "pattern": "^interface_audit_[0-9a-f]{16}$" },
+        "digestSha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entryId", "framework", "route", "category", "severity",
+        "findingStatus", "decision", "rationale"
+      ],
+      "properties": {
+        "entryId": { "type": "string", "pattern": "^interface_audit_entry_[0-9a-f]{16}$" },
+        "framework": { "$ref": "#/$defs/framework" },
+        "route": { "type": "string", "pattern": "^(?:CONNECT|DELETE|GET|HEAD|OPTIONS|PATCH|POST|PUT|TRACE|ALL) +/[^\\s\\u007f]{0,480}$", "maxLength": 512 },
+        "category": { "$ref": "#/$defs/category" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "findingStatus": { "enum": ["open", "suppressed_only"] },
+        "decision": { "$ref": "#/$defs/decision" },
+        "rationale": { "$ref": "#/$defs/rationale" },
+        "expiresAt": { "$ref": "#/$defs/dateTime" }
+      }
+    }
+  }
+}

@@ -18,6 +18,7 @@ import { draftBola } from "./web/bola-draft.js";
 import { checkBola, prepareBola } from "./web/bola-preflight.js";
 import { interfaceVerificationQueue } from "./web/interface-verification-queue.js";
 import { interfaceSecurityAudit } from "./web/interface-security-audit.js";
+import { checkInterfaceReview, prepareInterfaceReview } from "./web/interface-security-review.js";
 import { TOOL_VERSION } from "./core/constants.js";
 import { parsePositiveInt } from "./core/utils.js";
 import { prepareTrivyDatabase, trivyDatabaseStatus } from "./engines/trivy-db.js";
@@ -34,6 +35,8 @@ Usage:
   aisec report <scan-id|report.json> [--format terminal|json|html|sarif|ci|github|markdown] [--output file]
   aisec fix-contract --scan <scan-id|report.json> --finding <id|fingerprint> [--format terminal|json] [--output file]
   aisec interface-audit --scan <scan-id|report.json> [--output file]
+  aisec prepare-interface-review --audit <interface-audit.json> [--output file]
+  aisec check-interface-review --audit <same-interface-audit.json> --disposition <completed-disposition.json> [--output file]
   aisec interface-queue --scan <scan-id|report.json> [--output file]
   aisec draft-bola --scan <scan-id|report.json> [--candidate interface-candidate-id ...] [--output file]
   aisec prepare-bola --draft <selected-bola-draft.json> [--output file]
@@ -61,6 +64,9 @@ Scan safety:
   audit-bola-lineage accepts a strict ScanReport JSON file at most 64 MiB.
   check-bola-lineage accepts a strict saved lineage audit JSON file at most 1 MiB.
   interface-audit reads a strict ScanReport JSON file at most 64 MiB and performs no requests.
+  prepare-interface-review reads one strict audit up to 16 MiB; check-interface-review
+  also reads one operator disposition up to 1 MiB. Both are offline and never
+  alter source findings, scan decisions or audit coverage.
   Preflight reads no credential values, resolves no DNS and sends no requests.
   audit-bola rechecks retained artifacts offline and emits a sanitized audit receipt.
   audit-bola-lineage also regenerates the scan queue, selected draft and template source binding.
@@ -170,6 +176,31 @@ function assertCheckBolaCommand(parsed: ReturnType<typeof parseArgs>): {
   return {
     input: requireFlag(parsed, "authorization"),
     ...(template === undefined ? {} : { template }),
+    ...(output === undefined ? {} : { output }),
+  };
+}
+
+function assertCheckInterfaceReviewCommand(parsed: ReturnType<typeof parseArgs>): {
+  auditPath: string;
+  dispositionPath: string;
+  output?: string;
+} {
+  const command = "check-interface-review";
+  if (parsed.positionals.length > 0) throw new Error(`${command} does not accept positional arguments`);
+  const allowed = new Set(["audit", "disposition", "output"]);
+  for (const name of parsed.flags.keys()) {
+    if (!allowed.has(name)) throw new Error(`${command} does not support --${name}`);
+  }
+  for (const name of allowed) {
+    if (flags(parsed, name).length > 1) throw new Error(`${command} accepts --${name} at most once`);
+  }
+  const output = flag(parsed, "output");
+  if (output === "true" || (output !== undefined && !output.trim())) {
+    throw new Error("--output requires a file path");
+  }
+  return {
+    auditPath: requireFlag(parsed, "audit"),
+    dispositionPath: requireFlag(parsed, "disposition"),
     ...(output === undefined ? {} : { output }),
   };
 }
@@ -425,6 +456,20 @@ async function main(): Promise<void> {
   if (parsed.command === "interface-audit") {
     const options = assertSimpleFileCommand(parsed, "interface-audit", "scan");
     const result = await interfaceSecurityAudit(options.input);
+    await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, options.output);
+    return;
+  }
+
+  if (parsed.command === "prepare-interface-review") {
+    const options = assertSimpleFileCommand(parsed, "prepare-interface-review", "audit");
+    const result = await prepareInterfaceReview(options.input);
+    await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, options.output);
+    return;
+  }
+
+  if (parsed.command === "check-interface-review") {
+    const options = assertCheckInterfaceReviewCommand(parsed);
+    const result = await checkInterfaceReview(options);
     await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, options.output);
     return;
   }

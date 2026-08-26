@@ -1,0 +1,155 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/interface-security-review-1.0.0.json",
+  "title": "AIsec InterfaceSecurityReview 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "reviewId", "checkedAt", "status", "audit",
+    "disposition", "summary", "entries", "assertions", "networkRequests",
+    "dnsLookups", "credentialEnvironmentReads", "targetCodeExecutions",
+    "limitations", "disclaimer"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "reviewId": { "type": "string", "pattern": "^interface_security_review_[0-9a-f]{16}$" },
+    "checkedAt": { "$ref": "#/$defs/dateTime" },
+    "status": { "enum": ["incomplete", "action_required", "recorded"] },
+    "audit": { "$ref": "#/$defs/audit" },
+    "disposition": { "$ref": "#/$defs/disposition" },
+    "summary": { "$ref": "#/$defs/summary" },
+    "entries": {
+      "type": "array",
+      "maxItems": 200,
+      "items": { "$ref": "#/$defs/entry" }
+    },
+    "assertions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "auditBindingVerified", "exactEntrySetVerified",
+        "originalFindingsUnchanged", "originalDecisionUnchanged"
+      ],
+      "properties": {
+        "auditBindingVerified": { "const": true },
+        "exactEntrySetVerified": { "const": true },
+        "originalFindingsUnchanged": { "const": true },
+        "originalDecisionUnchanged": { "const": true }
+      }
+    },
+    "networkRequests": { "const": 0 },
+    "dnsLookups": { "const": 0 },
+    "credentialEnvironmentReads": { "const": 0 },
+    "targetCodeExecutions": { "const": 0 },
+    "limitations": {
+      "const": [
+        "This receipt proves consistency between one exact local audit and one exact local disposition only; SHA-256 digests and stable IDs are not signatures and do not authenticate reviewer identity, origin or time.",
+        "A disposition never changes, suppresses or overrides the source scan findings, scan decision or interface audit coverage.",
+        "Static review cannot prove reachability, deployed behavior, exploitability or the absence of interface-security flaws; authorized verification remains a separate workflow.",
+        "The receipt contains route and human-review context and must be inspected before sharing."
+      ]
+    },
+    "disclaimer": {
+      "const": "Recorded means only that every emitted entry in a complete static audit has a current operator disposition. It is not a security pass, vulnerability clearance, active test result or assurance that any route or project is safe."
+    }
+  },
+  "$defs": {
+    "nonNegative": { "type": "integer", "minimum": 0 },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reviewer": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 200,
+      "pattern": "^[^\\u0000-\\u001f\\u007f]+$"
+    },
+    "rationale": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 2000,
+      "pattern": "^[^\\u0000-\\u0008\\u000b\\u000c\\u000e-\\u001f\\u007f]+$"
+    },
+    "framework": { "enum": ["FastAPI", "Express", "NestJS"] },
+    "category": {
+      "enum": [
+        "authentication", "object_authorization", "privileged_authorization",
+        "sql_injection", "ssrf", "untrusted_file_path", "credential_forwarding",
+        "exception_disclosure"
+      ]
+    },
+    "severity": { "enum": ["critical", "high", "medium", "low", "info"] },
+    "decision": {
+      "enum": [
+        "unreviewed", "fix_required", "false_positive", "accepted_risk",
+        "authorized_verification_required"
+      ]
+    },
+    "audit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "auditId", "digestSha256", "coverage",
+        "emittedEntries", "omittedEntries", "unattributedSignals"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "auditId": { "type": "string", "pattern": "^interface_audit_[0-9a-f]{16}$" },
+        "digestSha256": { "$ref": "#/$defs/digest" },
+        "coverage": { "enum": ["complete", "partial"] },
+        "emittedEntries": { "$ref": "#/$defs/nonNegative" },
+        "omittedEntries": { "$ref": "#/$defs/nonNegative" },
+        "unattributedSignals": { "$ref": "#/$defs/nonNegative" }
+      }
+    },
+    "disposition": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "digestSha256", "preparedAt", "reviewedBy"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "digestSha256": { "$ref": "#/$defs/digest" },
+        "preparedAt": { "$ref": "#/$defs/dateTime" },
+        "reviewedBy": { "$ref": "#/$defs/reviewer" },
+        "reviewedAt": { "$ref": "#/$defs/dateTime" }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "total", "unreviewed", "fixRequired", "falsePositive",
+        "acceptedRisk", "authorizedVerificationRequired", "expiredDecisions"
+      ],
+      "properties": {
+        "total": { "$ref": "#/$defs/nonNegative" },
+        "unreviewed": { "$ref": "#/$defs/nonNegative" },
+        "fixRequired": { "$ref": "#/$defs/nonNegative" },
+        "falsePositive": { "$ref": "#/$defs/nonNegative" },
+        "acceptedRisk": { "$ref": "#/$defs/nonNegative" },
+        "authorizedVerificationRequired": { "$ref": "#/$defs/nonNegative" },
+        "expiredDecisions": { "$ref": "#/$defs/nonNegative" }
+      }
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "entryId", "framework", "route", "category", "severity",
+        "findingStatus", "decision", "rationale"
+      ],
+      "properties": {
+        "entryId": { "type": "string", "pattern": "^interface_audit_entry_[0-9a-f]{16}$" },
+        "framework": { "$ref": "#/$defs/framework" },
+        "route": { "type": "string", "pattern": "^(?:CONNECT|DELETE|GET|HEAD|OPTIONS|PATCH|POST|PUT|TRACE|ALL) +/[^\\s\\u007f]{0,480}$", "maxLength": 512 },
+        "category": { "$ref": "#/$defs/category" },
+        "severity": { "$ref": "#/$defs/severity" },
+        "findingStatus": { "enum": ["open", "suppressed_only"] },
+        "decision": { "$ref": "#/$defs/decision" },
+        "rationale": { "$ref": "#/$defs/rationale" },
+        "expiresAt": { "$ref": "#/$defs/dateTime" }
+      }
+    }
+  }
+}

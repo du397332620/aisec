@@ -134,6 +134,17 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   dangerous-dataflow signals make coverage partial. IDs/digests are local
   consistency evidence, not a signature, discovery guarantee or proof of
   reachability, exploitability, safety or active testing.
+- `prepare-interface-review` and `check-interface-review` are separate offline
+  operations over an explicitly supplied strict audit (16 MiB maximum) and
+  operator disposition (1 MiB maximum). They read no credential values, resolve
+  no DNS, execute no target code and send no requests. A disposition is bound to
+  the full canonical audit digest and exact ordered entry context; it cannot
+  mutate or suppress source findings, change the scan decision/audit coverage,
+  advance a baseline or act as a release waiver. Partial audits, unreviewed or
+  expired entries fail review completeness. Reviewer names, timestamps, route
+  templates and rationales make these internal artifacts that must be inspected
+  before sharing. Digests/stable IDs are not signatures or trusted identity/time
+  evidence, and even `recorded` is not a security pass or safety claim.
 - `interface-queue` is a separate static planning operation over a stored scan
   report. It resolves no host, reads no credentials, emits no concrete object
   identifier or request template, and records zero network requests. Only exact

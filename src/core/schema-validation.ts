@@ -2,15 +2,41 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import type { AuthorizationManifest, BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaDraftPlan, BolaVerificationAudit, BolaVerificationLineageAudit, BolaVerificationLineageCheck, BolaVerificationReport, CiReport, FixContract, InterfaceSecurityAudit, InterfaceSecurityAuditEntry, InterfaceVerificationQueue, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
+import {
+  INTERFACE_SECURITY_REVIEW_OWNER_PLACEHOLDER,
+  INTERFACE_SECURITY_REVIEW_RATIONALE_PLACEHOLDER,
+  type AuthorizationManifest,
+  type BolaAuthorizationCheck,
+  type BolaAuthorizationManifest,
+  type BolaAuthorizationTemplate,
+  type BolaDraftPlan,
+  type BolaVerificationAudit,
+  type BolaVerificationLineageAudit,
+  type BolaVerificationLineageCheck,
+  type BolaVerificationReport,
+  type CiReport,
+  type FixContract,
+  type InterfaceSecurityAudit,
+  type InterfaceSecurityAuditEntry,
+  type InterfaceSecurityDisposition,
+  type InterfaceSecurityReview,
+  type InterfaceSecurityReviewStatus,
+  type InterfaceVerificationQueue,
+  type RuleCatalog,
+  type RulePack,
+  type RulePackPreview,
+  type RulePackRecord,
+  type ScanReport,
+  type SecurityPolicy,
+} from "../schema.js";
 import { SEVERITY_RANK } from "./constants.js";
 import { ROUTE_SECURITY_CATEGORY_ORDER, ROUTE_SECURITY_RULES, routeSecurityIssueKey } from "./route-security.js";
 import { evaluateRouteSecurityBaselineGate } from "./route-security-gate.js";
 import { safeRelativePath } from "../reporters/safety.js";
 import { classifyBolaStaticRoute } from "../web/bola-policy.js";
-import { stableId } from "./utils.js";
+import { canonicalJson, sha256, stableId } from "./utils.js";
 
-type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "BolaVerificationReport" | "BolaVerificationAudit" | "BolaVerificationLineageAudit" | "BolaVerificationLineageCheck" | "InterfaceVerificationQueue" | "InterfaceSecurityAudit" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
+type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "BolaVerificationReport" | "BolaVerificationAudit" | "BolaVerificationLineageAudit" | "BolaVerificationLineageCheck" | "InterfaceVerificationQueue" | "InterfaceSecurityAudit" | "InterfaceSecurityDisposition" | "InterfaceSecurityReview" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
 
 function loadSchema(filename: string): object {
   const path = fileURLToPath(new URL(`../../../schemas/${filename}`, import.meta.url));
@@ -35,6 +61,8 @@ const bolaVerificationLineageAuditValidator = ajv.compile(loadSchema("bola-verif
 const bolaVerificationLineageCheckValidator = ajv.compile(loadSchema("bola-verification-lineage-check.schema.json"));
 const interfaceVerificationQueueValidator = ajv.compile(loadSchema("interface-verification-queue.schema.json"));
 const interfaceSecurityAuditValidator = ajv.compile(loadSchema("interface-security-audit.schema.json"));
+const interfaceSecurityDispositionValidator = ajv.compile(loadSchema("interface-security-disposition.schema.json"));
+const interfaceSecurityReviewValidator = ajv.compile(loadSchema("interface-security-review.schema.json"));
 const ruleCatalogValidator = ajv.compile(loadSchema("rule-catalog.schema.json"));
 const rulePackValidator = ajv.compile(loadSchema("rule-pack.schema.json"));
 const rulePackPreviewValidator = ajv.compile(loadSchema("rule-pack-preview.schema.json"));
@@ -1220,6 +1248,165 @@ export function validateInterfaceSecurityAudit(value: unknown): InterfaceSecurit
     throw new Error("InterfaceSecurityAudit coverage is inconsistent with recorded evidence gaps");
   }
   return audit;
+}
+
+function interfaceReviewTime(value: string): number {
+  const parsed = new Date(value).getTime();
+  if (!Number.isFinite(parsed)) {
+    throw new Error(`Interface security review timestamp is not supported: ${value}`);
+  }
+  return parsed;
+}
+
+function assertInterfaceReviewText(value: string, label: string): void {
+  if (value !== value.trim()) {
+    throw new Error(`InterfaceSecurityDisposition ${label} must not have leading or trailing whitespace`);
+  }
+}
+
+export function validateInterfaceSecurityDisposition(
+  value: unknown,
+): InterfaceSecurityDisposition {
+  const disposition = assertSchema<InterfaceSecurityDisposition>(
+    "InterfaceSecurityDisposition",
+    interfaceSecurityDispositionValidator,
+    value,
+  );
+  assertInterfaceReviewText(disposition.reviewedBy, "review owner");
+  const hasOwner = disposition.reviewedBy !== INTERFACE_SECURITY_REVIEW_OWNER_PLACEHOLDER;
+  if (hasOwner !== (disposition.reviewedAt !== undefined)) {
+    throw new Error("InterfaceSecurityDisposition review owner and reviewedAt must be completed together");
+  }
+  if (disposition.reviewedAt
+    && interfaceReviewTime(disposition.reviewedAt) < interfaceReviewTime(disposition.preparedAt)) {
+    throw new Error("InterfaceSecurityDisposition reviewedAt must not precede preparedAt");
+  }
+
+  const entryIds = new Set<string>();
+  for (const entry of disposition.entries) {
+    if (entryIds.has(entry.entryId)) {
+      throw new Error(`InterfaceSecurityDisposition contains duplicate entry ID: ${entry.entryId}`);
+    }
+    entryIds.add(entry.entryId);
+    assertInterfaceReviewText(entry.rationale, `${entry.entryId} rationale`);
+    const decided = entry.decision !== "unreviewed";
+    if (decided && (!hasOwner || !disposition.reviewedAt)) {
+      throw new Error("InterfaceSecurityDisposition decided entries require a review owner and reviewedAt");
+    }
+    if (decided && entry.rationale === INTERFACE_SECURITY_REVIEW_RATIONALE_PLACEHOLDER) {
+      throw new Error(`InterfaceSecurityDisposition ${entry.entryId} must replace the template rationale`);
+    }
+    const expiring = entry.decision === "false_positive" || entry.decision === "accepted_risk";
+    if (expiring && !entry.expiresAt) {
+      throw new Error(`InterfaceSecurityDisposition ${entry.entryId} ${entry.decision} requires expiresAt`);
+    }
+    if (!expiring && entry.expiresAt) {
+      throw new Error(`InterfaceSecurityDisposition ${entry.entryId} ${entry.decision} forbids expiresAt`);
+    }
+    if (entry.expiresAt && disposition.reviewedAt
+      && interfaceReviewTime(entry.expiresAt) <= interfaceReviewTime(disposition.reviewedAt)) {
+      throw new Error(`InterfaceSecurityDisposition ${entry.entryId} expiresAt must be after reviewedAt`);
+    }
+  }
+  return disposition;
+}
+
+function expectedInterfaceReviewStatus(
+  review: Pick<InterfaceSecurityReview, "audit" | "disposition" | "summary">,
+): InterfaceSecurityReviewStatus {
+  const reviewerComplete = review.disposition.reviewedBy !== INTERFACE_SECURITY_REVIEW_OWNER_PLACEHOLDER
+    && review.disposition.reviewedAt !== undefined;
+  if (review.audit.coverage === "partial"
+    || review.summary.unreviewed > 0
+    || review.summary.expiredDecisions > 0
+    || !reviewerComplete) {
+    return "incomplete";
+  }
+  if (review.summary.fixRequired > 0
+    || review.summary.authorizedVerificationRequired > 0) {
+    return "action_required";
+  }
+  return "recorded";
+}
+
+export function validateInterfaceSecurityReview(value: unknown): InterfaceSecurityReview {
+  const review = assertSchema<InterfaceSecurityReview>(
+    "InterfaceSecurityReview",
+    interfaceSecurityReviewValidator,
+    value,
+  );
+  const reconstructedDisposition = validateInterfaceSecurityDisposition({
+    schemaVersion: review.disposition.schemaVersion,
+    audit: {
+      schemaVersion: review.audit.schemaVersion,
+      auditId: review.audit.auditId,
+      digestSha256: review.audit.digestSha256,
+    },
+    preparedAt: review.disposition.preparedAt,
+    reviewedBy: review.disposition.reviewedBy,
+    ...(review.disposition.reviewedAt === undefined
+      ? {}
+      : { reviewedAt: review.disposition.reviewedAt }),
+    entries: review.entries,
+  });
+  const expectedDispositionDigest = sha256(canonicalJson(reconstructedDisposition));
+  if (review.disposition.digestSha256 !== expectedDispositionDigest) {
+    throw new Error("InterfaceSecurityReview disposition digest is inconsistent with receipt fields");
+  }
+  if (interfaceReviewTime(review.checkedAt) < interfaceReviewTime(review.disposition.preparedAt)) {
+    throw new Error("InterfaceSecurityReview checkedAt must not precede disposition preparedAt");
+  }
+  if (review.disposition.reviewedAt
+    && interfaceReviewTime(review.disposition.reviewedAt) > interfaceReviewTime(review.checkedAt)) {
+    throw new Error("InterfaceSecurityReview disposition reviewedAt is in the future relative to checkedAt");
+  }
+  if (review.audit.coverage === "complete"
+    && (review.audit.omittedEntries > 0 || review.audit.unattributedSignals > 0)) {
+    throw new Error("InterfaceSecurityReview complete audit cannot claim recorded output or attribution omissions");
+  }
+
+  const expectedSummary: InterfaceSecurityReview["summary"] = {
+    total: review.entries.length,
+    unreviewed: 0,
+    fixRequired: 0,
+    falsePositive: 0,
+    acceptedRisk: 0,
+    authorizedVerificationRequired: 0,
+    expiredDecisions: 0,
+  };
+  for (const entry of review.entries) {
+    if (entry.decision === "unreviewed") expectedSummary.unreviewed += 1;
+    else if (entry.decision === "fix_required") expectedSummary.fixRequired += 1;
+    else if (entry.decision === "false_positive") expectedSummary.falsePositive += 1;
+    else if (entry.decision === "accepted_risk") expectedSummary.acceptedRisk += 1;
+    else expectedSummary.authorizedVerificationRequired += 1;
+    if (entry.expiresAt
+      && interfaceReviewTime(entry.expiresAt) <= interfaceReviewTime(review.checkedAt)) {
+      expectedSummary.expiredDecisions += 1;
+    }
+  }
+  if (review.audit.emittedEntries !== review.entries.length
+    || canonicalJson(review.summary) !== canonicalJson(expectedSummary)) {
+    throw new Error("InterfaceSecurityReview summary totals are inconsistent");
+  }
+  const expectedStatus = expectedInterfaceReviewStatus(review);
+  if (review.status !== expectedStatus) {
+    throw new Error("InterfaceSecurityReview status is inconsistent with coverage and disposition state");
+  }
+  const expectedReviewId = stableId(
+    "interface_security_review",
+    review.schemaVersion,
+    review.audit.schemaVersion,
+    review.audit.auditId,
+    review.audit.digestSha256,
+    review.disposition.schemaVersion,
+    review.disposition.digestSha256,
+    review.checkedAt,
+  );
+  if (review.reviewId !== expectedReviewId) {
+    throw new Error("InterfaceSecurityReview stable review ID is inconsistent");
+  }
+  return review;
 }
 
 export function validateRuleCatalog(value: unknown): RuleCatalog {

@@ -124,6 +124,8 @@ try {
   assert.ok(packedPaths.has("schemas/security-policy.schema.json"), "security policy schema must be packaged");
   assert.ok(packedPaths.has("schemas/ci-report.schema.json"), "CI report schema must be packaged");
   assert.ok(packedPaths.has("schemas/interface-security-audit.schema.json"), "interface-security audit schema must be packaged");
+  assert.ok(packedPaths.has("schemas/interface-security-disposition.schema.json"), "interface-security disposition schema must be packaged");
+  assert.ok(packedPaths.has("schemas/interface-security-review.schema.json"), "interface-security review schema must be packaged");
   assert.ok(packedPaths.has("schemas/interface-verification-queue.schema.json"), "interface-verification queue schema must be packaged");
   assert.ok(packedPaths.has("schemas/bola-authorization-template.schema.json"), "BOLA authorization template schema must be packaged");
   assert.ok(packedPaths.has("schemas/bola-authorization-check.schema.json"), "BOLA authorization check schema must be packaged");
@@ -170,6 +172,8 @@ try {
   await access(join(packageRoot, "schemas", "security-policy.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "ci-report.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "interface-security-audit.schema.json"), constants.R_OK);
+  await access(join(packageRoot, "schemas", "interface-security-disposition.schema.json"), constants.R_OK);
+  await access(join(packageRoot, "schemas", "interface-security-review.schema.json"), constants.R_OK);
   await access(join(packageRoot, "schemas", "interface-verification-queue.schema.json"), constants.R_OK);
   await access(join(packageRoot, "RULES.md"), constants.R_OK);
   const ruleCatalog = JSON.parse(await readFile(join(packageRoot, "rules", "catalog.json"), "utf8"));
@@ -230,6 +234,8 @@ try {
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /audit-bola-lineage --scan-report <scan-report\.json> --draft <selected-draft\.json> --authorization <same-manifest\.yml>/);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /check-bola-lineage --scan-report <scan-report\.json> --draft <selected-draft\.json> --authorization <same-manifest\.yml>.*--lineage-audit <lineage-audit\.json>/);
   assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /interface-audit --scan <scan-id\|report\.json>/);
+  assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /prepare-interface-review --audit <interface-audit\.json>/);
+  assert.match(run(executable, ["--help"], { cwd: consumer, env: scanEnvironment }), /check-interface-review --audit <same-interface-audit\.json> --disposition <completed-disposition\.json>/);
 
   process.stdout.write("Running the installed CLI against safe and vulnerable fixtures...\n");
   const safe = parseReport(run(executable, [
@@ -393,6 +399,43 @@ suppressions: []
     `import { readFileSync } from "node:fs"; import { createInterfaceSecurityAudit, validateInterfaceSecurityAudit } from ${JSON.stringify(packageMetadata.name)}; const scan = JSON.parse(readFileSync(${JSON.stringify(storedReport)}, "utf8")); const value = validateInterfaceSecurityAudit(createInterfaceSecurityAudit(scan)); process.stdout.write(JSON.stringify({ schemaVersion: value.schemaVersion, scanId: value.scan.scanId, networkRequests: value.networkRequests }));`,
   ], { cwd: consumer, env: scanEnvironment }), "installed interface security audit API");
   assert.deepEqual(interfaceAuditApi, { schemaVersion: "1.0.0", scanId: vulnerable.scanId, networkRequests: 0 });
+
+  const installedInterfaceAuditPath = join(temporary, "installed-interface-audit.json");
+  const installedDispositionPath = join(temporary, "installed-interface-disposition.json");
+  await writeFile(installedInterfaceAuditPath, `${JSON.stringify(interfaceAudit)}\n`);
+  const installedDispositionOutput = run(executable, [
+    "prepare-interface-review",
+    "--audit",
+    installedInterfaceAuditPath,
+    "--output",
+    installedDispositionPath,
+  ], { cwd: consumer, env: scanEnvironment });
+  assert.equal(installedDispositionOutput, "");
+  const installedDisposition = JSON.parse(await readFile(installedDispositionPath, "utf8"));
+  assert.equal(installedDisposition.audit.auditId, interfaceAudit.auditId);
+  assert.equal(installedDisposition.reviewedBy, "<SET_REVIEW_OWNER>");
+  const installedInterfaceReview = parseReport(run(executable, [
+    "check-interface-review",
+    "--audit",
+    installedInterfaceAuditPath,
+    "--disposition",
+    installedDispositionPath,
+  ], { cwd: consumer, env: scanEnvironment }), "installed interface review");
+  assert.equal(installedInterfaceReview.status, "incomplete");
+  assert.equal(installedInterfaceReview.assertions.originalDecisionUnchanged, true);
+  assert.equal(installedInterfaceReview.networkRequests, 0);
+
+  const interfaceReviewApi = parseReport(run(process.execPath, [
+    "--input-type=module",
+    "--eval",
+    `import { readFileSync } from "node:fs"; import { checkInterfaceSecurityReview, createInterfaceSecurityDisposition, validateInterfaceSecurityDisposition, validateInterfaceSecurityReview } from ${JSON.stringify(packageMetadata.name)}; const audit = JSON.parse(readFileSync(${JSON.stringify(installedInterfaceAuditPath)}, "utf8")); const disposition = validateInterfaceSecurityDisposition(createInterfaceSecurityDisposition(audit)); const review = validateInterfaceSecurityReview(checkInterfaceSecurityReview(audit, disposition)); process.stdout.write(JSON.stringify({ disposition: disposition.schemaVersion, review: review.schemaVersion, status: review.status, networkRequests: review.networkRequests }));`,
+  ], { cwd: consumer, env: scanEnvironment }), "installed interface review API");
+  assert.deepEqual(interfaceReviewApi, {
+    disposition: "1.0.0",
+    review: "1.0.0",
+    status: "incomplete",
+    networkRequests: 0,
+  });
 
   const interfaceQueueApi = parseReport(run(process.execPath, [
     "--input-type=module",

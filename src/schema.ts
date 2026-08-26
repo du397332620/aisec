@@ -4,6 +4,10 @@ export const CI_REPORT_SCHEMA_VERSION = "1.4.0" as const;
 export const RULE_PACK_PREVIEW_SCHEMA_VERSION = "1.0.0" as const;
 export const INTERFACE_VERIFICATION_QUEUE_SCHEMA_VERSION = "1.0.0" as const;
 export const INTERFACE_SECURITY_AUDIT_SCHEMA_VERSION = "1.0.0" as const;
+export const INTERFACE_SECURITY_DISPOSITION_SCHEMA_VERSION = "1.0.0" as const;
+export const INTERFACE_SECURITY_REVIEW_SCHEMA_VERSION = "1.0.0" as const;
+export const INTERFACE_SECURITY_REVIEW_OWNER_PLACEHOLDER = "<SET_REVIEW_OWNER>" as const;
+export const INTERFACE_SECURITY_REVIEW_RATIONALE_PLACEHOLDER = "Review the linked static evidence before changing this disposition." as const;
 export const BOLA_DRAFT_SCHEMA_VERSION = "1.1.0" as const;
 export const BOLA_AUTHORIZATION_TEMPLATE_SCHEMA_VERSION = "1.1.0" as const;
 export const BOLA_AUTHORIZATION_CHECK_LEGACY_BOUND_SCHEMA_VERSION = "1.1.0" as const;
@@ -539,6 +543,88 @@ export interface InterfaceSecurityAudit {
     };
   };
   entries: InterfaceSecurityAuditEntry[];
+  limitations: string[];
+  disclaimer: string;
+}
+
+export type InterfaceSecurityDispositionDecision =
+  | "unreviewed"
+  | "fix_required"
+  | "false_positive"
+  | "accepted_risk"
+  | "authorized_verification_required";
+
+export interface InterfaceSecurityDispositionEntry {
+  entryId: string;
+  framework: RouteSecurityFramework;
+  route: string;
+  category: RouteSecurityCategory;
+  severity: Severity;
+  findingStatus: InterfaceSecurityFindingStatus;
+  decision: InterfaceSecurityDispositionDecision;
+  rationale: string;
+  expiresAt?: string;
+}
+
+export interface InterfaceSecurityDisposition {
+  schemaVersion: typeof INTERFACE_SECURITY_DISPOSITION_SCHEMA_VERSION;
+  audit: {
+    schemaVersion: InterfaceSecurityAudit["schemaVersion"];
+    auditId: string;
+    digestSha256: string;
+  };
+  preparedAt: string;
+  reviewedBy: string;
+  reviewedAt?: string;
+  entries: InterfaceSecurityDispositionEntry[];
+}
+
+export type InterfaceSecurityReviewStatus =
+  | "incomplete"
+  | "action_required"
+  | "recorded";
+
+export interface InterfaceSecurityReview {
+  schemaVersion: typeof INTERFACE_SECURITY_REVIEW_SCHEMA_VERSION;
+  reviewId: string;
+  checkedAt: string;
+  status: InterfaceSecurityReviewStatus;
+  audit: {
+    schemaVersion: InterfaceSecurityAudit["schemaVersion"];
+    auditId: string;
+    digestSha256: string;
+    coverage: InterfaceSecurityAudit["coverage"];
+    emittedEntries: number;
+    omittedEntries: number;
+    unattributedSignals: number;
+  };
+  disposition: {
+    schemaVersion: InterfaceSecurityDisposition["schemaVersion"];
+    digestSha256: string;
+    preparedAt: string;
+    reviewedBy: string;
+    reviewedAt?: string;
+  };
+  summary: {
+    total: number;
+    unreviewed: number;
+    fixRequired: number;
+    falsePositive: number;
+    acceptedRisk: number;
+    authorizedVerificationRequired: number;
+    expiredDecisions: number;
+  };
+  entries: InterfaceSecurityDispositionEntry[];
+  assertions: {
+    auditBindingVerified: true;
+    exactEntrySetVerified: true;
+    originalFindingsUnchanged: true;
+    originalDecisionUnchanged: true;
+  };
+  networkRequests: 0;
+  dnsLookups: 0;
+  credentialEnvironmentReads: 0;
+  targetCodeExecutions: 0;
   limitations: string[];
   disclaimer: string;
 }

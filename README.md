@@ -279,6 +279,8 @@ aisec rule-pack check [path] --rule-pack <trusted-rules.yml> [--format terminal|
 aisec report <scan-id|report.json> --format terminal|json|html|sarif|ci|github|markdown
 aisec fix-contract --scan <scan-id> --finding <id> --format json
 aisec interface-audit --scan <scan-id|report.json> --output interface-audit.json
+aisec prepare-interface-review --audit <interface-audit.json> --output interface-disposition.json
+aisec check-interface-review --audit <same-interface-audit.json> --disposition <completed-disposition.json> --output interface-review.json
 aisec interface-queue --scan <scan-id|report.json> --output interface-queue.json
 aisec draft-bola --scan <scan-id|report.json> [--candidate interface-candidate-id ...] --output bola-draft.json
 aisec prepare-bola --draft <selected-bola-draft.json> --output bola-authorization-template.json
@@ -694,6 +696,7 @@ accepted suppressions for compatible consumers.
 | APK/IPA static resources | Native archive adapter | Optional input; required for pre-deploy mobile artifact coverage when a mobile project/artifact is expected; prioritizes app manifests/plists, DEX/resource tables, JS bundles and the iOS main executable, semantically decodes bounded binary plists, recovers bounded ASCII/UTF-16 strings in memory, and performs no installation, on-disk member extraction or runtime instrumentation |
 | Passive test/staging Web checks | `verify-web` | Explicit authorization plus `--confirm`; bounded GET/header/cookie checks only, no auth/IDOR/injection testing |
 | Interface security audit ledger | `interface-audit` | Converts every observed, exactly attributed route-security category into strict bounded `InterfaceSecurityAudit 1.0.0` JSON; preserves open versus suppressed-only evidence, route-attribution gaps and deployment-context totals, binds the canonical scan digest, performs zero network/credential/DNS/target-code I/O, and never claims active vulnerability confirmation or API discovery completeness |
+| Operator-owned interface review | `prepare-interface-review` / `check-interface-review` | Generates strict `InterfaceSecurityDisposition 1.0.0` with one human-owned decision per emitted audit entry, then checks its exact audit digest, ordered entry context, reviewer/rationale/expiry semantics and emits `InterfaceSecurityReview 1.0.0`; partial audit, unreviewed or expired entries remain incomplete, required fixes/authorized verification remain action-required, and no disposition changes source findings, scan decisions, audit coverage or release gates |
 | Interface verification queue | `interface-queue` | Converts exact route-security cards into a strict bounded zero-request plan; only open object-authorization routes with proven source, recorded object IDs and BOLA-compatible read semantics become candidates, while every other reviewed route gets machine-readable exclusion reasons |
 | Static-to-active BOLA planning | `draft-bola` | Legacy mode converts all open static BOLA/IDOR signals into a non-executable 1.0 worksheet; selected 1.1 mode accepts one to nine same-report interface candidate IDs and binds queue, exact route, source signal and BOLA candidate. Both keep object IDs/markers as placeholders and send no requests |
 | BOLA authorization preflight | `prepare-bola` / `check-bola` | Converts only a selected 1.1 worksheet into a strict, deliberately non-executable template, then validates a separately completed manifest offline. Passing that unchanged template back to `check-bola` proves exact case order, method, route-template, object-field and evidence-mode binding and produces a saved 1.2 receipt. Each input is limited to 1 MiB; no credential values are read and no DNS or requests occur |
@@ -801,6 +804,49 @@ credentials, tokens and executable request templates. It deliberately retains
 route templates and safe relative source paths for local review, so treat it as
 an internal artifact and review it before sharing. It is static evidence, not a
 proof of reachability, exploitability, safety or successful active testing.
+
+## Operator-owned interface review
+
+Create a disposition worksheet from the exact saved audit, edit only the
+worksheet, and then check both retained files together:
+
+```bash
+aisec prepare-interface-review \
+  --audit interface-audit.json \
+  --output interface-disposition.json
+
+# Set reviewedBy/reviewedAt and replace each unreviewed decision/rationale.
+# false_positive and accepted_risk also require a future expiresAt.
+
+aisec check-interface-review \
+  --audit interface-audit.json \
+  --disposition interface-disposition.json \
+  --output interface-review.json
+```
+
+`InterfaceSecurityDisposition 1.0.0` binds the full canonical audit SHA-256 and
+copies the exact ordered entry ID/framework/route/category/severity/status
+context. Decisions are `unreviewed`, `fix_required`, `false_positive`,
+`accepted_risk` or `authorized_verification_required`. A decided entry requires
+an explicit reviewer, review time and non-template rationale. False-positive
+and accepted-risk decisions require an expiry later than the review time; a
+later check reports expired decisions instead of silently retaining them.
+
+`InterfaceSecurityReview 1.0.0` reconstructs and digest-checks the disposition,
+then reports `incomplete`, `action_required` or `recorded`. A partial source
+audit, any unreviewed entry, incomplete reviewer ownership or an expired
+decision always remains `incomplete`. A fully reviewed complete audit with a
+required fix or separately authorized verification is `action_required`.
+`recorded` means only that every emitted entry currently has an operator
+disposition—it is not a security pass, finding suppression, active test or claim
+that a route/project is safe. The workflow never changes the original findings,
+scan decision, audit coverage, baseline or release gate, and decisions are never
+carried to another audit automatically.
+
+Both commands are offline: no credentials, environment values, DNS, requests or
+target code are used. Audit input is limited to a 16 MiB regular JSON file and
+disposition input to 1 MiB. The files retain route, reviewer and rationale
+context, so keep them as internal artifacts and inspect them before sharing.
 
 ## Interface verification candidate queue
 
@@ -1208,7 +1254,7 @@ as resolved, with no new high/critical finding.
 
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, CI
 reports, fix contracts, the rule catalog, declarative rule packs and their selector previews, trusted security policies, passive-web
-authorization, the bounded `InterfaceSecurityAudit 1.0.0`, `InterfaceVerificationQueue 1.0.0`, `BolaDraftPlan 1.1.0` and legacy 1.0 BOLA draft plans, `BolaAuthorizationTemplate 1.1.0`, `BolaAuthorizationCheck 1.2.0`, its strict bound 1.1 predecessor, their strict legacy 1.0 forms, BOLA authorization manifests, `BolaVerificationReport 1.1.0` with its strict legacy 1.0 form, `BolaVerificationAudit 1.0.0`, `BolaVerificationLineageAudit 1.0.0`, and `BolaVerificationLineageCheck 1.0.0` in
+authorization, the bounded `InterfaceSecurityAudit 1.0.0`, operator-owned `InterfaceSecurityDisposition 1.0.0`, bound `InterfaceSecurityReview 1.0.0`, `InterfaceVerificationQueue 1.0.0`, `BolaDraftPlan 1.1.0` and legacy 1.0 BOLA draft plans, `BolaAuthorizationTemplate 1.1.0`, `BolaAuthorizationCheck 1.2.0`, its strict bound 1.1 predecessor, their strict legacy 1.0 forms, BOLA authorization manifests, `BolaVerificationReport 1.1.0` with its strict legacy 1.0 form, `BolaVerificationAudit 1.0.0`, `BolaVerificationLineageAudit 1.0.0`, and `BolaVerificationLineageCheck 1.0.0` in
 [`schemas/`](schemas/). `SecurityPolicy 1.1.0` adds the optional additive
 route-security baseline gate and strictly preserves legacy `1.0.0` policies.
 `RulePack 1.1.0` adds bounded required-literal absence
@@ -1221,6 +1267,12 @@ contracts remain at `1.0.0`.
 `InterfaceSecurityAudit 1.0.0` is a canonical-scan-digest-bound local ledger of
 bounded attributed static route evidence. Its stable IDs provide consistency,
 not a signature or proof that the target was executed or tested.
+`InterfaceSecurityDisposition 1.0.0` is a separate operator worksheet bound to
+one exact audit and ordered entry set. `InterfaceSecurityReview 1.0.0`
+digest-binds that worksheet and evaluates completeness, action and expiry while
+leaving the canonical scan/audit untouched. Neither contract authenticates the
+reviewer or time, suppresses evidence, affects a release decision or certifies
+security.
 `BolaAuthorizationTemplate 1.1.0` changes only the handoff instructions so the
 same wrapper is retained for binding; strict 1.0 wrappers remain readable.
 `BolaAuthorizationCheck 1.1.0` added the required sanitized `templateBinding`
@@ -1268,6 +1320,10 @@ The package also exports `validateScanReport`, `validateCiReport`,
 `loadTrustedRulePacks`, `previewRulePacks`, `renderRulePackPreview`, `parseSecurityPolicy`, `loadTrustedPolicy`,
 `createInterfaceSecurityAudit`, `interfaceSecurityAudit`,
 `loadInterfaceSecurityScanReport`, `validateInterfaceSecurityAudit`,
+`createInterfaceSecurityDisposition`, `prepareInterfaceReview`,
+`loadInterfaceSecurityAudit`, `loadInterfaceSecurityDisposition`,
+`checkInterfaceSecurityReview`, `checkInterfaceReview`,
+`validateInterfaceSecurityDisposition`, `validateInterfaceSecurityReview`,
 `createInterfaceVerificationQueue`, `interfaceVerificationQueue`,
 `validateInterfaceVerificationQueue`, `createBolaDraftPlan`,
 `createSelectedBolaDraftPlan`, `draftBola`, `createBolaAuthorizationTemplate`,
