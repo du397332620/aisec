@@ -145,6 +145,16 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   templates and rationales make these internal artifacts that must be inspected
   before sharing. Digests/stable IDs are not signatures or trusted identity/time
   evidence, and even `recorded` is not a security pass or safety claim.
+- `check-interface-review-receipt` is a third, separate offline operation over
+  the same strict audit and disposition plus one saved strict review (2 MiB
+  maximum). It requires exact audit fields, disposition fields, entry content
+  and entry order, digest-checks the complete saved receipt, rejects a receipt
+  dated later than the current local check and re-evaluates expiry without
+  rewriting historical state. Its output omits routes, reviewer identity and
+  rationales and fixes credential/DNS/network/target-code counters at zero.
+  Local-clock status changes, hashes and stable IDs are consistency evidence,
+  not signatures, trusted timestamps, evidence authentication, a release waiver
+  or a security/safety claim.
 - `interface-queue` is a separate static planning operation over a stored scan
   report. It resolves no host, reads no credentials, emits no concrete object
   identifier or request template, and records zero network requests. Only exact

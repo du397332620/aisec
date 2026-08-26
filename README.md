@@ -281,6 +281,7 @@ aisec fix-contract --scan <scan-id> --finding <id> --format json
 aisec interface-audit --scan <scan-id|report.json> --output interface-audit.json
 aisec prepare-interface-review --audit <interface-audit.json> --output interface-disposition.json
 aisec check-interface-review --audit <same-interface-audit.json> --disposition <completed-disposition.json> --output interface-review.json
+aisec check-interface-review-receipt --audit <same-interface-audit.json> --disposition <same-disposition.json> --review <saved-interface-review.json> --output interface-review-check.json
 aisec interface-queue --scan <scan-id|report.json> --output interface-queue.json
 aisec draft-bola --scan <scan-id|report.json> [--candidate interface-candidate-id ...] --output bola-draft.json
 aisec prepare-bola --draft <selected-bola-draft.json> --output bola-authorization-template.json
@@ -697,6 +698,7 @@ accepted suppressions for compatible consumers.
 | Passive test/staging Web checks | `verify-web` | Explicit authorization plus `--confirm`; bounded GET/header/cookie checks only, no auth/IDOR/injection testing |
 | Interface security audit ledger | `interface-audit` | Converts every observed, exactly attributed route-security category into strict bounded `InterfaceSecurityAudit 1.0.0` JSON; preserves open versus suppressed-only evidence, route-attribution gaps and deployment-context totals, binds the canonical scan digest, performs zero network/credential/DNS/target-code I/O, and never claims active vulnerability confirmation or API discovery completeness |
 | Operator-owned interface review | `prepare-interface-review` / `check-interface-review` | Generates strict `InterfaceSecurityDisposition 1.0.0` with one human-owned decision per emitted audit entry, then checks its exact audit digest, ordered entry context, reviewer/rationale/expiry semantics and emits `InterfaceSecurityReview 1.0.0`; partial audit, unreviewed or expired entries remain incomplete, required fixes/authorized verification remain action-required, and no disposition changes source findings, scan decisions, audit coverage or release gates |
+| Offline saved interface-review receipt check | `check-interface-review-receipt` | Revalidates a separately saved `InterfaceSecurityReview 1.0.0` against the exact retained audit and disposition, preserves the historical receipt, re-evaluates expiry against the current local clock and emits data-minimized `InterfaceSecurityReviewCheck 1.0.0`; hashes/IDs prove consistency only, and all credential/DNS/network/target-code counters remain zero |
 | Interface verification queue | `interface-queue` | Converts exact route-security cards into a strict bounded zero-request plan; only open object-authorization routes with proven source, recorded object IDs and BOLA-compatible read semantics become candidates, while every other reviewed route gets machine-readable exclusion reasons |
 | Static-to-active BOLA planning | `draft-bola` | Legacy mode converts all open static BOLA/IDOR signals into a non-executable 1.0 worksheet; selected 1.1 mode accepts one to nine same-report interface candidate IDs and binds queue, exact route, source signal and BOLA candidate. Both keep object IDs/markers as placeholders and send no requests |
 | BOLA authorization preflight | `prepare-bola` / `check-bola` | Converts only a selected 1.1 worksheet into a strict, deliberately non-executable template, then validates a separately completed manifest offline. Passing that unchanged template back to `check-bola` proves exact case order, method, route-template, object-field and evidence-mode binding and produces a saved 1.2 receipt. Each input is limited to 1 MiB; no credential values are read and no DNS or requests occur |
@@ -822,6 +824,13 @@ aisec check-interface-review \
   --audit interface-audit.json \
   --disposition interface-disposition.json \
   --output interface-review.json
+
+# Later, revalidate the separately saved receipt against the same retained files.
+aisec check-interface-review-receipt \
+  --audit interface-audit.json \
+  --disposition interface-disposition.json \
+  --review interface-review.json \
+  --output interface-review-check.json
 ```
 
 `InterfaceSecurityDisposition 1.0.0` binds the full canonical audit SHA-256 and
@@ -843,10 +852,23 @@ that a route/project is safe. The workflow never changes the original findings,
 scan decision, audit coverage, baseline or release gate, and decisions are never
 carried to another audit automatically.
 
-Both commands are offline: no credentials, environment values, DNS, requests or
-target code are used. Audit input is limited to a 16 MiB regular JSON file and
-disposition input to 1 MiB. The files retain route, reviewer and rationale
-context, so keep them as internal artifacts and inspect them before sharing.
+`InterfaceSecurityReviewCheck 1.0.0` verifies that the saved review still
+matches every retained audit field, disposition field, entry and entry order.
+It does not rewrite that receipt. It reports both the status saved at the
+original `checkedAt` and a fresh status using the current local clock, so an
+accepted-risk or false-positive decision that has since expired becomes visible
+without invalidating or silently editing the historical record. The sanitized
+check output omits routes, rationales and reviewer identity. SHA-256 digests and
+stable IDs are consistency evidence only, not signatures or trusted proof of
+identity, origin or time.
+
+All three commands are offline: no credentials, environment values, DNS,
+requests or target code are used. Audit input is limited to a 16 MiB regular
+JSON file, disposition input to 1 MiB and saved-review input to 2 MiB. The audit,
+disposition and saved review retain route, reviewer or rationale context, so
+keep those inputs as internal artifacts and inspect them before sharing. A
+successful receipt check is not a security pass, release waiver, active test or
+claim that a route/project is safe.
 
 ## Interface verification candidate queue
 
@@ -1254,7 +1276,7 @@ as resolved, with no new high/critical finding.
 
 AIsec publishes JSON Schema Draft 2020-12 contracts for scan reports, CI
 reports, fix contracts, the rule catalog, declarative rule packs and their selector previews, trusted security policies, passive-web
-authorization, the bounded `InterfaceSecurityAudit 1.0.0`, operator-owned `InterfaceSecurityDisposition 1.0.0`, bound `InterfaceSecurityReview 1.0.0`, `InterfaceVerificationQueue 1.0.0`, `BolaDraftPlan 1.1.0` and legacy 1.0 BOLA draft plans, `BolaAuthorizationTemplate 1.1.0`, `BolaAuthorizationCheck 1.2.0`, its strict bound 1.1 predecessor, their strict legacy 1.0 forms, BOLA authorization manifests, `BolaVerificationReport 1.1.0` with its strict legacy 1.0 form, `BolaVerificationAudit 1.0.0`, `BolaVerificationLineageAudit 1.0.0`, and `BolaVerificationLineageCheck 1.0.0` in
+authorization, the bounded `InterfaceSecurityAudit 1.0.0`, operator-owned `InterfaceSecurityDisposition 1.0.0`, bound `InterfaceSecurityReview 1.0.0`, offline `InterfaceSecurityReviewCheck 1.0.0`, `InterfaceVerificationQueue 1.0.0`, `BolaDraftPlan 1.1.0` and legacy 1.0 BOLA draft plans, `BolaAuthorizationTemplate 1.1.0`, `BolaAuthorizationCheck 1.2.0`, its strict bound 1.1 predecessor, their strict legacy 1.0 forms, BOLA authorization manifests, `BolaVerificationReport 1.1.0` with its strict legacy 1.0 form, `BolaVerificationAudit 1.0.0`, `BolaVerificationLineageAudit 1.0.0`, and `BolaVerificationLineageCheck 1.0.0` in
 [`schemas/`](schemas/). `SecurityPolicy 1.1.0` adds the optional additive
 route-security baseline gate and strictly preserves legacy `1.0.0` policies.
 `RulePack 1.1.0` adds bounded required-literal absence
@@ -1273,6 +1295,11 @@ digest-binds that worksheet and evaluates completeness, action and expiry while
 leaving the canonical scan/audit untouched. Neither contract authenticates the
 reviewer or time, suppresses evidence, affects a release decision or certifies
 security.
+`InterfaceSecurityReviewCheck 1.0.0` binds the full saved review digest to the
+same retained audit and disposition, verifies exact entry order and separately
+reports current local expiry state without changing the saved receipt. Its
+data-minimized output likewise proves consistency only, not reviewer identity,
+trusted time, evidence truth, execution or safety.
 `BolaAuthorizationTemplate 1.1.0` changes only the handoff instructions so the
 same wrapper is retained for binding; strict 1.0 wrappers remain readable.
 `BolaAuthorizationCheck 1.1.0` added the required sanitized `templateBinding`
@@ -1323,7 +1350,9 @@ The package also exports `validateScanReport`, `validateCiReport`,
 `createInterfaceSecurityDisposition`, `prepareInterfaceReview`,
 `loadInterfaceSecurityAudit`, `loadInterfaceSecurityDisposition`,
 `checkInterfaceSecurityReview`, `checkInterfaceReview`,
-`validateInterfaceSecurityDisposition`, `validateInterfaceSecurityReview`,
+`loadInterfaceSecurityReview`, `checkSavedInterfaceSecurityReview`,
+`checkInterfaceReviewReceipt`, `validateInterfaceSecurityDisposition`,
+`validateInterfaceSecurityReview`, `validateInterfaceSecurityReviewCheck`,
 `createInterfaceVerificationQueue`, `interfaceVerificationQueue`,
 `validateInterfaceVerificationQueue`, `createBolaDraftPlan`,
 `createSelectedBolaDraftPlan`, `draftBola`, `createBolaAuthorizationTemplate`,

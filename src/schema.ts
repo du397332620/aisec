@@ -6,6 +6,7 @@ export const INTERFACE_VERIFICATION_QUEUE_SCHEMA_VERSION = "1.0.0" as const;
 export const INTERFACE_SECURITY_AUDIT_SCHEMA_VERSION = "1.0.0" as const;
 export const INTERFACE_SECURITY_DISPOSITION_SCHEMA_VERSION = "1.0.0" as const;
 export const INTERFACE_SECURITY_REVIEW_SCHEMA_VERSION = "1.0.0" as const;
+export const INTERFACE_SECURITY_REVIEW_CHECK_SCHEMA_VERSION = "1.0.0" as const;
 export const INTERFACE_SECURITY_REVIEW_OWNER_PLACEHOLDER = "<SET_REVIEW_OWNER>" as const;
 export const INTERFACE_SECURITY_REVIEW_RATIONALE_PLACEHOLDER = "Review the linked static evidence before changing this disposition." as const;
 export const BOLA_DRAFT_SCHEMA_VERSION = "1.1.0" as const;
@@ -620,6 +621,41 @@ export interface InterfaceSecurityReview {
     exactEntrySetVerified: true;
     originalFindingsUnchanged: true;
     originalDecisionUnchanged: true;
+  };
+  networkRequests: 0;
+  dnsLookups: 0;
+  credentialEnvironmentReads: 0;
+  targetCodeExecutions: 0;
+  limitations: string[];
+  disclaimer: string;
+}
+
+export interface InterfaceSecurityReviewCheck {
+  schemaVersion: typeof INTERFACE_SECURITY_REVIEW_CHECK_SCHEMA_VERSION;
+  receiptCheckId: string;
+  checkedAt: string;
+  status: "saved_review_verified";
+  savedReview: {
+    schemaVersion: InterfaceSecurityReview["schemaVersion"];
+    reviewId: string;
+    checkedAt: string;
+    digestSha256: string;
+    status: InterfaceSecurityReviewStatus;
+    expiredDecisions: number;
+  };
+  currentEvaluation: {
+    status: InterfaceSecurityReviewStatus;
+    expiredDecisions: number;
+    changedSinceSaved: boolean;
+  };
+  binding: {
+    savedReceipt: true;
+    exactAudit: true;
+    exactDisposition: true;
+    exactEntryOrder: true;
+    exactSavedFields: true;
+    exactReceiptDigest: true;
+    currentExpiryReevaluated: true;
   };
   networkRequests: 0;
   dnsLookups: 0;

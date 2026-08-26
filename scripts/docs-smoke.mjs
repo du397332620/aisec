@@ -106,6 +106,7 @@ try {
   await access(join(repositoryRoot, "schemas", "interface-security-audit.schema.json"));
   await access(join(repositoryRoot, "schemas", "interface-security-disposition.schema.json"));
   await access(join(repositoryRoot, "schemas", "interface-security-review.schema.json"));
+  await access(join(repositoryRoot, "schemas", "interface-security-review-check.schema.json"));
   await access(join(repositoryRoot, "schemas", "bola-verification-report.schema.json"));
   await access(join(repositoryRoot, "schemas", "bola-verification-audit.schema.json"));
   await access(join(repositoryRoot, "schemas", "bola-verification-lineage-audit.schema.json"));
@@ -126,8 +127,10 @@ try {
     "InterfaceSecurityAudit 1.0.0",
     "aisec prepare-interface-review",
     "aisec check-interface-review",
+    "aisec check-interface-review-receipt",
     "InterfaceSecurityDisposition 1.0.0",
     "InterfaceSecurityReview 1.0.0",
+    "InterfaceSecurityReviewCheck 1.0.0",
     "aisec interface-queue",
     "InterfaceVerificationQueue 1.0.0",
     "BolaDraftPlan 1.1.0",
@@ -189,6 +192,8 @@ try {
   assert.match(help, /interface-audit --scan <scan-id\|report\.json>/);
   assert.match(help, /prepare-interface-review --audit <interface-audit\.json>/);
   assert.match(help, /check-interface-review --audit <same-interface-audit\.json> --disposition <completed-disposition\.json>/);
+  assert.match(help, /check-interface-review-receipt --audit <same-interface-audit\.json> --disposition <same-disposition\.json> --review <saved-interface-review\.json>/);
+  assert.match(help, /strict saved review up\s+to 2 MiB/iu);
   assert.match(help, /audit-bola rechecks retained artifacts offline and emits a sanitized audit receipt/u);
   assert.match(help, /audit-bola-lineage also regenerates the scan queue, selected draft and template source binding/u);
   assert.match(help, /check-bola-lineage revalidates a saved lineage receipt against all six retained inputs offline/u);
@@ -259,6 +264,7 @@ try {
   assert.ok(!("target" in interfaceAudit.scan));
   const interfaceAuditPath = join(temporary, "interface-audit.json");
   const interfaceDispositionPath = join(temporary, "interface-disposition.json");
+  const interfaceReviewPath = join(temporary, "interface-review.json");
   await writeFile(interfaceAuditPath, `${JSON.stringify(interfaceAudit)}\n`);
   const preparedInterfaceDisposition = run([
     "prepare-interface-review",
@@ -283,6 +289,23 @@ try {
   assert.equal(interfaceReview.status, "incomplete");
   assert.equal(interfaceReview.networkRequests, 0);
   assert.equal(interfaceReview.assertions.originalFindingsUnchanged, true);
+  await writeFile(interfaceReviewPath, `${JSON.stringify(interfaceReview)}\n`);
+  const interfaceReviewCheck = report(run([
+    "check-interface-review-receipt",
+    "--audit",
+    interfaceAuditPath,
+    "--disposition",
+    interfaceDispositionPath,
+    "--review",
+    interfaceReviewPath,
+  ]), "saved interface security review check");
+  assert.equal(interfaceReviewCheck.schemaVersion, "1.0.0");
+  assert.equal(interfaceReviewCheck.status, "saved_review_verified");
+  assert.equal(interfaceReviewCheck.currentEvaluation.status, "incomplete");
+  assert.equal(interfaceReviewCheck.currentEvaluation.changedSinceSaved, false);
+  assert.equal(interfaceReviewCheck.networkRequests, 0);
+  assert.equal(interfaceReviewCheck.binding.exactReceiptDigest, true);
+  assert.ok(!("entries" in interfaceReviewCheck));
 
   const bolaDraft = report(run(["draft-bola", "--scan", vulnerable.scanId]), "BOLA draft");
   assert.equal(bolaDraft.scanId, vulnerable.scanId);

@@ -19,6 +19,7 @@ import { checkBola, prepareBola } from "./web/bola-preflight.js";
 import { interfaceVerificationQueue } from "./web/interface-verification-queue.js";
 import { interfaceSecurityAudit } from "./web/interface-security-audit.js";
 import { checkInterfaceReview, prepareInterfaceReview } from "./web/interface-security-review.js";
+import { checkInterfaceReviewReceipt } from "./web/interface-security-review-check.js";
 import { TOOL_VERSION } from "./core/constants.js";
 import { parsePositiveInt } from "./core/utils.js";
 import { prepareTrivyDatabase, trivyDatabaseStatus } from "./engines/trivy-db.js";
@@ -37,6 +38,7 @@ Usage:
   aisec interface-audit --scan <scan-id|report.json> [--output file]
   aisec prepare-interface-review --audit <interface-audit.json> [--output file]
   aisec check-interface-review --audit <same-interface-audit.json> --disposition <completed-disposition.json> [--output file]
+  aisec check-interface-review-receipt --audit <same-interface-audit.json> --disposition <same-disposition.json> --review <saved-interface-review.json> [--output file]
   aisec interface-queue --scan <scan-id|report.json> [--output file]
   aisec draft-bola --scan <scan-id|report.json> [--candidate interface-candidate-id ...] [--output file]
   aisec prepare-bola --draft <selected-bola-draft.json> [--output file]
@@ -67,6 +69,9 @@ Scan safety:
   prepare-interface-review reads one strict audit up to 16 MiB; check-interface-review
   also reads one operator disposition up to 1 MiB. Both are offline and never
   alter source findings, scan decisions or audit coverage.
+  check-interface-review-receipt additionally reads one strict saved review up
+  to 2 MiB, verifies all three exact retained files and re-evaluates expiry using
+  the current local clock. It never rewrites the saved receipt or performs requests.
   Preflight reads no credential values, resolves no DNS and sends no requests.
   audit-bola rechecks retained artifacts offline and emits a sanitized audit receipt.
   audit-bola-lineage also regenerates the scan queue, selected draft and template source binding.
@@ -201,6 +206,33 @@ function assertCheckInterfaceReviewCommand(parsed: ReturnType<typeof parseArgs>)
   return {
     auditPath: requireFlag(parsed, "audit"),
     dispositionPath: requireFlag(parsed, "disposition"),
+    ...(output === undefined ? {} : { output }),
+  };
+}
+
+function assertCheckInterfaceReviewReceiptCommand(parsed: ReturnType<typeof parseArgs>): {
+  auditPath: string;
+  dispositionPath: string;
+  reviewPath: string;
+  output?: string;
+} {
+  const command = "check-interface-review-receipt";
+  if (parsed.positionals.length > 0) throw new Error(`${command} does not accept positional arguments`);
+  const allowed = new Set(["audit", "disposition", "review", "output"]);
+  for (const name of parsed.flags.keys()) {
+    if (!allowed.has(name)) throw new Error(`${command} does not support --${name}`);
+  }
+  for (const name of allowed) {
+    if (flags(parsed, name).length > 1) throw new Error(`${command} accepts --${name} at most once`);
+  }
+  const output = flag(parsed, "output");
+  if (output === "true" || (output !== undefined && !output.trim())) {
+    throw new Error("--output requires a file path");
+  }
+  return {
+    auditPath: requireFlag(parsed, "audit"),
+    dispositionPath: requireFlag(parsed, "disposition"),
+    reviewPath: requireFlag(parsed, "review"),
     ...(output === undefined ? {} : { output }),
   };
 }
@@ -470,6 +502,13 @@ async function main(): Promise<void> {
   if (parsed.command === "check-interface-review") {
     const options = assertCheckInterfaceReviewCommand(parsed);
     const result = await checkInterfaceReview(options);
+    await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, options.output);
+    return;
+  }
+
+  if (parsed.command === "check-interface-review-receipt") {
+    const options = assertCheckInterfaceReviewReceiptCommand(parsed);
+    const result = await checkInterfaceReviewReceipt(options);
     await writeOrStdout(`${JSON.stringify(result, null, 2)}\n`, options.output);
     return;
   }

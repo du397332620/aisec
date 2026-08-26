@@ -1,0 +1,89 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/interface-security-review-check-1.0.0.json",
+  "title": "AIsec InterfaceSecurityReviewCheck 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "receiptCheckId", "checkedAt", "status",
+    "savedReview", "currentEvaluation", "binding", "networkRequests",
+    "dnsLookups", "credentialEnvironmentReads", "targetCodeExecutions",
+    "limitations", "disclaimer"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "receiptCheckId": {
+      "type": "string",
+      "pattern": "^interface_security_review_check_[0-9a-f]{16}$"
+    },
+    "checkedAt": { "$ref": "#/$defs/dateTime" },
+    "status": { "const": "saved_review_verified" },
+    "savedReview": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "reviewId", "checkedAt", "digestSha256",
+        "status", "expiredDecisions"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "reviewId": {
+          "type": "string",
+          "pattern": "^interface_security_review_[0-9a-f]{16}$"
+        },
+        "checkedAt": { "$ref": "#/$defs/dateTime" },
+        "digestSha256": { "$ref": "#/$defs/digest" },
+        "status": { "$ref": "#/$defs/reviewStatus" },
+        "expiredDecisions": { "$ref": "#/$defs/nonNegative" }
+      }
+    },
+    "currentEvaluation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "expiredDecisions", "changedSinceSaved"],
+      "properties": {
+        "status": { "$ref": "#/$defs/reviewStatus" },
+        "expiredDecisions": { "$ref": "#/$defs/nonNegative" },
+        "changedSinceSaved": { "type": "boolean" }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "savedReceipt", "exactAudit", "exactDisposition", "exactEntryOrder",
+        "exactSavedFields", "exactReceiptDigest", "currentExpiryReevaluated"
+      ],
+      "properties": {
+        "savedReceipt": { "const": true },
+        "exactAudit": { "const": true },
+        "exactDisposition": { "const": true },
+        "exactEntryOrder": { "const": true },
+        "exactSavedFields": { "const": true },
+        "exactReceiptDigest": { "const": true },
+        "currentExpiryReevaluated": { "const": true }
+      }
+    },
+    "networkRequests": { "const": 0 },
+    "dnsLookups": { "const": 0 },
+    "credentialEnvironmentReads": { "const": 0 },
+    "targetCodeExecutions": { "const": 0 },
+    "limitations": {
+      "const": [
+        "This check proves exact local file consistency and current local expiry evaluation only; SHA-256 digests and stable IDs are not signatures and do not authenticate reviewer identity, origin or time.",
+        "The saved receipt remains unchanged; its current evaluation can differ only when retained expiry timestamps cross the current local clock, which is not a trusted timestamp authority.",
+        "This check does not prove scan evidence, reachability, deployed behavior, exploitability, the absence of vulnerabilities or that any route or project is safe.",
+        "The check executes no target code, reads no credential values, resolves no DNS and sends no network requests."
+      ]
+    },
+    "disclaimer": {
+      "const": "Saved review verified means only that the retained review matches the exact retained audit and disposition. The current evaluation is not a security pass, release waiver, active test result or assurance that any route or project is safe."
+    }
+  },
+  "$defs": {
+    "nonNegative": { "type": "integer", "minimum": 0 },
+    "dateTime": { "type": "string", "format": "date-time" },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "reviewStatus": { "enum": ["incomplete", "action_required", "recorded"] }
+  }
+}

@@ -20,6 +20,7 @@ import {
   type InterfaceSecurityAuditEntry,
   type InterfaceSecurityDisposition,
   type InterfaceSecurityReview,
+  type InterfaceSecurityReviewCheck,
   type InterfaceSecurityReviewStatus,
   type InterfaceVerificationQueue,
   type RuleCatalog,
@@ -36,7 +37,7 @@ import { safeRelativePath } from "../reporters/safety.js";
 import { classifyBolaStaticRoute } from "../web/bola-policy.js";
 import { canonicalJson, sha256, stableId } from "./utils.js";
 
-type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "BolaVerificationReport" | "BolaVerificationAudit" | "BolaVerificationLineageAudit" | "BolaVerificationLineageCheck" | "InterfaceVerificationQueue" | "InterfaceSecurityAudit" | "InterfaceSecurityDisposition" | "InterfaceSecurityReview" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
+type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "BolaVerificationReport" | "BolaVerificationAudit" | "BolaVerificationLineageAudit" | "BolaVerificationLineageCheck" | "InterfaceVerificationQueue" | "InterfaceSecurityAudit" | "InterfaceSecurityDisposition" | "InterfaceSecurityReview" | "InterfaceSecurityReviewCheck" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
 
 function loadSchema(filename: string): object {
   const path = fileURLToPath(new URL(`../../../schemas/${filename}`, import.meta.url));
@@ -63,6 +64,7 @@ const interfaceVerificationQueueValidator = ajv.compile(loadSchema("interface-ve
 const interfaceSecurityAuditValidator = ajv.compile(loadSchema("interface-security-audit.schema.json"));
 const interfaceSecurityDispositionValidator = ajv.compile(loadSchema("interface-security-disposition.schema.json"));
 const interfaceSecurityReviewValidator = ajv.compile(loadSchema("interface-security-review.schema.json"));
+const interfaceSecurityReviewCheckValidator = ajv.compile(loadSchema("interface-security-review-check.schema.json"));
 const ruleCatalogValidator = ajv.compile(loadSchema("rule-catalog.schema.json"));
 const rulePackValidator = ajv.compile(loadSchema("rule-pack.schema.json"));
 const rulePackPreviewValidator = ajv.compile(loadSchema("rule-pack-preview.schema.json"));
@@ -1407,6 +1409,61 @@ export function validateInterfaceSecurityReview(value: unknown): InterfaceSecuri
     throw new Error("InterfaceSecurityReview stable review ID is inconsistent");
   }
   return review;
+}
+
+export function validateInterfaceSecurityReviewCheck(
+  value: unknown,
+): InterfaceSecurityReviewCheck {
+  const check = assertSchema<InterfaceSecurityReviewCheck>(
+    "InterfaceSecurityReviewCheck",
+    interfaceSecurityReviewCheckValidator,
+    value,
+  );
+  if (interfaceReviewTime(check.checkedAt)
+    < interfaceReviewTime(check.savedReview.checkedAt)) {
+    throw new Error("InterfaceSecurityReviewCheck checkedAt must not precede the saved review checkedAt");
+  }
+  if (check.currentEvaluation.expiredDecisions
+    < check.savedReview.expiredDecisions) {
+    throw new Error("InterfaceSecurityReviewCheck expired-decision count cannot decrease over time");
+  }
+  if ((check.savedReview.expiredDecisions > 0
+      && check.savedReview.status !== "incomplete")
+    || (check.currentEvaluation.expiredDecisions > 0
+      && check.currentEvaluation.status !== "incomplete")) {
+    throw new Error("InterfaceSecurityReviewCheck expired decisions require an incomplete status");
+  }
+  const expectedChanged = check.savedReview.status !== check.currentEvaluation.status
+    || check.savedReview.expiredDecisions
+      !== check.currentEvaluation.expiredDecisions;
+  if (check.currentEvaluation.changedSinceSaved !== expectedChanged) {
+    throw new Error("InterfaceSecurityReviewCheck current-evaluation change flag is inconsistent");
+  }
+  if (check.savedReview.status !== check.currentEvaluation.status
+    && (check.savedReview.status === "incomplete"
+      || check.currentEvaluation.status !== "incomplete"
+      || check.currentEvaluation.expiredDecisions
+        <= check.savedReview.expiredDecisions)) {
+    throw new Error("InterfaceSecurityReviewCheck status transition is inconsistent with expiry-only reevaluation");
+  }
+  const expectedCheckId = stableId(
+    "interface_security_review_check",
+    check.schemaVersion,
+    check.savedReview.schemaVersion,
+    check.savedReview.reviewId,
+    check.savedReview.checkedAt,
+    check.savedReview.digestSha256,
+    check.savedReview.status,
+    String(check.savedReview.expiredDecisions),
+    check.currentEvaluation.status,
+    String(check.currentEvaluation.expiredDecisions),
+    String(check.currentEvaluation.changedSinceSaved),
+    check.checkedAt,
+  );
+  if (check.receiptCheckId !== expectedCheckId) {
+    throw new Error("InterfaceSecurityReviewCheck stable check ID is inconsistent");
+  }
+  return check;
 }
 
 export function validateRuleCatalog(value: unknown): RuleCatalog {
