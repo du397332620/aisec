@@ -24,7 +24,7 @@ modes and review guidance.
 Depth is intentionally concentrated in:
 
 - JavaScript/TypeScript, Next.js, React and Node.js
-- Python/FastAPI route, authentication, object-authorization and focused data-flow analysis
+- Python/FastAPI route, authentication, object/privileged-authorization and focused data-flow analysis
 - Express/NestJS route, authentication-boundary, object-authorization and privileged-operation analysis
 - Supabase and Firebase authorization configuration
 - React Native and common Android/iOS source configuration
@@ -38,7 +38,13 @@ router dependencies and route-level `Depends` or explicit identity guards. It
 detects sensitive routes that a global whitelist makes public and separately
 flags standalone services with no visible authentication boundary. It also
 identifies authenticated object operations without a visible owner/tenant/role
-constraint; request-derived URL, file-path and dynamic-SQL flows; and the
+constraint and explicit administrator, internal, role or permission-management
+operations without a locally proven role/permission denial. Authentication alone
+and owner/tenant checks are not treated as privileged authorization; only bounded
+local semantic guards propagate through app/router, `include_router`, decorator
+and handler boundaries. Imported or dynamic dependencies and external policy
+engines remain partial coverage. It also detects request-derived URL, file-path
+and dynamic-SQL flows; and the
 specific case where a caller-selected model base URL can receive a server API
 key. Existing dangerous-flow findings receive exact FastAPI route metadata when
 the source can be proven in the handler or through a uniquely resolved bounded
@@ -679,7 +685,7 @@ accepted suppressions for compatible consumers.
 
 | Capability | Mode / engine | Beta behavior and boundary |
 | --- | --- | --- |
-| Public rule catalog | JSON + generated Markdown | 58 shipped deterministic rules: 55 native and 3 bundled Opengrep; strict schema and drift checks tie detector IDs, corpus coverage, CWE/evidence metadata, Opengrep YAML/verified version and `RULES.md` to one catalog; `*` means syntax/config/artifact based without a dependency-semver gate, not complete framework support |
+| Public rule catalog | JSON + generated Markdown | 59 shipped deterministic rules: 56 native and 3 bundled Opengrep; strict schema and drift checks tie detector IDs, corpus coverage, CWE/evidence metadata, Opengrep YAML/verified version and `RULES.md` to one catalog; `*` means syntax/config/artifact based without a dependency-semver gate, not complete framework support |
 | Trusted release policy | Explicit operator-owned YAML | Strict public schema; policy must resolve outside the scanned target, retain the full predeploy engine boundary and may only keep or strengthen the default gate; shipped rule IDs are catalog-validated, narrow suppressions expire and require a second explicit confirmation, reports retain digest/gate/approval evidence, and policy baselines require the same digest; target-owned `.aisec.yml` is ignored |
 | Local fixed-baseline gate | `local-gate` CLI | First run writes an owner-only baseline in a dedicated target-external state directory; later runs automatically rescan that immutable baseline and atomically refresh only the latest report. Target-owned/symlinked/shared/unrecognized state, target drift and policy/rule-pack digest drift fail closed; deliberate baseline changes use a new empty private directory |
 | Declarative rule packs | Explicit operator-owned YAML/JSON | Strict `RulePack 1.1.0` with unchanged 1.0 compatibility; outside-target, digest-bound, bounded line-local present or required-literal-absent checks only; `rule-pack check`, Node API and MCP expose a strict bounded selector-only preview without literals/findings; absence findings are inferred and path-only, while an empty selection or reached bound makes coverage partial; no code, regex, target discovery, suppression or gate relaxation; ScanReport/CI/reporters retain pack ID, rule count and digest, and baselines require the same pack set |
@@ -687,7 +693,7 @@ accepted suppressions for compatible consumers.
 | Secrets in selected source files | Native | Deterministic provider patterns plus fully redacted concrete sensitive-environment interpolation fallbacks; working tree only, not Git history |
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; BaaS analysis recognizes bounded PostgreSQL RLS and Firebase Firestore/Storage authorization expressions, while unsupported helpers or syntax make coverage `partial`; some findings are explicitly `inferred` and require review |
-| FastAPI authentication and object authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, standalone unguarded services and missing object ownership/role checks are inferred |
+| FastAPI authentication and authorization | Native Python analyzer | Resolves common router composition and guards; whitelist bypasses are static-confirmed, while standalone unguarded services, missing object ownership and explicit privileged operations without a proven local role/permission check are inferred; imported/dynamic guards and external policy engines remain partial coverage |
 | Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local or one-hop directly imported immutable ESM route tables used by `forEach` and direct synchronous `for...of`, including at most two direct inline statically evaluable `filter`/`map` transforms, and NestJS controllers/guards/providers through local module imports, exports, re-exports and application-global visibility; accepts direct official `forwardRef` tokens/modules, visible synchronous static dynamic-module metadata, fully resolved direct official `NestFactory.create` roots from conventional runtime entry files, same-container direct `useGlobalGuards`, `setGlobalPrefix` and URI `enableVersioning` calls on their awaited `const` application instances, plus direct official static `RouterModule.register` trees from real module imports; composes independently scoped global/version/module/controller paths for shared controllers and otherwise retains bounded inferred-root routes without trusting imperative configuration, with both module and RouterModule traversal capped at eight edges and 256 entries; follows up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced, consumed through one single-condition `const`, or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, arbitrary collection transforms, unsupported operators/scopes or bootstrap graphs, unresolved providers/registration/bootstrap/global-guard/application-routing/RouterModule sites, package or mixin bases, complex wrappers and external policy engines still require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; exact FastAPI route origins propagate through direct handlers, unique local/relative imports and directly invoked lexical closures; comments, returned closures, ambiguous/dynamic dispatch and unproven request origins remain unattributed with stable machine-readable reasons in JSON/CI plus bounded terminal/Markdown/HTML summaries; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, global and broad route-local exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
@@ -1485,11 +1491,11 @@ npm run test:engines
 ```
 
 The public synthetic corpus contains 32 isolated cases: 16 positive/near-miss
-pairs covering all 55 deterministic native Beta rules across secrets, data
-flow, application configuration, FastAPI authentication and object
-authorization, Express/NestJS authentication and object authorization, Python
+pairs covering all 56 deterministic native Beta rules across secrets, data
+flow, application configuration, FastAPI authentication plus object and
+privileged authorization, Express/NestJS authentication and authorization, Python
 API data flow/configuration, BaaS, mobile source and mobile artifacts. Together
-with the 3 bundled Opengrep rules, these form the 58 entries in the public rule
+with the 3 bundled Opengrep rules, these form the 59 entries in the public rule
 catalog. The benchmark reports each category separately and verifies expected
 evidence and CWE metadata as well as false positives and false negatives. Its
 perfect fixture score is **not** a real-world efficacy claim; the corpus is

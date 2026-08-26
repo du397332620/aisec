@@ -19,6 +19,7 @@ export const ROUTE_SECURITY_RULES: Readonly<Record<string, RouteSecurityRulePres
   "fastapi.auth.whitelisted-sensitive-route": { category: "authentication", framework: "FastAPI", coverageDomain: "fastapi-authentication" },
   "fastapi.auth.sensitive-route-without-guard": { category: "authentication", framework: "FastAPI", coverageDomain: "fastapi-authentication" },
   "fastapi.authorization.object-without-ownership-check": { category: "object_authorization", framework: "FastAPI", coverageDomain: "fastapi-object-authorization" },
+  "fastapi.authorization.privileged-operation-without-role-check": { category: "privileged_authorization", framework: "FastAPI", coverageDomain: "fastapi-privileged-authorization" },
   "fastapi.config.route-raw-exception-response": { category: "exception_disclosure", framework: "FastAPI", coverageDomain: "python-api-configuration" },
   "python.dataflow.sql-injection": { category: "sql_injection", framework: "FastAPI", coverageDomain: "python-dataflow" },
   "python.dataflow.ssrf": { category: "ssrf", framework: "FastAPI", coverageDomain: "python-dataflow" },

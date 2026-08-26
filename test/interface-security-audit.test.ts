@@ -72,7 +72,7 @@ function cloneEvidence(
 test("interface audit preserves every supported category without network or target execution", async () => {
   const reports = await Promise.all([
     fixtureReport("fastapi-auth", "positive"),
-    fixtureReport("fastapi-authorization", "positive-read"),
+    fixtureReport("fastapi-authorization", "positive"),
     fixtureReport("node-api", "positive"),
     fixtureReport("python-dataflow", "positive"),
     fixtureReport("python-api-config", "positive"),
@@ -104,6 +104,10 @@ test("interface audit preserves every supported category without network or targ
     globalThis.fetch = originalFetch;
   }
   assert.equal(fetchCalls, 0);
+  const fastApiAudit = createInterfaceSecurityAudit(reports[1]!);
+  assert.ok(fastApiAudit.entries.some((entry) => entry.framework === "FastAPI"
+    && entry.route === "POST /permissions/grant"
+    && entry.category === "privileged_authorization"));
   assert.deepEqual([...categories].sort(), [
     "authentication",
     "credential_forwarding",

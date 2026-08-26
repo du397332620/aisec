@@ -175,6 +175,156 @@ test("FastAPI object authorization accepts a centralized ownership guard", async
   assert.ok(!report.signals.some((signal) => signal.ruleId === "fastapi.authorization.object-without-ownership-check"));
 });
 
+test("FastAPI privileged authorization reports an authenticated permission operation without a role guard", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "fastapi-authorization", "positive"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  const finding = report.signals.find((signal) => signal.ruleId === "fastapi.authorization.privileged-operation-without-role-check");
+  assert.ok(finding);
+  assert.equal(finding.evidenceLevel, "inferred");
+  assert.equal(finding.metadata?.route, "POST /permissions/grant");
+  assert.equal(finding.metadata?.handler, "grant_permission");
+});
+
+test("FastAPI privileged authorization accepts a locally proven permission dependency", async () => {
+  const { report } = await scanProject(join(fixtures, "corpus", "fastapi-authorization", "near-miss"), {
+    profile: "native",
+    nativeOnly: true,
+    persist: false,
+  });
+  assert.ok(!report.signals.some((signal) => signal.ruleId === "fastapi.authorization.privileged-operation-without-role-check"));
+});
+
+test("FastAPI privilege dependencies propagate across app, router, include and decorator boundaries", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-fastapi-privileged-propagation-"));
+  try {
+    await writeFile(join(temporary, "main.py"), `
+from fastapi import APIRouter, Depends, FastAPI, HTTPException
+
+def get_current_user():
+    return {"id": 7}
+
+def enforce_control(current_user=Depends(get_current_user)):
+    if not current_user.is_admin:
+        raise HTTPException(status_code=403)
+    return current_user
+
+app = FastAPI()
+protected_app = FastAPI(dependencies=[Depends(enforce_control)])
+router_guarded = APIRouter(prefix="/admin", dependencies=[Depends(enforce_control)])
+edge_guarded = APIRouter()
+
+@router_guarded.post("/refresh")
+def refresh_admin():
+    return refresh()
+
+@edge_guarded.post("/reindex")
+def reindex_internal():
+    return reindex()
+
+@app.patch("/roles/update", dependencies=[Depends(enforce_control)])
+def update_roles():
+    return update()
+
+@protected_app.post("/permissions/sync")
+def sync_permissions():
+    return sync()
+
+app.include_router(router_guarded)
+app.include_router(edge_guarded, prefix="/internal", dependencies=[Depends(enforce_control)])
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    assert.deepEqual(report.profile.routes, [
+      "PATCH /roles/update",
+      "POST /admin/refresh",
+      "POST /internal/reindex",
+      "POST /permissions/sync",
+    ]);
+    assert.ok(!report.signals.some((signal) => signal.ruleId === "fastapi.authorization.privileged-operation-without-role-check"));
+    assert.ok(!report.signals.some((signal) => signal.ruleId === "fastapi.auth.sensitive-route-without-guard"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
+test("FastAPI privileged authorization distinguishes role enforcement from tenant checks and unproven names", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-fastapi-privileged-boundary-"));
+  try {
+    await writeFile(join(temporary, "main.py"), `
+from fastapi import Depends, FastAPI, HTTPException
+
+def get_current_user():
+    return {"id": 7}
+
+def require_admin():
+    return get_current_user()
+
+def documented_guard():
+    """Example only: current_user.role and HTTPException(status_code=403)."""
+    return get_current_user()
+
+def get_current_user_from_request(request):
+    return request.user
+
+def local_admin_gate(request):
+    user = get_current_user_from_request(request)
+    if user.user_type != "admin":
+        raise HTTPException(status_code=403)
+    return user
+
+app = FastAPI(dependencies=[Depends(get_current_user)])
+
+@app.post("/admin/export")
+def tenant_scoped_export(request: ExportRequest, current_user=Depends(get_current_user)):
+    if current_user.tenant_id != request.tenant_id:
+        raise HTTPException(status_code=403)
+    return create_export(request.tenant_id)
+
+@app.patch("/admin/settings")
+def update_settings(request: SettingsRequest, current_user=Depends(get_current_user)):
+    if current_user.role != "admin":
+        raise HTTPException(status_code=403)
+    return save_settings(request)
+
+@app.delete("/admin/cache", dependencies=[Depends(require_admin)])
+def clear_cache():
+    return cache.clear()
+
+@app.post("/admin/documented", dependencies=[Depends(documented_guard)])
+def documented_admin_action():
+    return run_action()
+
+@app.post("/ordinary/task")
+def ordinary_task():
+    example = "grant_permission(current_user)"
+    return run_task(example)
+
+@app.post("/admin-config/reload")
+def reload_admin_config(request):
+    local_admin_gate(request)
+    return reload_config()
+
+@app.post("/admin-config/preview")
+def preview_admin_config():
+    return preview_config()
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const routes = report.signals
+      .filter((signal) => signal.ruleId === "fastapi.authorization.privileged-operation-without-role-check")
+      .map((signal) => signal.metadata?.route);
+    assert.deepEqual(routes, [
+      "POST /admin-config/preview",
+      "DELETE /admin/cache",
+      "POST /admin/documented",
+      "POST /admin/export",
+    ]);
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("FastAPI analysis ignores route-like decorators inside triple-quoted disabled code", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-fastapi-disabled-route-"));
   try {

@@ -124,7 +124,8 @@
       "variant": "positive",
       "path": "test/fixtures/corpus/fastapi-authorization/positive",
       "expectedRuleIds": [
-        "fastapi.authorization.object-without-ownership-check"
+        "fastapi.authorization.object-without-ownership-check",
+        "fastapi.authorization.privileged-operation-without-role-check"
       ]
     },
     {
@@ -135,7 +136,8 @@
       "path": "test/fixtures/corpus/fastapi-authorization/near-miss",
       "expectedRuleIds": [],
       "nearMissRuleIds": [
-        "fastapi.authorization.object-without-ownership-check"
+        "fastapi.authorization.object-without-ownership-check",
+        "fastapi.authorization.privileged-operation-without-role-check"
       ]
     },
     {

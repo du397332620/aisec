@@ -7,6 +7,7 @@ import { secretDetector } from "./secrets.js";
 import { runTypeScriptDataflow } from "./typescript-dataflow.js";
 import { runPythonApiAuth } from "./python-api-auth.js";
 import { runPythonApiAuthorization } from "./python-api-authorization.js";
+import { runPythonApiPrivilegedAuthorization } from "./python-api-privileged-authorization.js";
 import { runPythonDataflow } from "./python-dataflow.js";
 import { runPythonApiConfig } from "./python-api-config.js";
 import { runNodeApiSecurity } from "./node-api-security.js";
@@ -22,6 +23,7 @@ export async function runNativeDetectors(context: ScanContext): Promise<{ signal
     { domain: "node-api-security", run: runNodeApiSecurity },
     { domain: "fastapi-authentication", run: runPythonApiAuth },
     { domain: "fastapi-object-authorization", run: runPythonApiAuthorization },
+    { domain: "fastapi-privileged-authorization", run: runPythonApiPrivilegedAuthorization },
     { domain: "python-dataflow", run: runPythonDataflow },
     { domain: "python-api-configuration", run: runPythonApiConfig },
   ];

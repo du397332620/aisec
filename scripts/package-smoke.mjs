@@ -179,7 +179,7 @@ try {
   await access(join(packageRoot, "schemas", "interface-verification-queue.schema.json"), constants.R_OK);
   await access(join(packageRoot, "RULES.md"), constants.R_OK);
   const ruleCatalog = JSON.parse(await readFile(join(packageRoot, "rules", "catalog.json"), "utf8"));
-  assert.equal(ruleCatalog.rules.length, 58);
+  assert.equal(ruleCatalog.rules.length, 59);
   await access(join(packageRoot, "examples", "authorization.bola.local.yml"), constants.R_OK);
   await access(join(packageRoot, "examples", "security-policy.example.yml"), constants.R_OK);
   await access(join(packageRoot, "examples", "rule-pack.example.yml"), constants.R_OK);
@@ -190,7 +190,7 @@ try {
     "--eval",
     `import { loadRuleCatalog } from ${JSON.stringify(packageMetadata.name)}; process.stdout.write(JSON.stringify(loadRuleCatalog()));`,
   ], { cwd: consumer, env: scanEnvironment }), "installed rule catalog API");
-  assert.equal(catalogApi.rules.length, 58);
+  assert.equal(catalogApi.rules.length, 59);
 
   const policyApi = parseReport(run(process.execPath, [
     "--input-type=module",
@@ -814,8 +814,8 @@ process.stdout.write(JSON.stringify({
   });
   assert.ok(benchmarkOutput.trim(), "the installed benchmark entry point must produce a result");
   const benchmark = JSON.parse(benchmarkOutput);
-  assert.deepEqual(benchmark.catalog, { totalRules: 55, rulesWithPositive: 55, rulesWithNearMiss: 55 });
-  assert.equal(benchmark.totals.truePositive, 56);
+  assert.deepEqual(benchmark.catalog, { totalRules: 56, rulesWithPositive: 56, rulesWithNearMiss: 56 });
+  assert.equal(benchmark.totals.truePositive, 57);
   assert.equal(benchmark.totals.falsePositive, 0);
   assert.equal(benchmark.totals.falseNegative, 0);
   assert.equal(benchmark.totals.evidenceMismatches, 0);

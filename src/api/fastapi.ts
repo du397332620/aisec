@@ -15,6 +15,7 @@ export interface FastApiRoute {
   handlerSource: string;
   locallyProtected: boolean;
   ownershipProtected: boolean;
+  privilegeProtected: boolean;
   middlewareProtected: boolean;
   whitelist?: FastApiWhitelist;
 }
@@ -31,6 +32,7 @@ export interface FastApiAnalysis {
   unresolvedIncludes: number;
   authFunctionNames: string[];
   ownershipFunctionNames: string[];
+  privilegeFunctionNames: string[];
 }
 
 interface ImportTarget {
@@ -47,6 +49,7 @@ interface RouterNode {
   prefix: string;
   dependencyProtected: boolean;
   dependencyOwnershipProtected: boolean;
+  dependencyPrivilegeProtected: boolean;
   middlewareProtected: boolean;
   middlewareUsesWhitelist: boolean;
   sourcePath: string;
@@ -58,6 +61,7 @@ interface IncludeEdge {
   prefix: string;
   dependencyProtected: boolean;
   dependencyOwnershipProtected: boolean;
+  dependencyPrivilegeProtected: boolean;
   module: string;
 }
 
@@ -72,6 +76,7 @@ interface LocalRoute {
   handlerSource: string;
   handlerProtected: boolean;
   ownershipProtected: boolean;
+  privilegeProtected: boolean;
 }
 
 interface ParsedFile {
@@ -225,7 +230,7 @@ function stripComments(text: string): string {
   }).join("\n");
 }
 
-function pythonCodeMask(text: string): string {
+export function pythonCodeMask(text: string): string {
   let quote = "";
   let triple = false;
   let escaped = false;
@@ -368,6 +373,47 @@ function hasOwnershipGuard(source: string, ownershipNames: Set<string>): boolean
   if (roleDenial.test(clean)) return true;
   const selfSubjectAccess = /\b(?:current_user|principal|identity)\s*\.\s*(?:id|username|user_id)\b[\s\S]{0,160}\b(?:get|find|load|count|info|tokens?|sessions?)\w*\s*\(/i;
   return selfSubjectAccess.test(clean);
+}
+
+function hasDirectPrivilegeSemantics(source: string, authNames: Set<string> = new Set()): boolean {
+  const clean = pythonCodeMask(source);
+  const authorityField = String.raw`(?:roles?|permissions?|user_type|is_admin|is_superuser|has_role|has_permission)`;
+  const principalAuthority = new RegExp(String.raw`\b(?:current_user|authenticated_user|principal|identity|request\s*\.\s*user)\b\s*\.\s*${authorityField}\b`, "i");
+  const authorityCall = /\b(?:has_role|has_permission|check_role|check_permission)\s*\(\s*(?:current_user|authenticated_user|principal|identity|request\s*\.\s*user)\b/i;
+  const denial = /(?:HTTPException\s*\(\s*(?:status_code\s*=\s*)?403\b|status_code\s*=\s*(?:403\b|status\s*\.\s*HTTP_403_FORBIDDEN\b)|HTTP_403_FORBIDDEN\b|\bForbidden\b|\bPermissionDenied\b)/i;
+  if (!denial.test(clean)) return false;
+  if (principalAuthority.test(clean) || authorityCall.test(clean)) return true;
+  for (const name of authNames) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const assignment = new RegExp(String.raw`^\s*([A-Za-z_]\w*)\s*(?::[^=\n]+)?=\s*(?:await\s+)?(?:[A-Za-z_]\w*\.)*${escaped}\s*\(`, "gm");
+    for (const match of clean.matchAll(assignment)) {
+      const alias = match[1]?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      if (alias && new RegExp(String.raw`\b${alias}\b\s*\.\s*${authorityField}\b`, "i").test(clean)) return true;
+    }
+  }
+  return false;
+}
+
+function discoverPrivilegeFunctions(files: ProjectFile[], authNames: Set<string>): Set<string> {
+  const names = new Set<string>();
+  for (const file of files.filter((candidate) => candidate.relativePath.endsWith(".py"))) {
+    const pattern = /^(?:async\s+)?def\s+([A-Za-z_]\w*)\s*\(/gm;
+    for (const match of file.content.matchAll(pattern)) {
+      const name = match[1]!;
+      if (hasDirectPrivilegeSemantics(functionSource(file.content, match.index ?? 0), authNames)) names.add(name);
+    }
+  }
+  return names;
+}
+
+function hasPrivilegeGuard(source: string, privilegeNames: Set<string>, authNames: Set<string>): boolean {
+  const clean = pythonCodeMask(source);
+  for (const name of privilegeNames) {
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    if (new RegExp(`(?:Depends|Security)\\s*\\(\\s*(?:[A-Za-z_]\\w*\\.)*${escaped}\\b`).test(clean)) return true;
+    if (new RegExp(`\\b${escaped}\\s*\\(`).test(clean)) return true;
+  }
+  return hasDirectPrivilegeSemantics(clean, authNames);
 }
 
 function parseWhitelists(files: ProjectFile[]): FastApiWhitelist[] {
@@ -529,10 +575,19 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
   const pythonFiles = files.filter((file) => file.relativePath.endsWith(".py"));
   const detected = files.some((file) => /(?:^|[\s"'])fastapi(?:\b|[=<>])/i.test(file.content))
     || pythonFiles.some((file) => /\bfrom\s+fastapi\s+import\b|\bimport\s+fastapi\b/.test(file.content));
-  if (!detected) return { detected: false, routes: [], unresolvedIncludes: 0, authFunctionNames: [], ownershipFunctionNames: [] };
+  if (!detected) return {
+    detected: false,
+    routes: [],
+    unresolvedIncludes: 0,
+    authFunctionNames: [],
+    ownershipFunctionNames: [],
+    privilegeFunctionNames: [],
+  };
 
   const authNames = discoverAuthFunctions(pythonFiles);
   const ownershipNames = discoverOwnershipFunctions(pythonFiles);
+  const privilegeNames = discoverPrivilegeFunctions(pythonFiles, authNames);
+  for (const name of privilegeNames) authNames.add(name);
   const whitelists = parseWhitelists(pythonFiles);
   const parsedFiles = pythonFiles.map((file) => {
     const module = pythonModule(file.relativePath);
@@ -563,6 +618,7 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         prefix: keywordString(argumentsText, "prefix"),
         dependencyProtected: hasAuthGuard(argumentsText, authNames),
         dependencyOwnershipProtected: hasOwnershipGuard(argumentsText, ownershipNames),
+        dependencyPrivilegeProtected: hasPrivilegeGuard(argumentsText, privilegeNames, authNames),
         middlewareProtected: false,
         middlewareUsesWhitelist: false,
         sourcePath: parsed.file.relativePath,
@@ -603,6 +659,7 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         prefix: keywordString(argumentsText, "prefix"),
         dependencyProtected: hasAuthGuard(argumentsText, authNames),
         dependencyOwnershipProtected: hasOwnershipGuard(argumentsText, ownershipNames),
+        dependencyPrivilegeProtected: hasPrivilegeGuard(argumentsText, privilegeNames, authNames),
         module: parsed.module,
       });
     }
@@ -638,6 +695,7 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         handlerSource: source,
         handlerProtected: hasAuthGuard(`${argumentsText}\n${source}`, authNames),
         ownershipProtected: hasOwnershipGuard(`${argumentsText}\n${source}`, ownershipNames),
+        privilegeProtected: hasPrivilegeGuard(`${argumentsText}\n${source}`, privilegeNames, authNames),
       });
     }
   }
@@ -669,13 +727,15 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
     inheritedPrefix: string,
     dependencyProtected: boolean,
     ownershipProtected: boolean,
+    privilegeProtected: boolean,
   ): void => {
     const nodePrefix = joinPath(inheritedPrefix, node.prefix);
-    const traversalKey = [app.key, node.key, nodePrefix, dependencyProtected, ownershipProtected].join("\u0000");
+    const traversalKey = [app.key, node.key, nodePrefix, dependencyProtected, ownershipProtected, privilegeProtected].join("\u0000");
     if (seenTraversal.has(traversalKey)) return;
     seenTraversal.add(traversalKey);
     const nodeProtected = dependencyProtected || node.dependencyProtected;
     const nodeOwnershipProtected = ownershipProtected || node.dependencyOwnershipProtected;
+    const nodePrivilegeProtected = privilegeProtected || node.dependencyPrivilegeProtected;
     for (const route of routesByRouter.get(node.key) ?? []) {
       const path = joinPath(nodePrefix, route.path);
       routes.push({
@@ -690,6 +750,7 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         handlerSource: route.handlerSource,
         locallyProtected: nodeProtected || route.handlerProtected,
         ownershipProtected: nodeOwnershipProtected || route.ownershipProtected,
+        privilegeProtected: nodePrivilegeProtected || route.privilegeProtected,
         middlewareProtected: app.middlewareProtected,
         whitelist: app.middlewareProtected && app.middlewareUsesWhitelist ? whitelistFor(path, whitelists) : undefined,
       });
@@ -702,12 +763,13 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         joinPath(nodePrefix, edge.prefix),
         nodeProtected || edge.dependencyProtected,
         nodeOwnershipProtected || edge.dependencyOwnershipProtected,
+        nodePrivilegeProtected || edge.dependencyPrivilegeProtected,
       );
     }
   };
 
   for (const app of [...nodes.values()].filter((node) => node.kind === "app" && !NON_RUNTIME_APP_PATH.test(node.sourcePath))) {
-    visit(app, app, "", false, false);
+    visit(app, app, "", false, false, false);
   }
   const deduplicated = new Map(routes.map((route) => [routeKey(route), route]));
   return {
@@ -716,5 +778,6 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
     unresolvedIncludes,
     authFunctionNames: unique([...authNames]).sort(),
     ownershipFunctionNames: unique([...ownershipNames]).sort(),
+    privilegeFunctionNames: unique([...privilegeNames]).sort(),
   };
 }

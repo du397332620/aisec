@@ -11,8 +11,8 @@ const repositoryRoot = join(here, "..", "..");
 
 test("the public corpus gives every native Beta rule a positive and near-miss with the expected evidence level", async () => {
   const result = await runBenchmark();
-  assert.deepEqual(result.catalog, { totalRules: 55, rulesWithPositive: 55, rulesWithNearMiss: 55 });
-  assert.equal(result.totals.truePositive, 56);
+  assert.deepEqual(result.catalog, { totalRules: 56, rulesWithPositive: 56, rulesWithNearMiss: 56 });
+  assert.equal(result.totals.truePositive, 57);
   assert.equal(result.totals.falsePositive, 0);
   assert.equal(result.totals.falseNegative, 0);
   assert.equal(result.totals.evidenceMismatches, 0);
@@ -27,7 +27,7 @@ test("the public corpus gives every native Beta rule a positive and near-miss wi
 test("the corpus catalog cannot drift from rule ids declared by native detectors", async () => {
   const detectorFiles = [
     "app-config.ts", "artifacts.ts", "baas.ts", "platform.ts", "python-api-auth.ts",
-    "node-api-security.ts", "python-api-authorization.ts", "python-api-config.ts", "python-dataflow.ts", "secrets.ts", "typescript-dataflow.ts",
+    "node-api-security.ts", "python-api-authorization.ts", "python-api-privileged-authorization.ts", "python-api-config.ts", "python-dataflow.ts", "secrets.ts", "typescript-dataflow.ts",
   ];
   const declared = new Set<string>();
   for (const filename of detectorFiles) {

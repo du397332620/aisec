@@ -366,6 +366,17 @@
       "reviewGuidance": "Trace the object query to a server-controlled subject, tenant or privileged role and verify with two low-privilege accounts."
     },
     {
+      "ruleId": "fastapi.authorization.privileged-operation-without-role-check",
+      "source": "native",
+      "category": "api-security",
+      "summary": "FastAPI privileged operation has no visible role or permission check",
+      "cwe": ["CWE-862", "CWE-863"],
+      "defaultEvidenceLevel": "inferred",
+      "applicability": ["fastapi"],
+      "falsePositiveModes": ["The route or handler may have privileged-looking semantics while the operation is harmless, or authorization may be enforced by an imported dependency, gateway or unsupported policy layer."],
+      "reviewGuidance": "Identify the required role or permission and verify an authenticated low-privilege account is denied before the privileged business operation executes."
+    },
+    {
       "ruleId": "express.auth.sensitive-route-without-guard",
       "source": "native",
       "category": "api-security",

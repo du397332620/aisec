@@ -14,3 +14,8 @@ def delete_document(request: DeleteDocumentRequest, db=Depends(get_db)):
     db.delete(report)
     db.commit()
     return {"deleted": True}
+
+
+@app.post("/permissions/grant")
+def grant_permission(request: PermissionGrantRequest, service=Depends(get_permission_service)):
+    return service.grant(request.subject, request.permission)
