@@ -106,6 +106,7 @@ try {
   await access(join(repositoryRoot, "schemas", "bola-verification-report.schema.json"));
   await access(join(repositoryRoot, "schemas", "bola-verification-audit.schema.json"));
   await access(join(repositoryRoot, "schemas", "bola-verification-lineage-audit.schema.json"));
+  await access(join(repositoryRoot, "schemas", "bola-verification-lineage-check.schema.json"));
   const readme = await readFile(join(repositoryRoot, "README.md"), "utf8");
   for (const required of [
     "git clone https://github.com/du397332620/aisec.git",
@@ -125,11 +126,13 @@ try {
     "aisec check-bola",
     "aisec audit-bola",
     "aisec audit-bola-lineage",
+    "aisec check-bola-lineage",
     "BolaAuthorizationTemplate 1.1.0",
     "BolaAuthorizationCheck 1.2.0",
     "BolaVerificationReport 1.1.0",
     "BolaVerificationAudit 1.0.0",
     "BolaVerificationLineageAudit 1.0.0",
+    "BolaVerificationLineageCheck 1.0.0",
     "--template bola-authorization-template.json",
     "RulePack 1.1.0",
     "RulePackPreview 1.0.0",
@@ -173,8 +176,11 @@ try {
   assert.match(help, /verify-bola --authorization <manifest\.yml> --template <same-template\.json> --check <authorization-check\.json> --confirm/);
   assert.match(help, /audit-bola --authorization <same-manifest\.yml> --template <same-template\.json> --check <authorization-check\.json> --report <verification-report\.json>/);
   assert.match(help, /audit-bola-lineage --scan-report <scan-report\.json> --draft <selected-draft\.json> --authorization <same-manifest\.yml>/);
+  assert.match(help, /check-bola-lineage --scan-report <scan-report\.json> --draft <selected-draft\.json> --authorization <same-manifest\.yml>.*--lineage-audit <lineage-audit\.json>/);
   assert.match(help, /audit-bola rechecks retained artifacts offline and emits a sanitized audit receipt/u);
   assert.match(help, /audit-bola-lineage also regenerates the scan queue, selected draft and template source binding/u);
+  assert.match(help, /check-bola-lineage revalidates a saved lineage receipt against all six retained inputs offline/u);
+  assert.match(help, /saved lineage audit JSON file at most 1 MiB/u);
   assert.match(help, /strict 1\.1 result binds sanitized receipt\/template provenance/u);
   assert.match(help, /interface-queue --scan <scan-id\|report\.json>/);
   assert.match(help, /draft-bola --scan <scan-id\|report\.json>.*--candidate interface-candidate-id/);

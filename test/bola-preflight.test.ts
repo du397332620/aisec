@@ -1,18 +1,19 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
 import { once } from "node:events";
-import { mkdtemp, rm, truncate, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, truncate, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import test from "node:test";
-import type { BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaVerificationAudit, BolaVerificationLineageAudit, ScanReport } from "../src/schema.js";
+import type { BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaVerificationAudit, BolaVerificationLineageAudit, BolaVerificationLineageCheck, ScanReport } from "../src/schema.js";
 import {
   validateBolaAuthorizationCheck,
   validateBolaAuthorizationTemplate,
   validateBolaDraftPlan,
   validateBolaVerificationAudit,
   validateBolaVerificationLineageAudit,
+  validateBolaVerificationLineageCheck,
   validateBolaVerificationReport,
 } from "../src/core/schema-validation.js";
 import { scanProject } from "../src/core/scan.js";
@@ -32,6 +33,12 @@ import {
   auditBolaVerificationLineage,
   loadBolaLineageScanReport,
 } from "../src/web/bola-lineage-audit.js";
+import {
+  MAX_BOLA_LINEAGE_RECEIPT_BYTES,
+  checkBolaLineage,
+  checkBolaVerificationLineageReceipt,
+  loadBolaVerificationLineageAudit,
+} from "../src/web/bola-lineage-check.js";
 import {
   MAX_BOLA_PREFLIGHT_DOCUMENT_BYTES,
   assertBolaVerificationPreflight,
@@ -1064,6 +1071,7 @@ test("audit-bola proves exact retained artifact binding offline and emits only a
       requester,
     });
     await writeFile(compatibleLegacyReportPath, `${JSON.stringify(compatibleLegacyReport)}\n`);
+    const lineageReceiptPath = join(temporary, "lineage-audit.json");
 
     const originalLineageEnvironment = process.env;
     const originalLineageFetch = globalThis.fetch;
@@ -1122,6 +1130,133 @@ test("audit-bola proves exact retained artifact binding offline and emits only a
         requesterCalls: 0,
         networkRequests: 0,
       });
+      await writeFile(lineageReceiptPath, `${JSON.stringify(loaded)}\n`);
+      const directCheck = checkBolaVerificationLineageReceipt(
+        scan,
+        draft,
+        manifest,
+        template,
+        currentReceipt,
+        currentReport,
+        loaded,
+      );
+      const savedCheck = await checkBolaLineage({
+        scanReportPath: scanPath,
+        draftPath,
+        authorizationPath: manifestPath,
+        templatePath,
+        checkPath,
+        reportPath,
+        lineageAuditPath: lineageReceiptPath,
+      });
+      assert.equal(validateBolaVerificationLineageCheck(directCheck), directCheck);
+      assert.equal(validateBolaVerificationLineageCheck(savedCheck), savedCheck);
+      assert.equal(savedCheck.schemaVersion, "1.0.0");
+      assert.equal(savedCheck.status, "saved_lineage_verified");
+      assert.equal(savedCheck.lineageCheckId, directCheck.lineageCheckId);
+      assert.equal(savedCheck.receipt.lineageAuditId, loaded.lineageAuditId);
+      assert.equal(savedCheck.receipt.auditedAt, loaded.auditedAt);
+      assert.equal(savedCheck.receipt.digestSha256, directCheck.receipt.digestSha256);
+      assert.deepEqual(savedCheck.binding, {
+        savedReceipt: true,
+        recomputedLineage: true,
+        exactStableFields: true,
+        retainedArtifacts: true,
+        exactReceiptDigest: true,
+      });
+      assert.deepEqual(savedCheck.io, {
+        environmentValuesRead: 0,
+        dnsLookups: 0,
+        requesterCalls: 0,
+        networkRequests: 0,
+      });
+
+      const reorderedReceipt = Object.fromEntries(Object.entries(loaded).reverse());
+      const reorderedReceiptCheck = checkBolaVerificationLineageReceipt(
+        scan,
+        draft,
+        manifest,
+        template,
+        currentReceipt,
+        currentReport,
+        reorderedReceipt,
+      );
+      assert.equal(reorderedReceiptCheck.receipt.digestSha256, savedCheck.receipt.digestSha256);
+      assert.equal(reorderedReceiptCheck.lineageCheckId, savedCheck.lineageCheckId);
+
+      const changedAuditTime = structuredClone(loaded);
+      changedAuditTime.auditedAt = "2026-01-01T00:00:00.000Z";
+      const changedAuditTimeCheck = checkBolaVerificationLineageReceipt(
+        scan,
+        draft,
+        manifest,
+        template,
+        currentReceipt,
+        currentReport,
+        changedAuditTime,
+      );
+      assert.equal(changedAuditTimeCheck.status, "saved_lineage_verified");
+      assert.notEqual(changedAuditTimeCheck.receipt.digestSha256, savedCheck.receipt.digestSha256);
+      assert.notEqual(changedAuditTimeCheck.lineageCheckId, savedCheck.lineageCheckId);
+
+      const splicedReport = structuredClone(currentReport);
+      splicedReport.verificationId = "bola_00000000-0000-4000-8000-000000000001";
+      const splicedValidReceipt = auditBolaVerificationLineage(
+        scan,
+        draft,
+        manifest,
+        template,
+        currentReceipt,
+        splicedReport,
+      );
+      assert.equal(validateBolaVerificationLineageAudit(splicedValidReceipt), splicedValidReceipt);
+      assert.throws(
+        () => checkBolaVerificationLineageReceipt(
+          scan,
+          draft,
+          manifest,
+          template,
+          currentReceipt,
+          currentReport,
+          splicedValidReceipt,
+        ),
+        /saved BOLA lineage audit stable fields do not match the recomputed retained artifacts/u,
+      );
+
+      const forgedCheckId = structuredClone(savedCheck);
+      forgedCheckId.lineageCheckId = "bola_lineage_check_0000000000000000";
+      assert.throws(
+        () => validateBolaVerificationLineageCheck(forgedCheckId),
+        /stable lineage check ID is inconsistent/u,
+      );
+      const forgedReceiptDigest = structuredClone(savedCheck);
+      forgedReceiptDigest.receipt.digestSha256 = "0".repeat(64);
+      assert.throws(
+        () => validateBolaVerificationLineageCheck(forgedReceiptDigest),
+        /stable lineage check ID is inconsistent/u,
+      );
+      const leakedCheck = structuredClone(savedCheck) as BolaVerificationLineageCheck & { target?: string };
+      leakedCheck.target = manifest.targetBaseUrl;
+      assert.throws(
+        () => validateBolaVerificationLineageCheck(leakedCheck),
+        /additional properties.*target/u,
+      );
+
+      const serializedCheck = JSON.stringify(savedCheck);
+      for (const forbidden of [
+        scan.target,
+        queue.candidates[0]!.route,
+        draft.candidates[0]!.path,
+        draft.candidates[0]!.handler,
+        draft.candidates[0]!.source.location.path,
+        draft.candidates[0]!.source.ruleId,
+        manifest.targetBaseUrl,
+        manifest.cases[0]!.testDataLabel,
+        credentials.AISEC_BOLA_BINDING_OWNER_USERNAME,
+        "audit-owner-token",
+        "audit-forbidden-response",
+        ...currentReport.cases.map((item) => item.reason),
+      ]) assert.ok(!serializedCheck.includes(forbidden), `lineage check leaked ${forbidden}`);
       const compatibleLegacy = await auditBolaLineage({
         scanReportPath: scanPath,
         draftPath,
@@ -1232,6 +1367,27 @@ test("audit-bola proves exact retained artifact binding offline and emits only a
       /exceeds 67108864 bytes/u,
     );
     await assert.rejects(() => loadBolaLineageScanReport(temporary), /regular file/u);
+    assert.deepEqual(
+      await loadBolaVerificationLineageAudit(lineageReceiptPath),
+      JSON.parse(await readFile(lineageReceiptPath, "utf8")) as BolaVerificationLineageAudit,
+    );
+    const invalidLineageReceiptPath = join(temporary, "invalid-lineage-audit.json");
+    await writeFile(invalidLineageReceiptPath, "schemaVersion: 1.0.0\n");
+    await assert.rejects(
+      () => loadBolaVerificationLineageAudit(invalidLineageReceiptPath),
+      /valid JSON/u,
+    );
+    const oversizedLineageReceiptPath = join(temporary, "oversized-lineage-audit.json");
+    await writeFile(oversizedLineageReceiptPath, "{}");
+    await truncate(oversizedLineageReceiptPath, MAX_BOLA_LINEAGE_RECEIPT_BYTES + 1);
+    await assert.rejects(
+      () => loadBolaVerificationLineageAudit(oversizedLineageReceiptPath),
+      /exceeds 1048576 bytes/u,
+    );
+    await assert.rejects(
+      () => loadBolaVerificationLineageAudit(temporary),
+      /regular file/u,
+    );
 
     const lineageCli = await runAudit([
       "audit-bola-lineage",
@@ -1279,6 +1435,57 @@ test("audit-bola proves exact retained artifact binding offline and emits only a
     ]);
     assert.equal(unsupportedConfirmation.code, 64);
     assert.match(unsupportedConfirmation.stderr, /does not support --confirm/u);
+
+    const checkedLineage = await runAudit([
+      "check-bola-lineage",
+      "--scan-report", scanPath,
+      "--draft", draftPath,
+      "--authorization", manifestPath,
+      "--template", templatePath,
+      "--check", checkPath,
+      "--report", reportPath,
+      "--lineage-audit", lineageReceiptPath,
+    ]);
+    assert.equal(checkedLineage.code, 0, checkedLineage.stderr);
+    const checkedLineageJson: unknown = JSON.parse(checkedLineage.stdout);
+    assert.equal(validateBolaVerificationLineageCheck(checkedLineageJson), checkedLineageJson);
+    const missingLineageAudit = await runAudit([
+      "check-bola-lineage",
+      "--scan-report", scanPath,
+      "--draft", draftPath,
+      "--authorization", manifestPath,
+      "--template", templatePath,
+      "--check", checkPath,
+      "--report", reportPath,
+    ]);
+    assert.equal(missingLineageAudit.code, 64);
+    assert.match(missingLineageAudit.stderr, /--lineage-audit is required/u);
+    const duplicateLineageAudit = await runAudit([
+      "check-bola-lineage",
+      "--scan-report", scanPath,
+      "--draft", draftPath,
+      "--authorization", manifestPath,
+      "--template", templatePath,
+      "--check", checkPath,
+      "--report", reportPath,
+      "--lineage-audit", lineageReceiptPath,
+      "--lineage-audit", lineageReceiptPath,
+    ]);
+    assert.equal(duplicateLineageAudit.code, 64);
+    assert.match(duplicateLineageAudit.stderr, /accepts --lineage-audit at most once/u);
+    const unsupportedLineageCheckConfirmation = await runAudit([
+      "check-bola-lineage",
+      "--scan-report", scanPath,
+      "--draft", draftPath,
+      "--authorization", manifestPath,
+      "--template", templatePath,
+      "--check", checkPath,
+      "--report", reportPath,
+      "--lineage-audit", lineageReceiptPath,
+      "--confirm",
+    ]);
+    assert.equal(unsupportedLineageCheckConfirmation.code, 64);
+    assert.match(unsupportedLineageCheckConfirmation.stderr, /does not support --confirm/u);
   });
 });
 

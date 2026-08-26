@@ -2,14 +2,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
-import type { AuthorizationManifest, BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaDraftPlan, BolaVerificationAudit, BolaVerificationLineageAudit, BolaVerificationReport, CiReport, FixContract, InterfaceVerificationQueue, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
+import type { AuthorizationManifest, BolaAuthorizationCheck, BolaAuthorizationManifest, BolaAuthorizationTemplate, BolaDraftPlan, BolaVerificationAudit, BolaVerificationLineageAudit, BolaVerificationLineageCheck, BolaVerificationReport, CiReport, FixContract, InterfaceVerificationQueue, RuleCatalog, RulePack, RulePackPreview, RulePackRecord, ScanReport, SecurityPolicy } from "../schema.js";
 import { ROUTE_SECURITY_RULES, routeSecurityIssueKey } from "./route-security.js";
 import { evaluateRouteSecurityBaselineGate } from "./route-security-gate.js";
 import { safeRelativePath } from "../reporters/safety.js";
 import { classifyBolaStaticRoute } from "../web/bola-policy.js";
 import { stableId } from "./utils.js";
 
-type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "BolaVerificationReport" | "BolaVerificationAudit" | "BolaVerificationLineageAudit" | "InterfaceVerificationQueue" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
+type PublicSchemaName = "ScanReport" | "CiReport" | "FixContract" | "AuthorizationManifest" | "BolaAuthorizationManifest" | "BolaAuthorizationTemplate" | "BolaAuthorizationCheck" | "BolaDraftPlan" | "BolaVerificationReport" | "BolaVerificationAudit" | "BolaVerificationLineageAudit" | "BolaVerificationLineageCheck" | "InterfaceVerificationQueue" | "RuleCatalog" | "RulePack" | "RulePackPreview" | "SecurityPolicy";
 
 function loadSchema(filename: string): object {
   const path = fileURLToPath(new URL(`../../../schemas/${filename}`, import.meta.url));
@@ -31,6 +31,7 @@ const bolaDraftPlanValidator = ajv.compile(loadSchema("bola-draft.schema.json"))
 const bolaVerificationReportValidator = ajv.compile(loadSchema("bola-verification-report.schema.json"));
 const bolaVerificationAuditValidator = ajv.compile(loadSchema("bola-verification-audit.schema.json"));
 const bolaVerificationLineageAuditValidator = ajv.compile(loadSchema("bola-verification-lineage-audit.schema.json"));
+const bolaVerificationLineageCheckValidator = ajv.compile(loadSchema("bola-verification-lineage-check.schema.json"));
 const interfaceVerificationQueueValidator = ajv.compile(loadSchema("interface-verification-queue.schema.json"));
 const ruleCatalogValidator = ajv.compile(loadSchema("rule-catalog.schema.json"));
 const rulePackValidator = ajv.compile(loadSchema("rule-pack.schema.json"));
@@ -731,6 +732,27 @@ export function validateBolaVerificationLineageAudit(
     throw new Error("BolaVerificationLineageAudit stable lineage audit ID is inconsistent");
   }
   return audit;
+}
+
+export function validateBolaVerificationLineageCheck(
+  value: unknown,
+): BolaVerificationLineageCheck {
+  const check = assertSchema<BolaVerificationLineageCheck>(
+    "BolaVerificationLineageCheck",
+    bolaVerificationLineageCheckValidator,
+    value,
+  );
+  const expectedLineageCheckId = stableId(
+    "bola_lineage_check",
+    check.receipt.schemaVersion,
+    check.receipt.lineageAuditId,
+    check.receipt.auditedAt,
+    check.receipt.digestSha256,
+  );
+  if (check.lineageCheckId !== expectedLineageCheckId) {
+    throw new Error("BolaVerificationLineageCheck stable lineage check ID is inconsistent");
+  }
+  return check;
 }
 
 export function validateBolaDraftPlan(value: unknown): BolaDraftPlan {

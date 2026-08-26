@@ -132,3 +132,15 @@ identity, token, response/evidence or case reason. Canonical digests and stable
 IDs remain local consistency evidence only; preserve explicit zero-I/O counters
 and non-authenticity limitations in schema, validator, tests, docs and installed
 package smoke.
+
+Saved BOLA lineage-check changes must keep `check-bola-lineage` offline and
+recompute the existing complete lineage from the same six retained inputs. The
+saved lineage receipt is strict JSON and capped at 1 MiB. Compare every field
+except the recomputation's new top-level `auditedAt`; the saved timestamp must
+still validate and remain inside the canonical complete-receipt digest. The
+strict `BolaVerificationLineageCheck 1.0.0` output must contain no target,
+route, source, rule/finding, object/fixture, credential, identity, token,
+response/evidence or case reason. Preserve explicit zero-I/O counters and state
+that stable IDs/digests do not prove authorship, origin, freshness, execution or
+observation authenticity. Update schema, validator, tests, docs and installed
+package smoke together.

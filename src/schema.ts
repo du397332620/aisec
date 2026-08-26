@@ -10,6 +10,7 @@ export const BOLA_AUTHORIZATION_CHECK_SCHEMA_VERSION = "1.2.0" as const;
 export const BOLA_VERIFICATION_REPORT_SCHEMA_VERSION = "1.1.0" as const;
 export const BOLA_VERIFICATION_AUDIT_SCHEMA_VERSION = "1.0.0" as const;
 export const BOLA_VERIFICATION_LINEAGE_AUDIT_SCHEMA_VERSION = "1.0.0" as const;
+export const BOLA_VERIFICATION_LINEAGE_CHECK_SCHEMA_VERSION = "1.0.0" as const;
 
 export type Severity = "critical" | "high" | "medium" | "low" | "info";
 export type EvidenceLevel = "verified" | "static_confirmed" | "inferred";
@@ -872,6 +873,37 @@ export interface BolaVerificationLineageAudit {
     "This lineage audit proves consistency among the exact retained files only; stable IDs and digests are not signatures and do not authenticate author, origin or freshness.",
     "This lineage audit does not execute target code, replay requests or prove that the recorded scan and network observations occurred.",
     "Static selection and protected listed cases do not prove that a route or system is secure or exploitable beyond the exact recorded scope.",
+  ];
+}
+
+export interface BolaVerificationLineageCheck {
+  schemaVersion: typeof BOLA_VERIFICATION_LINEAGE_CHECK_SCHEMA_VERSION;
+  lineageCheckId: string;
+  checkedAt: string;
+  status: "saved_lineage_verified";
+  receipt: {
+    schemaVersion: typeof BOLA_VERIFICATION_LINEAGE_AUDIT_SCHEMA_VERSION;
+    lineageAuditId: string;
+    auditedAt: string;
+    digestSha256: string;
+  };
+  binding: {
+    savedReceipt: true;
+    recomputedLineage: true;
+    exactStableFields: true;
+    retainedArtifacts: true;
+    exactReceiptDigest: true;
+  };
+  io: {
+    environmentValuesRead: 0;
+    dnsLookups: 0;
+    requesterCalls: 0;
+    networkRequests: 0;
+  };
+  limitations: [
+    "The saved lineage audit timestamp is recorded and digest-bound but excluded from recomputation because each lineage audit records its own execution time.",
+    "This check proves consistency among the saved receipt and exact retained files only; stable IDs and digests are not signatures and do not authenticate author, origin or freshness.",
+    "This check does not execute target code, replay requests or prove that the recorded scan and network observations occurred.",
   ];
 }
 

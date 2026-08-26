@@ -191,6 +191,16 @@ impact. Stop testing and report privately once a vulnerability is confirmed.
   retained-file consistency only, not authorship, origin, freshness, scan
   execution or observation authenticity. Legacy unselected draft 1.0 is not
   eligible because it has no interface-queue selection binding.
+- `check-bola-lineage` accepts that saved lineage receipt as a seventh strict
+  regular JSON file capped at 1 MiB and recomputes the complete six-file lineage
+  offline. It compares every stable receipt field; only the freshly regenerated
+  top-level `auditedAt` is excluded, while the saved timestamp remains validated
+  and bound into the canonical complete-receipt digest. The command reads no
+  credential values, resolves no DNS, invokes no requester, executes no target
+  code and sends no request. Its strict `BolaVerificationLineageCheck 1.0.0`
+  omits target/route/source/rule/finding/object/fixture/credential/identity/token/
+  response/case-reason data. IDs and digests prove local consistency only, not
+  authorship, origin, freshness, execution or observation authenticity.
 - Passive web requests pin a validated DNS answer to the socket and redirects
   must retain the exact authorized origin. Local verification is deliberately
   allowed to reach private addresses; staging/test verification is not.

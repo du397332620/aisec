@@ -1,0 +1,76 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://aisec.dev/schemas/bola-verification-lineage-check-1.0.0.json",
+  "title": "AIsec BOLA Verification Lineage Check 1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "lineageCheckId", "checkedAt", "status", "receipt",
+    "binding", "io", "limitations"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "lineageCheckId": {
+      "type": "string",
+      "pattern": "^bola_lineage_check_[0-9a-f]{16}$"
+    },
+    "checkedAt": { "$ref": "#/$defs/dateTime" },
+    "status": { "const": "saved_lineage_verified" },
+    "receipt": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "schemaVersion", "lineageAuditId", "auditedAt", "digestSha256"
+      ],
+      "properties": {
+        "schemaVersion": { "const": "1.0.0" },
+        "lineageAuditId": {
+          "type": "string",
+          "pattern": "^bola_lineage_audit_[0-9a-f]{16}$"
+        },
+        "auditedAt": { "$ref": "#/$defs/dateTime" },
+        "digestSha256": { "$ref": "#/$defs/digest" }
+      }
+    },
+    "binding": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "savedReceipt", "recomputedLineage", "exactStableFields",
+        "retainedArtifacts", "exactReceiptDigest"
+      ],
+      "properties": {
+        "savedReceipt": { "const": true },
+        "recomputedLineage": { "const": true },
+        "exactStableFields": { "const": true },
+        "retainedArtifacts": { "const": true },
+        "exactReceiptDigest": { "const": true }
+      }
+    },
+    "io": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "environmentValuesRead", "dnsLookups", "requesterCalls",
+        "networkRequests"
+      ],
+      "properties": {
+        "environmentValuesRead": { "const": 0 },
+        "dnsLookups": { "const": 0 },
+        "requesterCalls": { "const": 0 },
+        "networkRequests": { "const": 0 }
+      }
+    },
+    "limitations": {
+      "const": [
+        "The saved lineage audit timestamp is recorded and digest-bound but excluded from recomputation because each lineage audit records its own execution time.",
+        "This check proves consistency among the saved receipt and exact retained files only; stable IDs and digests are not signatures and do not authenticate author, origin or freshness.",
+        "This check does not execute target code, replay requests or prove that the recorded scan and network observations occurred."
+      ]
+    }
+  },
+  "$defs": {
+    "dateTime": { "type": "string", "format": "date-time" },
+    "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  }
+}
