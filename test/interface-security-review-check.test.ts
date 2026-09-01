@@ -176,6 +176,23 @@ test("saved incomplete review revalidates without inventing a complete outcome",
   assert.equal(result.currentEvaluation.changedSinceSaved, false);
 });
 
+test("saved review receipt check preserves a complete legacy 1.0 artifact chain", async () => {
+  const legacy = structuredClone(await fixtureAudit("fastapi-auth", "positive"));
+  legacy.schemaVersion = "1.0.0";
+  delete legacy.summary.missingAuthenticationGapReasons;
+  for (const source of legacy.entries.flatMap((entry) => entry.sources)) {
+    delete source.authenticationGapReason;
+  }
+  const disposition = createInterfaceSecurityDisposition(legacy);
+  const review = checkInterfaceSecurityReview(legacy, disposition);
+  const checked = checkSavedInterfaceSecurityReview(legacy, disposition, review);
+  assert.equal(disposition.schemaVersion, "1.0.0");
+  assert.equal(review.schemaVersion, "1.0.0");
+  assert.equal(checked.schemaVersion, "1.0.0");
+  assert.equal(checked.savedReview.schemaVersion, "1.0.0");
+  assert.doesNotThrow(() => validateInterfaceSecurityReviewCheck(checked));
+});
+
 test("saved review check rejects audit, disposition and saved-receipt drift", async () => {
   const audit = await fixtureAudit("node-api", "positive");
   const disposition = acceptedDisposition(audit);
@@ -265,6 +282,13 @@ test("saved review check validator fails closed on forged IDs and time-transitio
   forgedId.receiptCheckId = "interface_security_review_check_0000000000000000";
   assert.throws(() => validateInterfaceSecurityReviewCheck(forgedId), /stable check ID/iu);
 
+  const mixedVersion = structuredClone(result);
+  mixedVersion.schemaVersion = "1.0.0";
+  assert.throws(
+    () => validateInterfaceSecurityReviewCheck(mixedVersion),
+    /schema version.*saved review|savedReview\/schemaVersion must be equal to constant/iu,
+  );
+
   const forgedChange = structuredClone(result);
   forgedChange.currentEvaluation.changedSinceSaved = true;
   assert.throws(() => validateInterfaceSecurityReviewCheck(forgedChange), /change flag/iu);
@@ -351,7 +375,7 @@ test("saved review receipt file API and CLI emit local artifacts and reject acti
       reviewPath,
     ], { encoding: "utf8", timeout: 30_000 });
     assert.equal(stdout.status, 0, stdout.stderr);
-    assert.equal(JSON.parse(stdout.stdout).schemaVersion, "1.0.0");
+    assert.equal(JSON.parse(stdout.stdout).schemaVersion, "1.1.0");
 
     for (const args of [
       ["check-interface-review-receipt"],

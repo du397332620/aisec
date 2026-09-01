@@ -392,7 +392,8 @@ suppressions: []
     "--scan",
     storedReport,
   ], { cwd: consumer, env: scanEnvironment }), "installed interface security audit");
-  assert.equal(interfaceAudit.schemaVersion, "1.0.0");
+  assert.equal(interfaceAudit.schemaVersion, "1.1.0");
+  assert.equal(interfaceAudit.summary.missingAuthenticationGapReasons, 0);
   assert.equal(interfaceAudit.scan.scanId, vulnerable.scanId);
   assert.equal(interfaceAudit.coverageScope, "observed_attributed_routes_only");
   assert.equal(interfaceAudit.networkRequests, 0);
@@ -403,7 +404,7 @@ suppressions: []
     "--eval",
     `import { readFileSync } from "node:fs"; import { createInterfaceSecurityAudit, validateInterfaceSecurityAudit } from ${JSON.stringify(packageMetadata.name)}; const scan = JSON.parse(readFileSync(${JSON.stringify(storedReport)}, "utf8")); const value = validateInterfaceSecurityAudit(createInterfaceSecurityAudit(scan)); process.stdout.write(JSON.stringify({ schemaVersion: value.schemaVersion, scanId: value.scan.scanId, networkRequests: value.networkRequests }));`,
   ], { cwd: consumer, env: scanEnvironment }), "installed interface security audit API");
-  assert.deepEqual(interfaceAuditApi, { schemaVersion: "1.0.0", scanId: vulnerable.scanId, networkRequests: 0 });
+  assert.deepEqual(interfaceAuditApi, { schemaVersion: "1.1.0", scanId: vulnerable.scanId, networkRequests: 0 });
 
   const installedInterfaceAuditPath = join(temporary, "installed-interface-audit.json");
   const installedDispositionPath = join(temporary, "installed-interface-disposition.json");
@@ -418,6 +419,7 @@ suppressions: []
   ], { cwd: consumer, env: scanEnvironment });
   assert.equal(installedDispositionOutput, "");
   const installedDisposition = JSON.parse(await readFile(installedDispositionPath, "utf8"));
+  assert.equal(installedDisposition.schemaVersion, "1.1.0");
   assert.equal(installedDisposition.audit.auditId, interfaceAudit.auditId);
   assert.equal(installedDisposition.reviewedBy, "<SET_REVIEW_OWNER>");
   const installedInterfaceReview = parseReport(run(executable, [
@@ -427,6 +429,7 @@ suppressions: []
     "--disposition",
     installedDispositionPath,
   ], { cwd: consumer, env: scanEnvironment }), "installed interface review");
+  assert.equal(installedInterfaceReview.schemaVersion, "1.1.0");
   assert.equal(installedInterfaceReview.status, "incomplete");
   assert.equal(installedInterfaceReview.assertions.originalDecisionUnchanged, true);
   assert.equal(installedInterfaceReview.networkRequests, 0);
@@ -441,6 +444,7 @@ suppressions: []
     "--review",
     installedInterfaceReviewPath,
   ], { cwd: consumer, env: scanEnvironment }), "installed saved interface review check");
+  assert.equal(installedInterfaceReviewCheck.schemaVersion, "1.1.0");
   assert.equal(installedInterfaceReviewCheck.status, "saved_review_verified");
   assert.equal(installedInterfaceReviewCheck.currentEvaluation.status, "incomplete");
   assert.equal(installedInterfaceReviewCheck.currentEvaluation.changedSinceSaved, false);
@@ -454,8 +458,8 @@ suppressions: []
     `import { readFileSync } from "node:fs"; import { checkInterfaceSecurityReview, createInterfaceSecurityDisposition, validateInterfaceSecurityDisposition, validateInterfaceSecurityReview } from ${JSON.stringify(packageMetadata.name)}; const audit = JSON.parse(readFileSync(${JSON.stringify(installedInterfaceAuditPath)}, "utf8")); const disposition = validateInterfaceSecurityDisposition(createInterfaceSecurityDisposition(audit)); const review = validateInterfaceSecurityReview(checkInterfaceSecurityReview(audit, disposition)); process.stdout.write(JSON.stringify({ disposition: disposition.schemaVersion, review: review.schemaVersion, status: review.status, networkRequests: review.networkRequests }));`,
   ], { cwd: consumer, env: scanEnvironment }), "installed interface review API");
   assert.deepEqual(interfaceReviewApi, {
-    disposition: "1.0.0",
-    review: "1.0.0",
+    disposition: "1.1.0",
+    review: "1.1.0",
     status: "incomplete",
     networkRequests: 0,
   });
@@ -466,7 +470,7 @@ suppressions: []
     `import { readFileSync } from "node:fs"; import { checkSavedInterfaceSecurityReview, validateInterfaceSecurityReviewCheck } from ${JSON.stringify(packageMetadata.name)}; const audit = JSON.parse(readFileSync(${JSON.stringify(installedInterfaceAuditPath)}, "utf8")); const disposition = JSON.parse(readFileSync(${JSON.stringify(installedDispositionPath)}, "utf8")); const review = JSON.parse(readFileSync(${JSON.stringify(installedInterfaceReviewPath)}, "utf8")); const value = validateInterfaceSecurityReviewCheck(checkSavedInterfaceSecurityReview(audit, disposition, review)); process.stdout.write(JSON.stringify({ schemaVersion: value.schemaVersion, status: value.status, current: value.currentEvaluation.status, networkRequests: value.networkRequests }));`,
   ], { cwd: consumer, env: scanEnvironment }), "installed saved interface review-check API");
   assert.deepEqual(interfaceReviewCheckApi, {
-    schemaVersion: "1.0.0",
+    schemaVersion: "1.1.0",
     status: "saved_review_verified",
     current: "incomplete",
     networkRequests: 0,

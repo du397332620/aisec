@@ -6,6 +6,7 @@ import {
 } from "../core/schema-validation.js";
 import { canonicalJson, sha256, stableId } from "../core/utils.js";
 import {
+  FASTAPI_AUTHENTICATION_GAP_REASONS,
   INTERFACE_SECURITY_DISPOSITION_SCHEMA_VERSION,
   INTERFACE_SECURITY_REVIEW_OWNER_PLACEHOLDER,
   INTERFACE_SECURITY_REVIEW_RATIONALE_PLACEHOLDER,
@@ -30,7 +31,26 @@ export const INTERFACE_SECURITY_REVIEW_LIMITATIONS = [
 
 export const INTERFACE_SECURITY_REVIEW_DISCLAIMER = "Recorded means only that every emitted entry in a complete static audit has a current operator disposition. It is not a security pass, vulnerability clearance, active test result or assurance that any route or project is safe.";
 
-function dispositionEntry(entry: InterfaceSecurityAuditEntry): InterfaceSecurityDispositionEntry {
+function authenticationGapReasons(
+  entry: InterfaceSecurityAuditEntry,
+): InterfaceSecurityDispositionEntry["authenticationGapReasons"] {
+  const reasons = [...new Set(entry.sources.flatMap((source) => (
+    source.authenticationGapReason ? [source.authenticationGapReason] : []
+  )))];
+  reasons.sort((left, right) => (
+    FASTAPI_AUTHENTICATION_GAP_REASONS.indexOf(left)
+    - FASTAPI_AUTHENTICATION_GAP_REASONS.indexOf(right)
+  ));
+  return reasons.length > 0 ? reasons : undefined;
+}
+
+function dispositionEntry(
+  entry: InterfaceSecurityAuditEntry,
+  schemaVersion: InterfaceSecurityDisposition["schemaVersion"],
+): InterfaceSecurityDispositionEntry {
+  const gapReasons = schemaVersion === "1.1.0"
+    ? authenticationGapReasons(entry)
+    : undefined;
   return {
     entryId: entry.id,
     framework: entry.framework,
@@ -38,6 +58,7 @@ function dispositionEntry(entry: InterfaceSecurityAuditEntry): InterfaceSecurity
     category: entry.category,
     severity: entry.severity,
     findingStatus: entry.findingStatus,
+    ...(gapReasons ? { authenticationGapReasons: gapReasons } : {}),
     decision: "unreviewed",
     rationale: INTERFACE_SECURITY_REVIEW_RATIONALE_PLACEHOLDER,
   };
@@ -47,8 +68,11 @@ export function createInterfaceSecurityDisposition(
   auditValue: unknown,
 ): InterfaceSecurityDisposition {
   const audit = validateInterfaceSecurityAudit(auditValue);
+  const schemaVersion = audit.schemaVersion === "1.0.0"
+    ? "1.0.0"
+    : INTERFACE_SECURITY_DISPOSITION_SCHEMA_VERSION;
   return validateInterfaceSecurityDisposition({
-    schemaVersion: INTERFACE_SECURITY_DISPOSITION_SCHEMA_VERSION,
+    schemaVersion,
     audit: {
       schemaVersion: audit.schemaVersion,
       auditId: audit.auditId,
@@ -56,7 +80,7 @@ export function createInterfaceSecurityDisposition(
     },
     preparedAt: new Date().toISOString(),
     reviewedBy: INTERFACE_SECURITY_REVIEW_OWNER_PLACEHOLDER,
-    entries: audit.entries.map(dispositionEntry),
+    entries: audit.entries.map((entry) => dispositionEntry(entry, schemaVersion)),
   });
 }
 
@@ -122,7 +146,9 @@ function assertDispositionMatchesAudit(
       || reviewed.route !== source.route
       || reviewed.category !== source.category
       || reviewed.severity !== source.severity
-      || reviewed.findingStatus !== source.findingStatus) {
+      || reviewed.findingStatus !== source.findingStatus
+      || canonicalJson(reviewed.authenticationGapReasons ?? [])
+        !== canonicalJson(authenticationGapReasons(source) ?? [])) {
       throw new Error(`Interface security disposition entry context does not match audit entry ${source.id}`);
     }
   }
@@ -185,9 +211,12 @@ export function checkInterfaceSecurityReview(
   const dispositionDigestSha256 = sha256(canonicalJson(disposition));
   const summary = dispositionSummary(disposition, checkedAt);
   const status = reviewStatus(audit, disposition, summary);
+  const schemaVersion = disposition.schemaVersion === "1.0.0"
+    ? "1.0.0"
+    : INTERFACE_SECURITY_REVIEW_SCHEMA_VERSION;
   const reviewId = stableId(
     "interface_security_review",
-    INTERFACE_SECURITY_REVIEW_SCHEMA_VERSION,
+    schemaVersion,
     audit.schemaVersion,
     audit.auditId,
     auditDigestSha256,
@@ -196,7 +225,7 @@ export function checkInterfaceSecurityReview(
     checkedAt,
   );
   return validateInterfaceSecurityReview({
-    schemaVersion: INTERFACE_SECURITY_REVIEW_SCHEMA_VERSION,
+    schemaVersion,
     reviewId,
     checkedAt,
     status,

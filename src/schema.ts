@@ -3,10 +3,14 @@ export const SCAN_REPORT_SCHEMA_VERSION = "1.4.0" as const;
 export const CI_REPORT_SCHEMA_VERSION = "1.4.0" as const;
 export const RULE_PACK_PREVIEW_SCHEMA_VERSION = "1.0.0" as const;
 export const INTERFACE_VERIFICATION_QUEUE_SCHEMA_VERSION = "1.0.0" as const;
-export const INTERFACE_SECURITY_AUDIT_SCHEMA_VERSION = "1.0.0" as const;
-export const INTERFACE_SECURITY_DISPOSITION_SCHEMA_VERSION = "1.0.0" as const;
-export const INTERFACE_SECURITY_REVIEW_SCHEMA_VERSION = "1.0.0" as const;
-export const INTERFACE_SECURITY_REVIEW_CHECK_SCHEMA_VERSION = "1.0.0" as const;
+export const INTERFACE_SECURITY_AUDIT_SCHEMA_VERSION = "1.1.0" as const;
+export const INTERFACE_SECURITY_DISPOSITION_SCHEMA_VERSION = "1.1.0" as const;
+export const INTERFACE_SECURITY_REVIEW_SCHEMA_VERSION = "1.1.0" as const;
+export const INTERFACE_SECURITY_REVIEW_CHECK_SCHEMA_VERSION = "1.1.0" as const;
+export const FASTAPI_AUTHENTICATION_GAP_REASONS = [
+  "optional_or_disabled_guard",
+  "no_visible_guard",
+] as const;
 export const INTERFACE_SECURITY_REVIEW_OWNER_PLACEHOLDER = "<SET_REVIEW_OWNER>" as const;
 export const INTERFACE_SECURITY_REVIEW_RATIONALE_PLACEHOLDER = "Review the linked static evidence before changing this disposition." as const;
 export const BOLA_DRAFT_SCHEMA_VERSION = "1.1.0" as const;
@@ -460,12 +464,14 @@ export interface InterfaceVerificationQueue {
 }
 
 export type InterfaceSecurityFindingStatus = "open" | "suppressed_only";
+export type FastApiAuthenticationGapReason = typeof FASTAPI_AUTHENTICATION_GAP_REASONS[number];
 
 export interface InterfaceSecurityAuditSource {
   signalId: string;
   ruleId: string;
   fingerprint: string;
   evidenceLevel: EvidenceLevel;
+  authenticationGapReason?: FastApiAuthenticationGapReason;
   handler?: string;
   location?: {
     path: string;
@@ -493,7 +499,7 @@ export interface InterfaceSecurityAuditEntry {
 }
 
 export interface InterfaceSecurityAudit {
-  schemaVersion: typeof INTERFACE_SECURITY_AUDIT_SCHEMA_VERSION;
+  schemaVersion: "1.0.0" | typeof INTERFACE_SECURITY_AUDIT_SCHEMA_VERSION;
   auditId: string;
   generatedAt: string;
   status: "review_required";
@@ -519,6 +525,7 @@ export interface InterfaceSecurityAudit {
     omittedSourceRecords: number;
     omittedFindingIdReferences: number;
     unlocatedSourceRecords: number;
+    missingAuthenticationGapReasons?: number;
     sourceOmissions: {
       routeAliases: number;
       associations: number;
@@ -562,13 +569,14 @@ export interface InterfaceSecurityDispositionEntry {
   category: RouteSecurityCategory;
   severity: Severity;
   findingStatus: InterfaceSecurityFindingStatus;
+  authenticationGapReasons?: FastApiAuthenticationGapReason[];
   decision: InterfaceSecurityDispositionDecision;
   rationale: string;
   expiresAt?: string;
 }
 
 export interface InterfaceSecurityDisposition {
-  schemaVersion: typeof INTERFACE_SECURITY_DISPOSITION_SCHEMA_VERSION;
+  schemaVersion: "1.0.0" | typeof INTERFACE_SECURITY_DISPOSITION_SCHEMA_VERSION;
   audit: {
     schemaVersion: InterfaceSecurityAudit["schemaVersion"];
     auditId: string;
@@ -586,7 +594,7 @@ export type InterfaceSecurityReviewStatus =
   | "recorded";
 
 export interface InterfaceSecurityReview {
-  schemaVersion: typeof INTERFACE_SECURITY_REVIEW_SCHEMA_VERSION;
+  schemaVersion: "1.0.0" | typeof INTERFACE_SECURITY_REVIEW_SCHEMA_VERSION;
   reviewId: string;
   checkedAt: string;
   status: InterfaceSecurityReviewStatus;
@@ -631,7 +639,7 @@ export interface InterfaceSecurityReview {
 }
 
 export interface InterfaceSecurityReviewCheck {
-  schemaVersion: typeof INTERFACE_SECURITY_REVIEW_CHECK_SCHEMA_VERSION;
+  schemaVersion: "1.0.0" | typeof INTERFACE_SECURITY_REVIEW_CHECK_SCHEMA_VERSION;
   receiptCheckId: string;
   checkedAt: string;
   status: "saved_review_verified";

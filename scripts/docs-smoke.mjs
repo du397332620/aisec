@@ -124,13 +124,13 @@ try {
     "--rule-pack ../trusted/rule-pack.yml",
     "aisec rule-pack check ../target",
     "aisec interface-audit",
-    "InterfaceSecurityAudit 1.0.0",
+    "InterfaceSecurityAudit 1.1.0",
     "aisec prepare-interface-review",
     "aisec check-interface-review",
     "aisec check-interface-review-receipt",
-    "InterfaceSecurityDisposition 1.0.0",
-    "InterfaceSecurityReview 1.0.0",
-    "InterfaceSecurityReviewCheck 1.0.0",
+    "InterfaceSecurityDisposition 1.1.0",
+    "InterfaceSecurityReview 1.1.0",
+    "InterfaceSecurityReviewCheck 1.1.0",
     "aisec interface-queue",
     "InterfaceVerificationQueue 1.0.0",
     "BolaDraftPlan 1.1.0",
@@ -254,7 +254,8 @@ try {
   assert.equal(interfaceQueue.summary.reviewedRoutes, interfaceQueue.summary.eligibleRoutes + interfaceQueue.summary.excludedRoutes);
 
   const interfaceAudit = report(run(["interface-audit", "--scan", vulnerable.scanId]), "interface security audit");
-  assert.equal(interfaceAudit.schemaVersion, "1.0.0");
+  assert.equal(interfaceAudit.schemaVersion, "1.1.0");
+  assert.equal(interfaceAudit.summary.missingAuthenticationGapReasons, 0);
   assert.equal(interfaceAudit.scan.scanId, vulnerable.scanId);
   assert.equal(interfaceAudit.coverageScope, "observed_attributed_routes_only");
   assert.equal(interfaceAudit.networkRequests, 0);
@@ -275,7 +276,7 @@ try {
   ]);
   assert.equal(preparedInterfaceDisposition.stdout, "");
   const interfaceDisposition = JSON.parse(await readFile(interfaceDispositionPath, "utf8"));
-  assert.equal(interfaceDisposition.schemaVersion, "1.0.0");
+  assert.equal(interfaceDisposition.schemaVersion, "1.1.0");
   assert.equal(interfaceDisposition.reviewedBy, "<SET_REVIEW_OWNER>");
   assert.equal(interfaceDisposition.audit.auditId, interfaceAudit.auditId);
   const interfaceReview = report(run([
@@ -285,7 +286,7 @@ try {
     "--disposition",
     interfaceDispositionPath,
   ]), "interface security review");
-  assert.equal(interfaceReview.schemaVersion, "1.0.0");
+  assert.equal(interfaceReview.schemaVersion, "1.1.0");
   assert.equal(interfaceReview.status, "incomplete");
   assert.equal(interfaceReview.networkRequests, 0);
   assert.equal(interfaceReview.assertions.originalFindingsUnchanged, true);
@@ -299,7 +300,7 @@ try {
     "--review",
     interfaceReviewPath,
   ]), "saved interface security review check");
-  assert.equal(interfaceReviewCheck.schemaVersion, "1.0.0");
+  assert.equal(interfaceReviewCheck.schemaVersion, "1.1.0");
   assert.equal(interfaceReviewCheck.status, "saved_review_verified");
   assert.equal(interfaceReviewCheck.currentEvaluation.status, "incomplete");
   assert.equal(interfaceReviewCheck.currentEvaluation.changedSinceSaved, false);

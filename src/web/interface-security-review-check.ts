@@ -134,9 +134,12 @@ export function checkSavedInterfaceSecurityReview(
   const savedReviewDigest = sha256(canonicalJson(savedReview));
   const changedSinceSaved = savedReview.status !== current.status
     || savedReview.summary.expiredDecisions !== current.summary.expiredDecisions;
+  const schemaVersion = savedReview.schemaVersion === "1.0.0"
+    ? "1.0.0"
+    : INTERFACE_SECURITY_REVIEW_CHECK_SCHEMA_VERSION;
   const receiptCheckId = stableId(
     "interface_security_review_check",
-    INTERFACE_SECURITY_REVIEW_CHECK_SCHEMA_VERSION,
+    schemaVersion,
     savedReview.schemaVersion,
     savedReview.reviewId,
     savedReview.checkedAt,
@@ -149,7 +152,7 @@ export function checkSavedInterfaceSecurityReview(
     current.checkedAt,
   );
   return validateInterfaceSecurityReviewCheck({
-    schemaVersion: INTERFACE_SECURITY_REVIEW_CHECK_SCHEMA_VERSION,
+    schemaVersion,
     receiptCheckId,
     checkedAt: current.checkedAt,
     status: "saved_review_verified",

@@ -3,6 +3,7 @@ import { fileURLToPath } from "node:url";
 import { Ajv2020, type ErrorObject, type ValidateFunction } from "ajv/dist/2020.js";
 import addFormatsModule from "ajv-formats";
 import {
+  FASTAPI_AUTHENTICATION_GAP_REASONS,
   INTERFACE_SECURITY_REVIEW_OWNER_PLACEHOLDER,
   INTERFACE_SECURITY_REVIEW_RATIONALE_PLACEHOLDER,
   type AuthorizationManifest,
@@ -1028,6 +1029,8 @@ const INTERFACE_AUDIT_ATTRIBUTION_REASON_ORDER = [
   "not_recorded",
 ] as const;
 
+const FASTAPI_AUTHENTICATION_GAP_RULE = "fastapi.auth.sensitive-route-without-guard";
+
 function compareInterfaceAuditEntries(
   left: InterfaceSecurityAuditEntry,
   right: InterfaceSecurityAuditEntry,
@@ -1054,6 +1057,13 @@ export function validateInterfaceSecurityAudit(value: unknown): InterfaceSecurit
     value,
   );
   const summary = audit.summary;
+  const currentSchema = audit.schemaVersion === "1.1.0";
+  if (currentSchema && summary.missingAuthenticationGapReasons === undefined) {
+    throw new Error("InterfaceSecurityAudit 1.1.0 requires missing authentication-gap reason totals");
+  }
+  if (!currentSchema && summary.missingAuthenticationGapReasons !== undefined) {
+    throw new Error("InterfaceSecurityAudit 1.0.0 forbids authentication-gap reason totals");
+  }
   const expectedAuditId = stableId(
     "interface_audit",
     audit.scan.schemaVersion,
@@ -1106,6 +1116,7 @@ export function validateInterfaceSecurityAudit(value: unknown): InterfaceSecurit
   let visibleOmittedSourceRecords = 0;
   let visibleOmittedFindingIdReferences = 0;
   let visibleUnlocatedSourceRecords = 0;
+  let visibleMissingAuthenticationGapReasons = 0;
   for (let entryIndex = 0; entryIndex < audit.entries.length; entryIndex += 1) {
     const entry = audit.entries[entryIndex]!;
     const identity = `${entry.framework}\u0000${entry.route}\u0000${entry.category}`;
@@ -1159,6 +1170,18 @@ export function validateInterfaceSecurityAudit(value: unknown): InterfaceSecurit
       if (presentation?.category !== entry.category || presentation.framework !== entry.framework) {
         throw new Error(`InterfaceSecurityAudit entry ${entry.id} source category or framework is inconsistent`);
       }
+      const authenticationGapSource = source.ruleId === FASTAPI_AUTHENTICATION_GAP_RULE
+        && entry.framework === "FastAPI"
+        && entry.category === "authentication";
+      if (!currentSchema && source.authenticationGapReason !== undefined) {
+        throw new Error("InterfaceSecurityAudit 1.0.0 forbids authentication-gap reasons");
+      }
+      if (currentSchema && source.authenticationGapReason !== undefined && !authenticationGapSource) {
+        throw new Error(`InterfaceSecurityAudit entry ${entry.id} contains a misplaced authentication-gap reason`);
+      }
+      if (currentSchema && authenticationGapSource && source.authenticationGapReason === undefined) {
+        visibleMissingAuthenticationGapReasons += 1;
+      }
       if (source.location) {
         if (safeRelativePath(source.location.path) !== source.location.path) {
           throw new Error(`InterfaceSecurityAudit entry ${entry.id} contains an unsafe or non-normalized source path`);
@@ -1208,6 +1231,14 @@ export function validateInterfaceSecurityAudit(value: unknown): InterfaceSecurit
       && summary.unlocatedSourceRecords !== visibleUnlocatedSourceRecords)) {
     throw new Error("InterfaceSecurityAudit unlocated source totals are inconsistent");
   }
+  if (currentSchema) {
+    const missingReasons = summary.missingAuthenticationGapReasons!;
+    if (missingReasons < visibleMissingAuthenticationGapReasons
+      || (summary.omittedEntries === 0 && summary.omittedSourceRecords === 0
+        && missingReasons !== visibleMissingAuthenticationGapReasons)) {
+      throw new Error("InterfaceSecurityAudit authentication-gap reason totals are inconsistent");
+    }
+  }
 
   const summaryCategories = new Set<string>();
   let previousCategory = -1;
@@ -1243,6 +1274,7 @@ export function validateInterfaceSecurityAudit(value: unknown): InterfaceSecurit
     || summary.omittedSourceRecords > 0
     || summary.omittedFindingIdReferences > 0
     || summary.unlocatedSourceRecords > 0
+    || (summary.missingAuthenticationGapReasons ?? 0) > 0
     || summary.sourceOmissions.routeAliases > 0
     || summary.sourceOmissions.associations > 0
     || summary.attribution.unattributedSignals > 0;
@@ -1274,6 +1306,9 @@ export function validateInterfaceSecurityDisposition(
     interfaceSecurityDispositionValidator,
     value,
   );
+  if (disposition.schemaVersion !== disposition.audit.schemaVersion) {
+    throw new Error("InterfaceSecurityDisposition schema version does not match its audit binding");
+  }
   assertInterfaceReviewText(disposition.reviewedBy, "review owner");
   const hasOwner = disposition.reviewedBy !== INTERFACE_SECURITY_REVIEW_OWNER_PLACEHOLDER;
   if (hasOwner !== (disposition.reviewedAt !== undefined)) {
@@ -1291,6 +1326,23 @@ export function validateInterfaceSecurityDisposition(
     }
     entryIds.add(entry.entryId);
     assertInterfaceReviewText(entry.rationale, `${entry.entryId} rationale`);
+    if (disposition.schemaVersion === "1.0.0" && entry.authenticationGapReasons !== undefined) {
+      throw new Error("InterfaceSecurityDisposition 1.0.0 forbids authentication-gap reasons");
+    }
+    if (entry.authenticationGapReasons !== undefined) {
+      if (entry.framework !== "FastAPI" || entry.category !== "authentication") {
+        throw new Error(`InterfaceSecurityDisposition ${entry.entryId} contains misplaced authentication-gap reasons`);
+      }
+      for (let index = 0; index < entry.authenticationGapReasons.length; index += 1) {
+        const current = FASTAPI_AUTHENTICATION_GAP_REASONS.indexOf(entry.authenticationGapReasons[index]!);
+        const previous = index === 0
+          ? -1
+          : FASTAPI_AUTHENTICATION_GAP_REASONS.indexOf(entry.authenticationGapReasons[index - 1]!);
+        if (current <= previous) {
+          throw new Error(`InterfaceSecurityDisposition ${entry.entryId} authentication-gap reasons must be deterministic`);
+        }
+      }
+    }
     const decided = entry.decision !== "unreviewed";
     if (decided && (!hasOwner || !disposition.reviewedAt)) {
       throw new Error("InterfaceSecurityDisposition decided entries require a review owner and reviewedAt");
@@ -1337,6 +1389,10 @@ export function validateInterfaceSecurityReview(value: unknown): InterfaceSecuri
     interfaceSecurityReviewValidator,
     value,
   );
+  if (review.schemaVersion !== review.audit.schemaVersion
+    || review.schemaVersion !== review.disposition.schemaVersion) {
+    throw new Error("InterfaceSecurityReview schema versions are inconsistent");
+  }
   const reconstructedDisposition = validateInterfaceSecurityDisposition({
     schemaVersion: review.disposition.schemaVersion,
     audit: {
@@ -1419,6 +1475,9 @@ export function validateInterfaceSecurityReviewCheck(
     interfaceSecurityReviewCheckValidator,
     value,
   );
+  if (check.schemaVersion !== check.savedReview.schemaVersion) {
+    throw new Error("InterfaceSecurityReviewCheck schema version does not match the saved review");
+  }
   if (interfaceReviewTime(check.checkedAt)
     < interfaceReviewTime(check.savedReview.checkedAt)) {
     throw new Error("InterfaceSecurityReviewCheck checkedAt must not precede the saved review checkedAt");

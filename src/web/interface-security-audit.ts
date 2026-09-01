@@ -17,6 +17,7 @@ import {
 import { safeRelativePath } from "../reporters/safety.js";
 import {
   INTERFACE_SECURITY_AUDIT_SCHEMA_VERSION,
+  type FastApiAuthenticationGapReason,
   type Finding,
   type InterfaceSecurityAudit,
   type InterfaceSecurityAuditEntry,
@@ -40,6 +41,17 @@ interface EvaluatedEntry {
   omittedSourceRecords: number;
   omittedFindingIdReferences: number;
   unlocatedSourceRecords: number;
+  missingAuthenticationGapReasons: number;
+}
+
+const FASTAPI_AUTHENTICATION_GAP_RULE = "fastapi.auth.sensitive-route-without-guard";
+
+function authenticationGapReason(signal: Signal): FastApiAuthenticationGapReason | undefined {
+  if (signal.ruleId !== FASTAPI_AUTHENTICATION_GAP_RULE) return undefined;
+  const reason = signal.metadata?.authenticationGapReason;
+  return reason === "optional_or_disabled_guard" || reason === "no_visible_guard"
+    ? reason
+    : undefined;
 }
 
 function parseRoute(route: string): { method: string; path: string } {
@@ -92,11 +104,13 @@ function exactSource(evidence: RouteSecurityEvidence): InterfaceSecurityAuditSou
     .map((finding) => finding.id))].sort();
   const handler = safeHandler(evidence.handler);
   const location = sourceLocation(evidence.signal);
+  const gapReason = authenticationGapReason(evidence.signal);
   return {
     signalId: evidence.signal.id,
     ruleId: evidence.signal.ruleId,
     fingerprint: evidence.signal.fingerprint,
     evidenceLevel: evidence.signal.evidenceLevel,
+    ...(gapReason ? { authenticationGapReason: gapReason } : {}),
     ...(handler ? { handler } : {}),
     ...(location ? { location } : {}),
     openFindingIds: openFindingIds.slice(0, MAX_FINDING_IDS_PER_STATUS),
@@ -142,6 +156,9 @@ function evaluateEntry(
       total + source.omittedOpenFindingIds + source.omittedSuppressedFindingIds
     ), 0),
     unlocatedSourceRecords: exactSources.filter((source) => !source.location).length,
+    missingAuthenticationGapReasons: exactSources.filter((source) => (
+      source.ruleId === FASTAPI_AUTHENTICATION_GAP_RULE && !source.authenticationGapReason
+    )).length,
   };
 }
 
@@ -165,6 +182,9 @@ export function createInterfaceSecurityAudit(reportValue: ScanReport): Interface
   const omittedSourceRecords = evaluated.reduce((total, item) => total + item.omittedSourceRecords, 0);
   const omittedFindingIdReferences = evaluated.reduce((total, item) => total + item.omittedFindingIdReferences, 0);
   const unlocatedSourceRecords = evaluated.reduce((total, item) => total + item.unlocatedSourceRecords, 0);
+  const missingAuthenticationGapReasons = evaluated.reduce((total, item) => (
+    total + item.missingAuthenticationGapReasons
+  ), 0);
   const openEntries = allEntries.filter((entry) => entry.findingStatus === "open").length;
   const categories = ROUTE_SECURITY_CATEGORY_ORDER.flatMap((category) => {
     const matching = allEntries.filter((entry) => entry.category === category);
@@ -180,6 +200,7 @@ export function createInterfaceSecurityAudit(reportValue: ScanReport): Interface
     || omittedSourceRecords > 0
     || omittedFindingIdReferences > 0
     || unlocatedSourceRecords > 0
+    || missingAuthenticationGapReasons > 0
     || review.attribution.unattributedSignals > 0;
   const limitations = [
     "Only observed route evidence with exact static attribution is included; this is not complete API discovery.",
@@ -191,6 +212,7 @@ export function createInterfaceSecurityAudit(reportValue: ScanReport): Interface
     ...(omittedSourceRecords > 0 ? [`${omittedSourceRecords} source record(s) were omitted by the 20-source per-entry bound.`] : []),
     ...(omittedFindingIdReferences > 0 ? [`${omittedFindingIdReferences} finding ID reference(s) were omitted by per-source bounds.`] : []),
     ...(unlocatedSourceRecords > 0 ? [`${unlocatedSourceRecords} source record(s) lacked a safe relative location and were emitted without one.`] : []),
+    ...(missingAuthenticationGapReasons > 0 ? [`${missingAuthenticationGapReasons} FastAPI authentication-gap source record(s) lacked a supported bounded reason.`] : []),
     ...(review.attribution.unattributedSignals > 0 ? [`${review.attribution.unattributedSignals} dangerous-dataflow signal(s) could not be attributed to a route.`] : []),
   ];
   const scanDigestSha256 = sha256(canonicalJson(report));
@@ -228,6 +250,7 @@ export function createInterfaceSecurityAudit(reportValue: ScanReport): Interface
       omittedSourceRecords,
       omittedFindingIdReferences,
       unlocatedSourceRecords,
+      missingAuthenticationGapReasons,
       sourceOmissions: {
         routeAliases: review.omittedRouteAliases,
         associations: review.omittedAssociations,

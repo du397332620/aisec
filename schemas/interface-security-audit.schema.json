@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://aisec.dev/schemas/interface-security-audit-1.0.0.json",
-  "title": "AIsec InterfaceSecurityAudit 1.0.0",
+  "$id": "https://aisec.dev/schemas/interface-security-audit-1.1.0.json",
+  "title": "AIsec InterfaceSecurityAudit 1.1.0 (legacy 1.0.0 compatible)",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,7 +11,7 @@
     "limitations", "disclaimer"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.0.0" },
+    "schemaVersion": { "enum": ["1.0.0", "1.1.0"] },
     "auditId": { "type": "string", "pattern": "^interface_audit_[0-9a-f]{16}$" },
     "generatedAt": { "type": "string", "format": "date-time" },
     "status": { "const": "review_required" },
@@ -31,12 +31,58 @@
     "limitations": {
       "type": "array",
       "minItems": 3,
-      "maxItems": 10,
+      "maxItems": 11,
       "uniqueItems": true,
       "items": { "type": "string", "minLength": 1, "maxLength": 500 }
     },
     "disclaimer": { "type": "string", "minLength": 1, "maxLength": 1000 }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schemaVersion": { "const": "1.0.0" } },
+        "required": ["schemaVersion"]
+      },
+      "then": {
+        "properties": {
+          "summary": {
+            "type": "object",
+            "not": {
+              "properties": { "missingAuthenticationGapReasons": true },
+              "required": ["missingAuthenticationGapReasons"]
+            }
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "properties": {
+                "sources": {
+                  "type": "array",
+                  "items": {
+                    "type": "object",
+                    "not": {
+                      "properties": { "authenticationGapReason": true },
+                      "required": ["authenticationGapReason"]
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "summary": {
+            "type": "object",
+            "properties": { "missingAuthenticationGapReasons": true },
+            "required": ["missingAuthenticationGapReasons"]
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "nonNegative": { "type": "integer", "minimum": 0 },
     "digest": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
@@ -142,6 +188,7 @@
         "omittedSourceRecords": { "$ref": "#/$defs/nonNegative" },
         "omittedFindingIdReferences": { "$ref": "#/$defs/nonNegative" },
         "unlocatedSourceRecords": { "$ref": "#/$defs/nonNegative" },
+        "missingAuthenticationGapReasons": { "$ref": "#/$defs/nonNegative" },
         "sourceOmissions": { "$ref": "#/$defs/sourceOmissions" },
         "categories": {
           "type": "array",
@@ -181,13 +228,29 @@
         "ruleId": { "type": "string", "minLength": 1, "maxLength": 300 },
         "fingerprint": { "$ref": "#/$defs/digest" },
         "evidenceLevel": { "enum": ["verified", "static_confirmed", "inferred"] },
+        "authenticationGapReason": {
+          "enum": ["optional_or_disabled_guard", "no_visible_guard"]
+        },
         "handler": { "type": "string", "minLength": 1, "maxLength": 300, "pattern": "^[^\\u0000-\\u001f\\u007f]+$" },
         "location": { "$ref": "#/$defs/location" },
         "openFindingIds": { "$ref": "#/$defs/findingIds" },
         "omittedOpenFindingIds": { "$ref": "#/$defs/nonNegative" },
         "suppressedFindingIds": { "$ref": "#/$defs/findingIds" },
         "omittedSuppressedFindingIds": { "$ref": "#/$defs/nonNegative" }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "authenticationGapReason": true },
+            "required": ["authenticationGapReason"]
+          },
+          "then": {
+            "properties": {
+              "ruleId": { "const": "fastapi.auth.sensitive-route-without-guard" }
+            }
+          }
+        }
+      ]
     },
     "entry": {
       "type": "object",
@@ -213,7 +276,29 @@
           "items": { "$ref": "#/$defs/source" }
         },
         "omittedSources": { "$ref": "#/$defs/nonNegative" }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "sources": {
+                "type": "array",
+                "contains": {
+                  "type": "object",
+                  "properties": { "authenticationGapReason": true },
+                  "required": ["authenticationGapReason"]
+                }
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "framework": { "const": "FastAPI" },
+              "category": { "const": "authentication" }
+            }
+          }
+        }
+      ]
     }
   }
 }

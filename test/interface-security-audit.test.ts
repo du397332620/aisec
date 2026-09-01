@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 import { scanProject } from "../src/core/scan.js";
 import { validateInterfaceSecurityAudit } from "../src/core/schema-validation.js";
 import { canonicalJson, sha256 } from "../src/core/utils.js";
-import type { Finding, RouteSecurityCategory, ScanReport, Signal } from "../src/schema.js";
+import type { Finding, InterfaceSecurityAudit, RouteSecurityCategory, ScanReport, Signal } from "../src/schema.js";
 import {
   createInterfaceSecurityAudit,
   loadInterfaceSecurityScanReport,
@@ -118,6 +118,44 @@ test("interface audit preserves every supported category without network or targ
     "ssrf",
     "untrusted_file_path",
   ]);
+});
+
+test("interface audit carries only bounded FastAPI authentication-gap provenance", async () => {
+  const report = await fixtureReport("fastapi-auth", "positive");
+  const expected = new Map(report.signals
+    .filter((signal) => signal.ruleId === "fastapi.auth.sensitive-route-without-guard")
+    .map((signal) => [signal.id, signal.metadata?.authenticationGapReason]));
+  assert.ok(expected.size > 0);
+
+  const audit = createInterfaceSecurityAudit(report);
+  assert.equal(audit.schemaVersion, "1.1.0");
+  assert.equal(audit.summary.missingAuthenticationGapReasons, 0);
+  const sources = audit.entries.flatMap((entry) => entry.sources)
+    .filter((source) => source.ruleId === "fastapi.auth.sensitive-route-without-guard");
+  assert.equal(sources.length, expected.size);
+  for (const source of sources) {
+    assert.equal(source.authenticationGapReason, expected.get(source.signalId));
+  }
+  assert.doesNotMatch(JSON.stringify(audit), /whitelistValue|optionalAuthentication|metadata/iu);
+
+  const missingReport = structuredClone(report);
+  const missingSignal = missingReport.signals.find((signal) => (
+    signal.ruleId === "fastapi.auth.sensitive-route-without-guard"
+  ));
+  assert.ok(missingSignal?.metadata);
+  missingSignal.metadata.authenticationGapReason = "unsupported_reason";
+  const partial = createInterfaceSecurityAudit(missingReport);
+  assert.equal(partial.coverage, "partial");
+  assert.equal(partial.summary.missingAuthenticationGapReasons, 1);
+  assert.ok(partial.limitations.some((limitation) => /authentication-gap.*bounded reason/iu.test(limitation)));
+
+  const legacy = structuredClone(audit) as InterfaceSecurityAudit;
+  legacy.schemaVersion = "1.0.0";
+  delete legacy.summary.missingAuthenticationGapReasons;
+  for (const source of legacy.entries.flatMap((entry) => entry.sources)) {
+    delete source.authenticationGapReason;
+  }
+  assert.doesNotThrow(() => validateInterfaceSecurityAudit(legacy));
 });
 
 test("interface audit identity uses canonical scan content and output excludes sensitive scan fields", async () => {
@@ -282,6 +320,24 @@ test("interface audit schema rejects forged identities, mappings, counts, unsafe
   duplicate.summary.categories[0]!.entries += 1;
   duplicate.summary.categories[0]!.openEntries += 1;
   assert.throws(() => validateInterfaceSecurityAudit(duplicate), /duplicate route-category identity/u);
+
+  const misplacedReason = structuredClone(audit);
+  misplacedReason.entries[0]!.sources[0]!.authenticationGapReason = "no_visible_guard";
+  assert.throws(
+    () => validateInterfaceSecurityAudit(misplacedReason),
+    /misplaced authentication-gap reason|must be equal to constant/iu,
+  );
+
+  const authenticationAudit = createInterfaceSecurityAudit(await fixtureReport("fastapi-auth", "positive"));
+  const missingReason = structuredClone(authenticationAudit);
+  const gapSource = missingReason.entries.flatMap((entry) => entry.sources)
+    .find((source) => source.ruleId === "fastapi.auth.sensitive-route-without-guard");
+  assert.ok(gapSource?.authenticationGapReason);
+  delete gapSource.authenticationGapReason;
+  assert.throws(
+    () => validateInterfaceSecurityAudit(missingReason),
+    /authentication-gap reason totals are inconsistent/iu,
+  );
 });
 
 test("interface-audit CLI reads one strict report, supports output and rejects active flags", async () => {
@@ -297,7 +353,7 @@ test("interface-audit CLI reads one strict report, supports output and rejects a
       timeout: 30_000,
     });
     assert.equal(stdout.status, 0, stdout.stderr);
-    assert.equal(JSON.parse(stdout.stdout).schemaVersion, "1.0.0");
+    assert.equal(JSON.parse(stdout.stdout).schemaVersion, "1.1.0");
 
     const saved = spawnSync(process.execPath, [cli, "interface-audit", "--scan", input, "--output", output], {
       encoding: "utf8",

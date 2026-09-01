@@ -7,6 +7,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 import { scanProject } from "../src/core/scan.js";
 import {
+  validateInterfaceSecurityAudit,
   validateInterfaceSecurityDisposition,
   validateInterfaceSecurityReview,
 } from "../src/core/schema-validation.js";
@@ -107,6 +108,83 @@ test("interface review template binds the exact audit and remains offline and no
     globalThis.fetch = originalFetch;
   }
   assert.equal(fetchCalls, 0);
+});
+
+test("interface disposition and review retain bounded authentication-gap reasons without deciding them", async () => {
+  const report = await fixtureReport("fastapi-auth", "positive");
+  const originalSignal = report.signals.find((signal) => (
+    signal.ruleId === "fastapi.auth.sensitive-route-without-guard"
+  ));
+  const originalFinding = report.findings.find((finding) => (
+    originalSignal && finding.signalIds.includes(originalSignal.id)
+  ));
+  assert.ok(originalSignal?.metadata);
+  assert.ok(originalFinding);
+  const duplicateSignal = structuredClone(originalSignal);
+  duplicateSignal.id = "sig_ffffffffffffffff";
+  duplicateSignal.fingerprint = "f".repeat(64);
+  duplicateSignal.metadata!.authenticationGapReason = "optional_or_disabled_guard";
+  const duplicateFinding = structuredClone(originalFinding);
+  duplicateFinding.id = "finding_ffffffffffffffff";
+  duplicateFinding.fingerprint = "f".repeat(64);
+  duplicateFinding.signalIds = [duplicateSignal.id];
+  report.signals.push(duplicateSignal);
+  report.findings.push(duplicateFinding);
+
+  const audit = createInterfaceSecurityAudit(report);
+  const disposition = createInterfaceSecurityDisposition(audit);
+  assert.equal(disposition.schemaVersion, "1.1.0");
+  for (let index = 0; index < audit.entries.length; index += 1) {
+    const expected = [...new Set(audit.entries[index]!.sources.flatMap((source) => (
+      source.authenticationGapReason ? [source.authenticationGapReason] : []
+    )))].sort((left, right) => (
+      ["optional_or_disabled_guard", "no_visible_guard"].indexOf(left)
+      - ["optional_or_disabled_guard", "no_visible_guard"].indexOf(right)
+    ));
+    assert.deepEqual(disposition.entries[index]!.authenticationGapReasons ?? [], expected);
+    assert.equal(disposition.entries[index]!.decision, "unreviewed");
+  }
+  assert.ok(disposition.entries.some((entry) => (
+    JSON.stringify(entry.authenticationGapReasons)
+      === JSON.stringify(["optional_or_disabled_guard", "no_visible_guard"])
+  )));
+  const review = checkInterfaceSecurityReview(audit, disposition);
+  assert.equal(review.schemaVersion, "1.1.0");
+  assert.deepEqual(review.entries, disposition.entries);
+
+  const drift = structuredClone(disposition);
+  const gapEntry = drift.entries.find((entry) => entry.authenticationGapReasons?.length);
+  assert.ok(gapEntry?.authenticationGapReasons);
+  gapEntry.authenticationGapReasons = [gapEntry.authenticationGapReasons[0] === "no_visible_guard"
+    ? "optional_or_disabled_guard"
+    : "no_visible_guard"];
+  assert.doesNotThrow(() => validateInterfaceSecurityDisposition(drift));
+  assert.throws(() => checkInterfaceSecurityReview(audit, drift), /entry context/iu);
+
+  const misplaced = createInterfaceSecurityDisposition(
+    await fixtureAudit("fastapi-authorization", "positive-read"),
+  );
+  misplaced.entries[0]!.authenticationGapReasons = ["no_visible_guard"];
+  assert.throws(
+    () => validateInterfaceSecurityDisposition(misplaced),
+    /misplaced authentication-gap reasons|must be equal to constant/iu,
+  );
+});
+
+test("legacy 1.0 interface audit and review artifacts remain processable without new fields", async () => {
+  const legacy = structuredClone(await fixtureAudit("fastapi-auth", "positive"));
+  legacy.schemaVersion = "1.0.0";
+  delete legacy.summary.missingAuthenticationGapReasons;
+  for (const source of legacy.entries.flatMap((entry) => entry.sources)) {
+    delete source.authenticationGapReason;
+  }
+  assert.doesNotThrow(() => validateInterfaceSecurityAudit(legacy));
+  const disposition = createInterfaceSecurityDisposition(legacy);
+  assert.equal(disposition.schemaVersion, "1.0.0");
+  assert.ok(disposition.entries.every((entry) => entry.authenticationGapReasons === undefined));
+  const review = checkInterfaceSecurityReview(legacy, disposition);
+  assert.equal(review.schemaVersion, "1.0.0");
+  assert.doesNotThrow(() => validateInterfaceSecurityReview(review));
 });
 
 test("interface review distinguishes recorded, action-required and incomplete outcomes", async () => {
@@ -221,6 +299,13 @@ test("interface disposition validation fails closed on owner, rationale and expi
     /InterfaceSecurityDisposition.*additional properties/u,
   );
 
+  const mixedVersion = structuredClone(template);
+  mixedVersion.schemaVersion = "1.0.0";
+  assert.throws(
+    () => validateInterfaceSecurityDisposition(mixedVersion),
+    /schema version.*audit binding|audit\/schemaVersion must be equal to constant/iu,
+  );
+
   const placeholderDecision = structuredClone(template);
   placeholderDecision.entries[0]!.decision = "fix_required";
   placeholderDecision.entries[0]!.rationale = "A concrete operator rationale.";
@@ -312,6 +397,13 @@ test("interface review receipt validator rejects forged IDs, digests, summaries 
   forgedStatus.status = "action_required";
   assert.throws(() => validateInterfaceSecurityReview(forgedStatus), /status is inconsistent/u);
 
+  const mixedVersion = structuredClone(review);
+  mixedVersion.schemaVersion = "1.0.0";
+  assert.throws(
+    () => validateInterfaceSecurityReview(mixedVersion),
+    /schema versions are inconsistent|audit\/schemaVersion must be equal to constant/iu,
+  );
+
   assert.throws(
     () => validateInterfaceSecurityReview({ ...review, targetUrl: "https://example.test" }),
     /InterfaceSecurityReview.*additional properties/u,
@@ -374,7 +466,7 @@ test("interface review file APIs and CLIs emit bounded local artifacts and rejec
     ], { encoding: "utf8", timeout: 30_000 });
     assert.equal(prepared.status, 0, prepared.stderr);
     assert.equal(prepared.stdout, "");
-    assert.equal(JSON.parse(await readFile(dispositionPath, "utf8")).schemaVersion, "1.0.0");
+    assert.equal(JSON.parse(await readFile(dispositionPath, "utf8")).schemaVersion, "1.1.0");
 
     const checked = spawnSync(process.execPath, [
       cli,
@@ -399,7 +491,7 @@ test("interface review file APIs and CLIs emit bounded local artifacts and rejec
       dispositionPath,
     ], { encoding: "utf8", timeout: 30_000 });
     assert.equal(stdout.status, 0, stdout.stderr);
-    assert.equal(JSON.parse(stdout.stdout).schemaVersion, "1.0.0");
+    assert.equal(JSON.parse(stdout.stdout).schemaVersion, "1.1.0");
 
     for (const args of [
       ["prepare-interface-review"],

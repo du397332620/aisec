@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://aisec.dev/schemas/interface-security-review-1.0.0.json",
-  "title": "AIsec InterfaceSecurityReview 1.0.0",
+  "$id": "https://aisec.dev/schemas/interface-security-review-1.1.0.json",
+  "title": "AIsec InterfaceSecurityReview 1.1.0 (legacy 1.0.0 compatible)",
   "type": "object",
   "additionalProperties": false,
   "required": [
@@ -11,7 +11,7 @@
     "limitations", "disclaimer"
   ],
   "properties": {
-    "schemaVersion": { "const": "1.0.0" },
+    "schemaVersion": { "enum": ["1.0.0", "1.1.0"] },
     "reviewId": { "type": "string", "pattern": "^interface_security_review_[0-9a-f]{16}$" },
     "checkedAt": { "$ref": "#/$defs/dateTime" },
     "status": { "enum": ["incomplete", "action_required", "recorded"] },
@@ -53,6 +53,48 @@
       "const": "Recorded means only that every emitted entry in a complete static audit has a current operator disposition. It is not a security pass, vulnerability clearance, active test result or assurance that any route or project is safe."
     }
   },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "schemaVersion": { "const": "1.0.0" } },
+        "required": ["schemaVersion"]
+      },
+      "then": {
+        "properties": {
+          "audit": {
+            "type": "object",
+            "properties": { "schemaVersion": { "const": "1.0.0" } }
+          },
+          "disposition": {
+            "type": "object",
+            "properties": { "schemaVersion": { "const": "1.0.0" } }
+          },
+          "entries": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "not": {
+                "properties": { "authenticationGapReasons": true },
+                "required": ["authenticationGapReasons"]
+              }
+            }
+          }
+        }
+      },
+      "else": {
+        "properties": {
+          "audit": {
+            "type": "object",
+            "properties": { "schemaVersion": { "const": "1.1.0" } }
+          },
+          "disposition": {
+            "type": "object",
+            "properties": { "schemaVersion": { "const": "1.1.0" } }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "nonNegative": { "type": "integer", "minimum": 0 },
     "dateTime": { "type": "string", "format": "date-time" },
@@ -92,7 +134,7 @@
         "emittedEntries", "omittedEntries", "unattributedSignals"
       ],
       "properties": {
-        "schemaVersion": { "const": "1.0.0" },
+        "schemaVersion": { "enum": ["1.0.0", "1.1.0"] },
         "auditId": { "type": "string", "pattern": "^interface_audit_[0-9a-f]{16}$" },
         "digestSha256": { "$ref": "#/$defs/digest" },
         "coverage": { "enum": ["complete", "partial"] },
@@ -108,7 +150,7 @@
         "schemaVersion", "digestSha256", "preparedAt", "reviewedBy"
       ],
       "properties": {
-        "schemaVersion": { "const": "1.0.0" },
+        "schemaVersion": { "enum": ["1.0.0", "1.1.0"] },
         "digestSha256": { "$ref": "#/$defs/digest" },
         "preparedAt": { "$ref": "#/$defs/dateTime" },
         "reviewedBy": { "$ref": "#/$defs/reviewer" },
@@ -146,10 +188,31 @@
         "category": { "$ref": "#/$defs/category" },
         "severity": { "$ref": "#/$defs/severity" },
         "findingStatus": { "enum": ["open", "suppressed_only"] },
+        "authenticationGapReasons": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 2,
+          "uniqueItems": true,
+          "items": { "enum": ["optional_or_disabled_guard", "no_visible_guard"] }
+        },
         "decision": { "$ref": "#/$defs/decision" },
         "rationale": { "$ref": "#/$defs/rationale" },
         "expiresAt": { "$ref": "#/$defs/dateTime" }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": { "authenticationGapReasons": true },
+            "required": ["authenticationGapReasons"]
+          },
+          "then": {
+            "properties": {
+              "framework": { "const": "FastAPI" },
+              "category": { "const": "authentication" }
+            }
+          }
+        }
+      ]
     }
   }
 }
