@@ -11,6 +11,39 @@ export const FASTAPI_AUTHENTICATION_GAP_REASONS = [
   "optional_or_disabled_guard",
   "no_visible_guard",
 ] as const;
+export const FASTAPI_OBJECT_CAPABILITY_EVIDENCE_VERSION = "1.0.0" as const;
+export const FASTAPI_OBJECT_CAPABILITY_IDENTIFIER_SOURCES = ["path_parameter"] as const;
+export const FASTAPI_OBJECT_CAPABILITY_ENTROPY_EVIDENCE = [
+  "ulid_generator_observed",
+  "uuid4_generator_observed",
+  "secrets_generator_observed",
+  "typed_uuid_only",
+  "not_proven",
+] as const;
+export const FASTAPI_OBJECT_CAPABILITY_LIFECYCLE_EVIDENCE = [
+  "expiration_guard_observed",
+  "state_guard_observed",
+  "not_proven",
+] as const;
+export const FASTAPI_OBJECT_CAPABILITY_ONE_TIME_EVIDENCE = [
+  "atomic_state_guard_observed",
+  "write_once_guard_observed",
+  "not_proven",
+] as const;
+export const FASTAPI_OBJECT_CAPABILITY_MUTATION_IMPACTS = [
+  "personal_data",
+  "payment_address",
+  "payout_destination",
+  "authorization_state",
+  "credential_state",
+  "destructive_operation",
+  "workflow_state",
+  "generic_sensitive_state",
+] as const;
+export const FASTAPI_OBJECT_CAPABILITY_ANALYSIS_DEPTHS = [
+  "handler_only",
+  "one_local_method",
+] as const;
 export const INTERFACE_SECURITY_REVIEW_OWNER_PLACEHOLDER = "<SET_REVIEW_OWNER>" as const;
 export const INTERFACE_SECURITY_REVIEW_RATIONALE_PLACEHOLDER = "Review the linked static evidence before changing this disposition." as const;
 export const BOLA_DRAFT_SCHEMA_VERSION = "1.1.0" as const;
@@ -465,6 +498,12 @@ export interface InterfaceVerificationQueue {
 
 export type InterfaceSecurityFindingStatus = "open" | "suppressed_only";
 export type FastApiAuthenticationGapReason = typeof FASTAPI_AUTHENTICATION_GAP_REASONS[number];
+export type FastApiObjectCapabilityIdentifierSource = typeof FASTAPI_OBJECT_CAPABILITY_IDENTIFIER_SOURCES[number];
+export type FastApiObjectCapabilityEntropyEvidence = typeof FASTAPI_OBJECT_CAPABILITY_ENTROPY_EVIDENCE[number];
+export type FastApiObjectCapabilityLifecycleEvidence = typeof FASTAPI_OBJECT_CAPABILITY_LIFECYCLE_EVIDENCE[number];
+export type FastApiObjectCapabilityOneTimeEvidence = typeof FASTAPI_OBJECT_CAPABILITY_ONE_TIME_EVIDENCE[number];
+export type FastApiObjectCapabilityMutationImpact = typeof FASTAPI_OBJECT_CAPABILITY_MUTATION_IMPACTS[number];
+export type FastApiObjectCapabilityAnalysisDepth = typeof FASTAPI_OBJECT_CAPABILITY_ANALYSIS_DEPTHS[number];
 
 export interface InterfaceSecurityAuditSource {
   signalId: string;

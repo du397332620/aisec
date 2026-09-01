@@ -14,6 +14,25 @@ const ROUTE_PATTERN = /^(?:GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|ALL) \/\S*$/;
 const RULE_ID_PATTERN = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/;
 const FASTAPI_RULE_PATTERN = /^fastapi\.(?:auth|authorization)\./;
 const AUTHENTICATION_GAP_REASONS = new Set(["no_visible_guard", "optional_or_disabled_guard"]);
+const CAPABILITY_IDENTIFIER_SOURCES = new Set(["path_parameter"]);
+const CAPABILITY_ENTROPY_EVIDENCE = new Set([
+  "ulid_generator_observed", "uuid4_generator_observed", "secrets_generator_observed", "typed_uuid_only", "not_proven",
+]);
+const CAPABILITY_LIFECYCLE_EVIDENCE = new Set(["expiration_guard_observed", "state_guard_observed", "not_proven"]);
+const CAPABILITY_ONE_TIME_EVIDENCE = new Set([
+  "atomic_state_guard_observed", "write_once_guard_observed", "not_proven",
+]);
+const CAPABILITY_MUTATION_IMPACTS = new Set([
+  "personal_data", "payment_address", "payout_destination", "authorization_state", "credential_state",
+  "destructive_operation", "workflow_state", "generic_sensitive_state",
+]);
+const CAPABILITY_ANALYSIS_DEPTHS = new Set(["handler_only", "one_local_method"]);
+const CAPABILITY_IDENTIFIER_FIELD = /^[A-Za-z_]\w{0,127}$/;
+const CAPABILITY_METADATA_KEYS = new Set([
+  "objectCapabilityMutation", "capabilityEvidenceVersion", "capabilityIdentifierFields",
+  "capabilityIdentifierSource", "capabilityEntropyEvidence", "capabilityLifecycleEvidence",
+  "capabilityOneTimeEvidence", "capabilityMutationImpact", "capabilityAnalysisDepth",
+]);
 const REPOSITORY_PATTERN = /^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})\/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})\.git$/;
 const SPDX_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$/;
 const SAFE_RELATIVE_PATH = /^(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+$/;
@@ -160,6 +179,43 @@ function validateAuthenticationGapReasons(value, label) {
   return reasons;
 }
 
+function capabilityEnum(value, label, allowed) {
+  const result = nonEmptyString(value, label);
+  if (!allowed.has(result)) fail(`${label} is unsupported: ${result}`);
+  return result;
+}
+
+function validateObjectCapabilityMutations(value, label) {
+  if (!Array.isArray(value)) fail(`${label} must be an array`);
+  const records = value.map((item, index) => {
+    const entryLabel = `${label}[${index}]`;
+    const entry = plainObject(item, entryLabel, [
+      "route", "identifierFields", "identifierSource", "entropyEvidence", "lifecycleEvidence",
+      "oneTimeEvidence", "mutationImpact", "analysisDepth",
+    ]);
+    const route = nonEmptyString(entry.route, `${entryLabel}.route`, ROUTE_PATTERN);
+    const identifierFields = uniqueStrings(entry.identifierFields, `${entryLabel}.identifierFields`, CAPABILITY_IDENTIFIER_FIELD).sort();
+    if (identifierFields.length === 0 || identifierFields.length > 4) {
+      fail(`${entryLabel}.identifierFields must contain between 1 and 4 fields`);
+    }
+    for (const field of identifierFields) {
+      if (!new RegExp(`\\{${field}(?::[^}]*)?\\}`).test(route)) fail(`${entryLabel}.identifierFields contains a field absent from the route`);
+    }
+    return {
+      route,
+      identifierFields,
+      identifierSource: capabilityEnum(entry.identifierSource, `${entryLabel}.identifierSource`, CAPABILITY_IDENTIFIER_SOURCES),
+      entropyEvidence: capabilityEnum(entry.entropyEvidence, `${entryLabel}.entropyEvidence`, CAPABILITY_ENTROPY_EVIDENCE),
+      lifecycleEvidence: capabilityEnum(entry.lifecycleEvidence, `${entryLabel}.lifecycleEvidence`, CAPABILITY_LIFECYCLE_EVIDENCE),
+      oneTimeEvidence: capabilityEnum(entry.oneTimeEvidence, `${entryLabel}.oneTimeEvidence`, CAPABILITY_ONE_TIME_EVIDENCE),
+      mutationImpact: capabilityEnum(entry.mutationImpact, `${entryLabel}.mutationImpact`, CAPABILITY_MUTATION_IMPACTS),
+      analysisDepth: capabilityEnum(entry.analysisDepth, `${entryLabel}.analysisDepth`, CAPABILITY_ANALYSIS_DEPTHS),
+    };
+  }).sort((left, right) => left.route.localeCompare(right.route));
+  if (new Set(records.map((item) => item.route)).size !== records.length) fail(`${label} contains duplicate routes`);
+  return records;
+}
+
 function validateSignalCounts(value, label) {
   if (!Array.isArray(value)) fail(`${label} must be an array`);
   const counts = value.map((item, index) => {
@@ -186,7 +242,7 @@ function validateManifest(value) {
       "id", "repository", "commit", "license", "licenseFile", "expected",
     ]);
     const expectedValue = plainObject(target.expected, `${label}.expected`, [
-      "routeCount", "requiredRoutes", "decision", "coverage", "fastapiFindings", "authenticationGapReasons", "requiredSignalCounts",
+      "routeCount", "requiredRoutes", "decision", "coverage", "fastapiFindings", "authenticationGapReasons", "objectCapabilityMutations", "requiredSignalCounts",
     ], [
       "routeCount", "requiredRoutes", "decision", "coverage", "fastapiFindings", "requiredSignalCounts",
     ]);
@@ -208,6 +264,10 @@ function validateManifest(value) {
         authenticationGapReasons: validateAuthenticationGapReasons(
           expectedValue.authenticationGapReasons ?? [],
           `${label}.expected.authenticationGapReasons`,
+        ),
+        objectCapabilityMutations: validateObjectCapabilityMutations(
+          expectedValue.objectCapabilityMutations ?? [],
+          `${label}.expected.objectCapabilityMutations`,
         ),
         requiredSignalCounts: validateSignalCounts(expectedValue.requiredSignalCounts, `${label}.expected.requiredSignalCounts`),
       },
@@ -357,6 +417,43 @@ function summarizeAuthenticationGapReasons(signals) {
     .sort((left, right) => left.reason.localeCompare(right.reason));
 }
 
+function summarizeObjectCapabilityMutations(signals) {
+  const records = [];
+  for (const signal of signals.filter((item) => item.ruleId === "fastapi.auth.sensitive-route-without-guard")) {
+    const metadata = signal.metadata ?? {};
+    const capabilityKeys = Object.keys(metadata).filter((key) => key.startsWith("objectCapability") || key.startsWith("capability"));
+    if (metadata.objectCapabilityMutation === undefined) {
+      if (capabilityKeys.length > 0) fail(`FastAPI authentication finding has capability fields without the marker: ${String(metadata.route)}`);
+      continue;
+    }
+    if (metadata.objectCapabilityMutation !== true) {
+      fail(`FastAPI authentication finding has an invalid objectCapabilityMutation marker: ${String(metadata.route)}`);
+    }
+    for (const key of capabilityKeys) if (!CAPABILITY_METADATA_KEYS.has(key)) fail(`FastAPI capability evidence contains unsupported field ${key}`);
+    for (const key of CAPABILITY_METADATA_KEYS) if (!(key in metadata)) fail(`FastAPI capability evidence is missing ${key}`);
+    if (metadata.capabilityEvidenceVersion !== "1.0.0") fail("FastAPI capability evidence version is unsupported");
+    const route = nonEmptyString(metadata.route, "FastAPI capability route", ROUTE_PATTERN);
+    const identifierFields = uniqueStrings(metadata.capabilityIdentifierFields, "FastAPI capability identifier fields", CAPABILITY_IDENTIFIER_FIELD).sort();
+    if (identifierFields.length === 0 || identifierFields.length > 4) fail("FastAPI capability identifier fields are out of bounds");
+    for (const field of identifierFields) {
+      if (!new RegExp(`\\{${field}(?::[^}]*)?\\}`).test(route)) fail("FastAPI capability identifier field is absent from its route");
+    }
+    records.push({
+      route,
+      identifierFields,
+      identifierSource: capabilityEnum(metadata.capabilityIdentifierSource, "FastAPI capability identifier source", CAPABILITY_IDENTIFIER_SOURCES),
+      entropyEvidence: capabilityEnum(metadata.capabilityEntropyEvidence, "FastAPI capability entropy evidence", CAPABILITY_ENTROPY_EVIDENCE),
+      lifecycleEvidence: capabilityEnum(metadata.capabilityLifecycleEvidence, "FastAPI capability lifecycle evidence", CAPABILITY_LIFECYCLE_EVIDENCE),
+      oneTimeEvidence: capabilityEnum(metadata.capabilityOneTimeEvidence, "FastAPI capability one-time evidence", CAPABILITY_ONE_TIME_EVIDENCE),
+      mutationImpact: capabilityEnum(metadata.capabilityMutationImpact, "FastAPI capability mutation impact", CAPABILITY_MUTATION_IMPACTS),
+      analysisDepth: capabilityEnum(metadata.capabilityAnalysisDepth, "FastAPI capability analysis depth", CAPABILITY_ANALYSIS_DEPTHS),
+    });
+  }
+  records.sort((left, right) => left.route.localeCompare(right.route));
+  if (new Set(records.map((item) => item.route)).size !== records.length) fail("FastAPI capability evidence contains duplicate routes");
+  return records;
+}
+
 function assertExpected(target, report, source) {
   const expected = target.expected;
   const routes = [...report.profile.routes].sort();
@@ -369,6 +466,10 @@ function assertExpected(target, report, source) {
   const authenticationGapReasons = summarizeAuthenticationGapReasons(report.signals);
   if (JSON.stringify(authenticationGapReasons) !== JSON.stringify(expected.authenticationGapReasons)) {
     fail(`${target.id}: authentication gap reasons drifted; expected ${JSON.stringify(expected.authenticationGapReasons)}, got ${JSON.stringify(authenticationGapReasons)}`);
+  }
+  const objectCapabilityMutations = summarizeObjectCapabilityMutations(report.signals);
+  if (JSON.stringify(objectCapabilityMutations) !== JSON.stringify(expected.objectCapabilityMutations)) {
+    fail(`${target.id}: object capability mutations drifted; expected ${JSON.stringify(expected.objectCapabilityMutations)}, got ${JSON.stringify(objectCapabilityMutations)}`);
   }
   const requiredSignalCounts = expected.requiredSignalCounts.map((item) => {
     const count = report.signals.filter((signal) => signal.ruleId === item.ruleId).length;
@@ -394,6 +495,7 @@ function assertExpected(target, report, source) {
     requiredRoutes: expected.requiredRoutes,
     fastapiFindings,
     authenticationGapReasons,
+    objectCapabilityMutations,
     requiredSignalCounts,
     coverage,
     decision: report.decision,

@@ -44,7 +44,17 @@ recognized without importing that package; empty requirements, optional
 authentication instances and name-only guards remain untrusted. Authentication
 findings distinguish a recognized optional/disabled dependency from no visible
 guard through the machine-readable `authenticationGapReason` metadata field;
-this explains the review boundary without suppressing either case. It detects
+this explains the review boundary without suppressing either case. On an
+existing authentication finding, a mutation route whose bounded path identifier
+visibly reaches an existing object can also retain fixed
+`objectCapabilityMutation` evidence: identifier source, recognized ULID/UUID4/
+secrets generator evidence, lifecycle and one-time guards, mutation impact and
+whether analysis stopped in the handler or followed one uniquely resolved local
+service method. Model inheritance and generator lookup are bounded and
+module-aware; ambiguity and unsupported patterns fail to `not_proven` rather
+than asserting that a control is absent. This metadata does not create another
+finding, change severity, prove that an identifier is secret or unguessable, or
+establish authorization, reachability or exploitability. It detects
 sensitive routes that a global whitelist makes public and separately
 flags standalone services with no visible authentication boundary. It also
 identifies authenticated object operations without a visible owner/tenant/role
@@ -703,7 +713,7 @@ accepted suppressions for compatible consumers.
 | Secrets in selected source files | Native | Deterministic provider patterns plus fully redacted concrete sensitive-environment interpolation fallbacks; working tree only, not Git history |
 | JS/TS request/model data flow | Native TypeScript parser | Narrow source-to-sink traces for SQL/command/SSRF/XSS and model-output sinks; not whole-program or general multi-language analysis |
 | Next.js/app, Supabase/Firebase and mobile source checks | Native | Focused Beta rules; BaaS analysis recognizes bounded PostgreSQL RLS and Firebase Firestore/Storage authorization expressions, while unsupported helpers or syntax make coverage `partial`; some findings are explicitly `inferred` and require review |
-| FastAPI authentication and authorization | Native Python analyzer | Resolves common router composition, `Annotated` authentication aliases, enforced non-empty static-list/tuple `SecurityScopes`, locally visible callable role/permission dependencies and explicit configured third-party `Protected` dependencies; inferred authentication findings retain exact route metadata and distinguish `optional_or_disabled_guard` from `no_visible_guard` without automatic suppression; whitelist bypasses are static-confirmed, while standalone unguarded services, missing object ownership and explicit privileged operations without a proven role/permission check are inferred; empty/dynamic scopes, optional auth, dynamic callables and external policy-engine behavior remain partial coverage |
+| FastAPI authentication and authorization | Native Python analyzer | Resolves common router composition, `Annotated` authentication aliases, enforced non-empty static-list/tuple `SecurityScopes`, locally visible callable role/permission dependencies and explicit configured third-party `Protected` dependencies; inferred authentication findings retain exact route metadata, distinguish `optional_or_disabled_guard` from `no_visible_guard`, and can attach fixed path-identifier/existing-object mutation evidence through one local service hop without changing finding identity or claiming authorization/exploitability; whitelist bypasses are static-confirmed, while standalone unguarded services, missing object ownership and explicit privileged operations without a proven role/permission check are inferred; empty/dynamic scopes, optional auth, ambiguous model resolution, dynamic callables and external policy-engine behavior remain partial coverage |
 | Express/NestJS authentication and authorization | Native TypeScript analyzer | Resolves relative modules, Express apps/routers, selected constructed handlers, bounded local or one-hop directly imported immutable ESM route tables used by `forEach` and direct synchronous `for...of`, including at most two direct inline statically evaluable `filter`/`map` transforms, and NestJS controllers/guards/providers through local module imports, exports, re-exports and application-global visibility; accepts direct official `forwardRef` tokens/modules, visible synchronous static dynamic-module metadata, fully resolved direct official `NestFactory.create` roots from conventional runtime entry files, same-container direct `useGlobalGuards`, `setGlobalPrefix` and URI `enableVersioning` calls on their awaited `const` application instances, plus direct official static `RouterModule.register` trees from real module imports; composes independently scoped global/version/module/controller paths for shared controllers and otherwise retains bounded inferred-root routes without trusting imperative configuration, with both module and RouterModule traversal capped at eight edges and 256 entries; follows up to four local call edges and bounded local repository inheritance; traces authenticated identity into object-literal, directly consumed or one-`const`/single-use local filter helpers and selected TypeORM, Knex, Sequelize and Mongoose owner predicates while rejecting owner-only OR branches; recognizes name-independent single-equality boolean policies only when denial is directly enforced, consumed through one single-condition `const`, or forwarded through one direct-return wrapper; reports missing ownership and privileged role/permission checks as inferred findings; dynamic queries/helpers, arbitrary collection transforms, unsupported operators/scopes or bootstrap graphs, unresolved providers/registration/bootstrap/global-guard/application-routing/RouterModule sites, package or mixin bases, complex wrappers and external policy engines still require review |
 | Python API data flow | Native Python analyzer | Bounded interprocedural traces for request-derived URL, file-path and raw-SQL sinks, plus caller-selected model origins receiving server credentials; exact FastAPI route origins propagate through direct handlers, unique local/relative imports and directly invoked lexical closures; comments, returned closures, ambiguous/dynamic dispatch and unproven request origins remain unattributed with stable machine-readable reasons in JSON/CI plus bounded terminal/Markdown/HTML summaries; recognizes selected validation boundaries and reports partial coverage |
 | FastAPI/JWT/Compose configuration | Native Python analyzer | Focused CORS, global and broad route-local exception disclosure, JWT signing-key/lifetime and published unguarded service checks; deployment correlations can be inferred and require review |
@@ -812,9 +822,12 @@ Open and suppressed-only evidence remain distinct. Python dataflow that cannot
 be attributed to a route and project-level deployment context are reported only
 as aggregate evidence and are never assigned to an endpoint without proof.
 For `fastapi.auth.sensitive-route-without-guard`, the exact source retains only
-`optional_or_disabled_guard` or `no_visible_guard`; arbitrary signal metadata
-is not copied. A missing or unsupported value is counted explicitly and makes
-coverage `partial`. It never suppresses a finding or chooses a disposition.
+`optional_or_disabled_guard` or `no_visible_guard`; arbitrary signal metadata,
+including the object-capability mutation fields, is intentionally not copied
+until a separately versioned strict audit contract defines that propagation. A
+missing or unsupported authentication-gap value is counted explicitly and
+makes coverage `partial`. It never suppresses a finding or chooses a
+disposition.
 
 The artifact emits at most 200 route-category entries, 20 sources per entry and
 20 open plus 20 suppressed finding IDs per source. Any route/source/finding
@@ -1605,7 +1618,9 @@ FastAPI Template, Bitcart and `zopyx/fastapi-auth`. The manifest fixes each
 repository to a complete commit, records its SPDX license and license-file path,
 and checks exact FastAPI route/finding expectations plus authentication-gap
 reason/route sets for `Annotated` identity aliases, enforced `SecurityScopes`
-and callable/configured RBAC dependencies:
+and callable/configured RBAC dependencies. It also checks the exact bounded
+object-capability mutation evidence on the three reviewed Bitcart routes without
+performing identifier enumeration or active requests:
 
 ```bash
 # Explicitly downloads all three licensed repositories at fixed commits

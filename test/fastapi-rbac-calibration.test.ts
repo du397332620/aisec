@@ -125,6 +125,7 @@ def health():
       requiredRoutes: ["GET /health"],
       fastapiFindings: [],
       authenticationGapReasons: [],
+      objectCapabilityMutations: [],
       requiredSignalCounts: [],
       coverage: [
         { domain: "fastapi-authentication", status: "complete" },
@@ -180,6 +181,37 @@ def health():
     ]);
     assert.equal(unsupportedReason.status, 1);
     assert.match(unsupportedReason.stderr, /authenticationGapReasons\[0\]\.reason is unsupported/);
+
+    const unsupportedCapabilityManifest = join(temporary, "unsupported-capability-manifest.json");
+    const unsupportedCapabilityValue = {
+      ...structuredClone(manifestValue),
+      targets: [{
+        ...structuredClone(manifestValue.targets[0]!),
+        expected: {
+          ...structuredClone(manifestValue.targets[0]!.expected),
+          objectCapabilityMutations: [{
+            route: "POST /objects/{object_id}/submit",
+            identifierFields: ["object_id"],
+            identifierSource: "path_parameter",
+            entropyEvidence: "invented_entropy",
+            lifecycleEvidence: "not_proven",
+            oneTimeEvidence: "not_proven",
+            mutationImpact: "generic_sensitive_state",
+            analysisDepth: "handler_only",
+          }],
+        },
+      }],
+    };
+    await writeFile(unsupportedCapabilityManifest, `${JSON.stringify(unsupportedCapabilityValue)}\n`);
+    const unsupportedCapability = runCalibration([
+      "--manifest", unsupportedCapabilityManifest,
+      "--local", `fixture=${project}`,
+    ]);
+    assert.equal(unsupportedCapability.status, 1);
+    assert.match(
+      unsupportedCapability.stderr,
+      /objectCapabilityMutations\[0\]\.entropyEvidence is unsupported/,
+    );
 
     await writeFile(join(project, "untracked.py"), "drift = True\n");
     const dirty = runCalibration(args);

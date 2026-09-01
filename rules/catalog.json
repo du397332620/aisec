@@ -352,7 +352,7 @@
       "defaultEvidenceLevel": "inferred",
       "applicability": ["fastapi"],
       "falsePositiveModes": ["An upstream gateway, dynamic dependency or unsupported middleware may enforce authentication."],
-      "reviewGuidance": "Locate the deployed identity boundary and verify an unauthenticated request receives 401 or 403."
+      "reviewGuidance": "Locate the deployed identity boundary and verify an unauthenticated request receives 401 or 403. When bounded object-capability mutation metadata is present, also trace identifier generation, disclosure, lifetime and replay controls plus the sensitive mutation; generator evidence is not authorization proof."
     },
     {
       "ruleId": "fastapi.authorization.object-without-ownership-check",

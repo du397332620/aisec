@@ -53,6 +53,7 @@
             ]
           }
         ],
+        "objectCapabilityMutations": [],
         "requiredSignalCounts": [
           {
             "ruleId": "python.dataflow.ssrf",
@@ -143,6 +144,38 @@
             ]
           }
         ],
+        "objectCapabilityMutations": [
+          {
+            "route": "PATCH /invoices/{model_id}/customer",
+            "identifierFields": ["model_id"],
+            "identifierSource": "path_parameter",
+            "entropyEvidence": "ulid_generator_observed",
+            "lifecycleEvidence": "not_proven",
+            "oneTimeEvidence": "write_once_guard_observed",
+            "mutationImpact": "personal_data",
+            "analysisDepth": "handler_only"
+          },
+          {
+            "route": "PATCH /invoices/{model_id}/details",
+            "identifierFields": ["model_id"],
+            "identifierSource": "path_parameter",
+            "entropyEvidence": "ulid_generator_observed",
+            "lifecycleEvidence": "state_guard_observed",
+            "oneTimeEvidence": "write_once_guard_observed",
+            "mutationImpact": "payment_address",
+            "analysisDepth": "one_local_method"
+          },
+          {
+            "route": "POST /invoices/refunds/{refund_id}/submit",
+            "identifierFields": ["refund_id"],
+            "identifierSource": "path_parameter",
+            "entropyEvidence": "ulid_generator_observed",
+            "lifecycleEvidence": "not_proven",
+            "oneTimeEvidence": "atomic_state_guard_observed",
+            "mutationImpact": "payout_destination",
+            "analysisDepth": "one_local_method"
+          }
+        ],
         "requiredSignalCounts": [
           {
             "ruleId": "python.dataflow.ssrf",
@@ -185,6 +218,7 @@
         ],
         "fastapiFindings": [],
         "authenticationGapReasons": [],
+        "objectCapabilityMutations": [],
         "requiredSignalCounts": []
       }
     }
