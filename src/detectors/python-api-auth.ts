@@ -41,11 +41,17 @@ function whitelistedSignal(route: FastApiRoute): Signal {
 }
 
 function unguardedSignal(route: FastApiRoute): Signal {
+  const authenticationGapReason = route.optionalAuthentication
+    ? "optional_or_disabled_guard"
+    : "no_visible_guard";
+  const description = route.optionalAuthentication
+    ? `${route.method} ${route.path} uses a recognized authentication dependency configured as optional or disabled, so unauthenticated execution remains possible unless handler or service logic rejects it.`
+    : `${route.method} ${route.path} is attached to a FastAPI application with no recognized authentication middleware, router dependency, route dependency, or explicit identity check. An upstream gateway may still protect it.`;
   return createSignal({
     engine: "aisec-python",
     ruleId: "fastapi.auth.sensitive-route-without-guard",
     title: "FastAPI sensitive route has no visible authentication guard",
-    description: `${route.method} ${route.path} is attached to a FastAPI application with no recognized authentication middleware, router dependency, route dependency, or explicit identity check. An upstream gateway may still protect it.`,
+    description,
     severity: "high",
     evidenceLevel: "inferred",
     confidence: "medium",
@@ -54,7 +60,11 @@ function unguardedSignal(route: FastApiRoute): Signal {
     owasp: ["A01:2021", "A07:2021"],
     tags: ["fastapi", "api", "auth", "authorization"],
     remediation: "Require a server-verified user or service identity at the application, router, or route boundary, and verify unauthenticated requests receive 401 or 403 in the deployed environment.",
-    metadata: { route: `${route.method} ${route.path}`, handler: route.handlerName },
+    metadata: {
+      route: `${route.method} ${route.path}`,
+      handler: route.handlerName,
+      authenticationGapReason,
+    },
   });
 }
 

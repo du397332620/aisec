@@ -13,6 +13,7 @@ const COVERAGE_STATUSES = new Set(["complete", "partial", "failed", "not_run"]);
 const ROUTE_PATTERN = /^(?:GET|POST|PUT|PATCH|DELETE|OPTIONS|HEAD|ALL) \/\S*$/;
 const RULE_ID_PATTERN = /^[a-z][a-z0-9]*(?:[.-][a-z0-9]+)+$/;
 const FASTAPI_RULE_PATTERN = /^fastapi\.(?:auth|authorization)\./;
+const AUTHENTICATION_GAP_REASONS = new Set(["no_visible_guard", "optional_or_disabled_guard"]);
 const REPOSITORY_PATTERN = /^https:\/\/github\.com\/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})\/[A-Za-z0-9](?:[A-Za-z0-9_.-]{0,99})\.git$/;
 const SPDX_PATTERN = /^[A-Za-z0-9][A-Za-z0-9.+-]{0,63}$/;
 const SAFE_RELATIVE_PATH = /^(?:[A-Za-z0-9_.-]+\/)*[A-Za-z0-9_.-]+$/;
@@ -141,6 +142,24 @@ function validateFastApiFindings(value, label) {
   return findings;
 }
 
+function validateAuthenticationGapReasons(value, label) {
+  if (!Array.isArray(value)) fail(`${label} must be an array`);
+  const reasons = value.map((item, index) => {
+    const entryLabel = `${label}[${index}]`;
+    const entry = plainObject(item, entryLabel, ["reason", "count", "routes"]);
+    const reason = nonEmptyString(entry.reason, `${entryLabel}.reason`);
+    if (!AUTHENTICATION_GAP_REASONS.has(reason)) fail(`${entryLabel}.reason is unsupported: ${reason}`);
+    const count = positiveInteger(entry.count, `${entryLabel}.count`);
+    const routes = uniqueStrings(entry.routes, `${entryLabel}.routes`, ROUTE_PATTERN).sort();
+    if (routes.length !== count) fail(`${entryLabel}.count must equal its unique route count`);
+    return { reason, count, routes };
+  }).sort((left, right) => left.reason.localeCompare(right.reason));
+  if (new Set(reasons.map((item) => item.reason)).size !== reasons.length) fail(`${label} contains duplicate reasons`);
+  const routes = reasons.flatMap((item) => item.routes);
+  if (new Set(routes).size !== routes.length) fail(`${label} assigns a route to more than one reason`);
+  return reasons;
+}
+
 function validateSignalCounts(value, label) {
   if (!Array.isArray(value)) fail(`${label} must be an array`);
   const counts = value.map((item, index) => {
@@ -167,6 +186,8 @@ function validateManifest(value) {
       "id", "repository", "commit", "license", "licenseFile", "expected",
     ]);
     const expectedValue = plainObject(target.expected, `${label}.expected`, [
+      "routeCount", "requiredRoutes", "decision", "coverage", "fastapiFindings", "authenticationGapReasons", "requiredSignalCounts",
+    ], [
       "routeCount", "requiredRoutes", "decision", "coverage", "fastapiFindings", "requiredSignalCounts",
     ]);
     const decision = nonEmptyString(expectedValue.decision, `${label}.expected.decision`);
@@ -184,6 +205,10 @@ function validateManifest(value) {
         decision,
         coverage: validateCoverage(expectedValue.coverage, `${label}.expected.coverage`),
         fastapiFindings: validateFastApiFindings(expectedValue.fastapiFindings, `${label}.expected.fastapiFindings`),
+        authenticationGapReasons: validateAuthenticationGapReasons(
+          expectedValue.authenticationGapReasons ?? [],
+          `${label}.expected.authenticationGapReasons`,
+        ),
         requiredSignalCounts: validateSignalCounts(expectedValue.requiredSignalCounts, `${label}.expected.requiredSignalCounts`),
       },
     };
@@ -311,6 +336,27 @@ function summarizeFastApiFindings(signals) {
     .sort((left, right) => left.ruleId.localeCompare(right.ruleId));
 }
 
+function summarizeAuthenticationGapReasons(signals) {
+  const grouped = new Map();
+  for (const signal of signals.filter((item) => item.ruleId === "fastapi.auth.sensitive-route-without-guard")) {
+    const reason = signal.metadata?.authenticationGapReason;
+    const route = signal.metadata?.route;
+    if (typeof reason !== "string" || !AUTHENTICATION_GAP_REASONS.has(reason)) {
+      fail(`FastAPI authentication finding has unsupported authenticationGapReason: ${String(reason)}`);
+    }
+    if (typeof route !== "string" || !ROUTE_PATTERN.test(route)) {
+      fail(`FastAPI authentication finding has invalid route metadata: ${String(route)}`);
+    }
+    const current = grouped.get(reason) ?? { reason, count: 0, routes: new Set() };
+    current.count += 1;
+    current.routes.add(route);
+    grouped.set(reason, current);
+  }
+  return [...grouped.values()]
+    .map((item) => ({ reason: item.reason, count: item.count, routes: [...item.routes].sort() }))
+    .sort((left, right) => left.reason.localeCompare(right.reason));
+}
+
 function assertExpected(target, report, source) {
   const expected = target.expected;
   const routes = [...report.profile.routes].sort();
@@ -319,6 +365,10 @@ function assertExpected(target, report, source) {
   const fastapiFindings = summarizeFastApiFindings(report.signals);
   if (JSON.stringify(fastapiFindings) !== JSON.stringify(expected.fastapiFindings)) {
     fail(`${target.id}: FastAPI findings drifted; expected ${JSON.stringify(expected.fastapiFindings)}, got ${JSON.stringify(fastapiFindings)}`);
+  }
+  const authenticationGapReasons = summarizeAuthenticationGapReasons(report.signals);
+  if (JSON.stringify(authenticationGapReasons) !== JSON.stringify(expected.authenticationGapReasons)) {
+    fail(`${target.id}: authentication gap reasons drifted; expected ${JSON.stringify(expected.authenticationGapReasons)}, got ${JSON.stringify(authenticationGapReasons)}`);
   }
   const requiredSignalCounts = expected.requiredSignalCounts.map((item) => {
     const count = report.signals.filter((signal) => signal.ruleId === item.ruleId).length;
@@ -343,6 +393,7 @@ function assertExpected(target, report, source) {
     routeCount: routes.length,
     requiredRoutes: expected.requiredRoutes,
     fastapiFindings,
+    authenticationGapReasons,
     requiredSignalCounts,
     coverage,
     decision: report.decision,

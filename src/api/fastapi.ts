@@ -14,6 +14,7 @@ export interface FastApiRoute {
   responseOwnerFields: string[];
   handlerSource: string;
   locallyProtected: boolean;
+  optionalAuthentication: boolean;
   ownershipProtected: boolean;
   privilegeProtected: boolean;
   middlewareProtected: boolean;
@@ -48,6 +49,7 @@ interface RouterNode {
   kind: "app" | "router";
   prefix: string;
   dependencyProtected: boolean;
+  dependencyOptionalAuthentication: boolean;
   dependencyOwnershipProtected: boolean;
   dependencyPrivilegeProtected: boolean;
   middlewareProtected: boolean;
@@ -60,6 +62,7 @@ interface IncludeEdge {
   childExpression: string;
   prefix: string;
   dependencyProtected: boolean;
+  dependencyOptionalAuthentication: boolean;
   dependencyOwnershipProtected: boolean;
   dependencyPrivilegeProtected: boolean;
   module: string;
@@ -75,6 +78,7 @@ interface LocalRoute {
   responseOwnerFields: string[];
   handlerSource: string;
   handlerProtected: boolean;
+  handlerOptionalAuthentication: boolean;
   ownershipProtected: boolean;
   privilegeProtected: boolean;
 }
@@ -342,6 +346,7 @@ interface DependencyCall {
 
 interface CallableGuards {
   authNames: Set<string>;
+  optionalAuthNames: Set<string>;
   privilegeNames: Set<string>;
   scopedPrivilegeNames: Set<string>;
 }
@@ -438,16 +443,19 @@ function hasTypeAliasGuard(source: string, aliases: Set<string>): boolean {
   return false;
 }
 
+function configuredPrivilegeDependency(expression: string): boolean {
+  const constructor = expression.match(/^(?:[A-Za-z_]\w*\s*\.\s*)*(Protected|RoleChecker|PermissionChecker|AuthorizationChecker|AccessChecker)\s*\(([\s\S]*)\)\s*$/i);
+  if (!constructor?.[2]) return false;
+  const configuration = constructor[2];
+  const explicitRequirement = /\b(?:required_roles?|required_permissions?|required_checker|allowed_roles?|allowed_permissions?)\s*=\s*/i.test(configuration);
+  const emptyRequirement = /\b(?:required_roles?|required_permissions?|required_checker|allowed_roles?|allowed_permissions?)\s*=\s*(?:None\b|False\b|\[\s*\]|\(\s*\)|\{\s*\})/i.test(configuration);
+  return explicitRequirement && !emptyRequirement;
+}
+
 function explicitConfiguredPrivilegeDependency(source: string): boolean {
   for (const call of dependencyCalls(source)) {
     const expression = firstArgument(call.argumentsText);
-    if (disabledDependencyExpression(expression)) continue;
-    const constructor = expression.match(/^(?:[A-Za-z_]\w*\s*\.\s*)*(Protected|RoleChecker|PermissionChecker|AuthorizationChecker|AccessChecker)\s*\(([\s\S]*)\)\s*$/i);
-    if (!constructor?.[2]) continue;
-    const configuration = constructor[2];
-    const explicitRequirement = /\b(?:required_roles?|required_permissions?|required_checker|allowed_roles?|allowed_permissions?)\s*=\s*/i.test(configuration);
-    const emptyRequirement = /\b(?:required_roles?|required_permissions?|required_checker|allowed_roles?|allowed_permissions?)\s*=\s*(?:None\b|False\b|\[\s*\]|\(\s*\)|\{\s*\})/i.test(configuration);
-    if (explicitRequirement && !emptyRequirement) return true;
+    if (!disabledDependencyExpression(expression) && configuredPrivilegeDependency(expression)) return true;
   }
   return false;
 }
@@ -456,6 +464,22 @@ function hasAuthGuard(source: string, authNames: Set<string>, authAliases: Set<s
   return hasNamedGuard(source, authNames)
     || hasTypeAliasGuard(source, authAliases)
     || explicitConfiguredPrivilegeDependency(source);
+}
+
+function hasOptionalAuthGuard(
+  source: string,
+  optionalAuthNames: Set<string>,
+  authNames: Set<string>,
+  optionalAuthAliases: Set<string> = new Set(),
+): boolean {
+  if (hasNamedGuard(source, optionalAuthNames) || hasTypeAliasGuard(source, optionalAuthAliases)) return true;
+  for (const call of dependencyCalls(source)) {
+    const expression = firstArgument(call.argumentsText);
+    const name = dependencyName(expression);
+    if (disabledDependencyExpression(expression)
+      && ((name && authNames.has(name)) || configuredPrivilegeDependency(expression))) return true;
+  }
+  return false;
 }
 
 function discoverOwnershipFunctions(files: ProjectFile[]): Set<string> {
@@ -531,6 +555,7 @@ function discoverScopeFunctions(files: ProjectFile[]): Set<string> {
 
 function discoverCallableGuards(files: ProjectFile[]): CallableGuards {
   const authNames = new Set<string>();
+  const optionalAuthNames = new Set<string>();
   const privilegeNames = new Set<string>();
   const scopedPrivilegeNames = new Set<string>();
   const authClasses = new Set<string>();
@@ -575,13 +600,16 @@ function discoverCallableGuards(files: ProjectFile[]): CallableGuards {
       if (closing === -1) continue;
       const argumentsText = file.content.slice(opening + 1, closing);
       const optional = /\b(?:token_required|auto_error|enabled)\s*=\s*False\b/.test(pythonCodeMask(argumentsText));
-      if (optional) continue;
+      if (optional) {
+        if (authClasses.has(constructor)) optionalAuthNames.add(variable);
+        continue;
+      }
       if (authClasses.has(constructor)) authNames.add(variable);
       if (privilegeClasses.has(constructor)) privilegeNames.add(variable);
       if (scopedClasses.has(constructor)) scopedPrivilegeNames.add(variable);
     }
   }
-  return { authNames, privilegeNames, scopedPrivilegeNames };
+  return { authNames, optionalAuthNames, privilegeNames, scopedPrivilegeNames };
 }
 
 function discoverPrivilegeFunctions(files: ProjectFile[], authNames: Set<string>): Set<string> {
@@ -728,9 +756,10 @@ function expandImportedNames(parsedFiles: ParsedFile[], names: Set<string>): voi
 function discoverGuardAliases(
   files: ProjectFile[],
   authNames: Set<string>,
+  optionalAuthNames: Set<string>,
   privilegeNames: Set<string>,
   scopedPrivilegeNames: Set<string>,
-): { authAliases: Set<string>; privilegeAliases: Set<string> } {
+): { authAliases: Set<string>; optionalAuthAliases: Set<string>; privilegeAliases: Set<string> } {
   const entries: Array<{ name: string; body: string }> = [];
   for (const file of files.filter((candidate) => candidate.relativePath.endsWith(".py"))) {
     const pattern = /^([A-Za-z_]\w*)\s*=\s*(?:typing\s*\.\s*)?Annotated\s*\[/gm;
@@ -743,6 +772,7 @@ function discoverGuardAliases(
     }
   }
   const authAliases = new Set<string>();
+  const optionalAuthAliases = new Set<string>();
   const privilegeAliases = new Set<string>();
   let changed = true;
   let remaining = entries.length + 1;
@@ -758,6 +788,12 @@ function discoverGuardAliases(
         privilegeAliases,
       );
       const authenticated = privileged || hasAuthGuard(entry.body, authNames, authAliases);
+      const optionalAuthentication = hasOptionalAuthGuard(
+        entry.body,
+        optionalAuthNames,
+        authNames,
+        optionalAuthAliases,
+      );
       if (privileged && !privilegeAliases.has(entry.name)) {
         privilegeAliases.add(entry.name);
         changed = true;
@@ -766,9 +802,13 @@ function discoverGuardAliases(
         authAliases.add(entry.name);
         changed = true;
       }
+      if (optionalAuthentication && !optionalAuthAliases.has(entry.name)) {
+        optionalAuthAliases.add(entry.name);
+        changed = true;
+      }
     }
   }
-  return { authAliases, privilegeAliases };
+  return { authAliases, optionalAuthAliases, privilegeAliases };
 }
 
 const RESPONSE_OWNER_FIELD = /^(?:owner_id|user_id|tenant_id|creator_id|created_by|account_id|organization_id|org_id)$/i;
@@ -875,6 +915,7 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
   const callableGuards = discoverCallableGuards(pythonFiles);
   for (const name of scopedPrivilegeNames) authNames.add(name);
   for (const name of callableGuards.authNames) authNames.add(name);
+  const optionalAuthNames = new Set(callableGuards.optionalAuthNames);
   for (const name of callableGuards.scopedPrivilegeNames) {
     scopedPrivilegeNames.add(name);
     authNames.add(name);
@@ -887,14 +928,16 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
     const module = pythonModule(file.relativePath);
     return { file, module, imports: parseImports(file, module) };
   });
-  for (const names of [authNames, ownershipNames, privilegeNames, scopedPrivilegeNames]) expandImportedNames(parsedFiles, names);
-  const { authAliases, privilegeAliases } = discoverGuardAliases(
+  for (const names of [authNames, optionalAuthNames, ownershipNames, privilegeNames, scopedPrivilegeNames]) expandImportedNames(parsedFiles, names);
+  const { authAliases, optionalAuthAliases, privilegeAliases } = discoverGuardAliases(
     pythonFiles,
     authNames,
+    optionalAuthNames,
     privilegeNames,
     scopedPrivilegeNames,
   );
   expandImportedNames(parsedFiles, authAliases);
+  expandImportedNames(parsedFiles, optionalAuthAliases);
   expandImportedNames(parsedFiles, privilegeAliases);
   for (const name of privilegeAliases) authAliases.add(name);
   const whitelists = parseWhitelists(pythonFiles);
@@ -922,6 +965,12 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         kind: match[2] === "FastAPI" ? "app" : "router",
         prefix: keywordString(argumentsText, "prefix"),
         dependencyProtected: hasAuthGuard(argumentsText, authNames, authAliases),
+        dependencyOptionalAuthentication: hasOptionalAuthGuard(
+          argumentsText,
+          optionalAuthNames,
+          authNames,
+          optionalAuthAliases,
+        ),
         dependencyOwnershipProtected: hasOwnershipGuard(argumentsText, ownershipNames),
         dependencyPrivilegeProtected: hasPrivilegeGuard(argumentsText, privilegeNames, authNames, scopedPrivilegeNames, privilegeAliases),
         middlewareProtected: false,
@@ -963,6 +1012,12 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         childExpression,
         prefix: keywordString(argumentsText, "prefix"),
         dependencyProtected: hasAuthGuard(argumentsText, authNames, authAliases),
+        dependencyOptionalAuthentication: hasOptionalAuthGuard(
+          argumentsText,
+          optionalAuthNames,
+          authNames,
+          optionalAuthAliases,
+        ),
         dependencyOwnershipProtected: hasOwnershipGuard(argumentsText, ownershipNames),
         dependencyPrivilegeProtected: hasPrivilegeGuard(argumentsText, privilegeNames, authNames, scopedPrivilegeNames, privilegeAliases),
         module: parsed.module,
@@ -999,6 +1054,12 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         responseOwnerFields: responseFields,
         handlerSource: source,
         handlerProtected: hasAuthGuard(`${argumentsText}\n${source}`, authNames, authAliases),
+        handlerOptionalAuthentication: hasOptionalAuthGuard(
+          `${argumentsText}\n${source}`,
+          optionalAuthNames,
+          authNames,
+          optionalAuthAliases,
+        ),
         ownershipProtected: hasOwnershipGuard(`${argumentsText}\n${source}`, ownershipNames),
         privilegeProtected: hasPrivilegeGuard(`${argumentsText}\n${source}`, privilegeNames, authNames, scopedPrivilegeNames, privilegeAliases),
       });
@@ -1031,15 +1092,25 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
     node: RouterNode,
     inheritedPrefix: string,
     dependencyProtected: boolean,
+    optionalAuthentication: boolean,
     ownershipProtected: boolean,
     privilegeProtected: boolean,
   ): void => {
     const nodePrefix = joinPath(inheritedPrefix, node.prefix);
-    const traversalKey = [app.key, node.key, nodePrefix, dependencyProtected, ownershipProtected, privilegeProtected].join("\u0000");
+    const traversalKey = [
+      app.key,
+      node.key,
+      nodePrefix,
+      dependencyProtected,
+      optionalAuthentication,
+      ownershipProtected,
+      privilegeProtected,
+    ].join("\u0000");
     if (seenTraversal.has(traversalKey)) return;
     seenTraversal.add(traversalKey);
     const nodePrivilegeProtected = privilegeProtected || node.dependencyPrivilegeProtected;
     const nodeProtected = dependencyProtected || node.dependencyProtected || nodePrivilegeProtected;
+    const nodeOptionalAuthentication = optionalAuthentication || node.dependencyOptionalAuthentication;
     const nodeOwnershipProtected = ownershipProtected || node.dependencyOwnershipProtected || nodePrivilegeProtected;
     for (const route of routesByRouter.get(node.key) ?? []) {
       const path = joinPath(nodePrefix, route.path);
@@ -1054,6 +1125,8 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         responseOwnerFields: route.responseOwnerFields,
         handlerSource: route.handlerSource,
         locallyProtected: nodeProtected || route.handlerProtected,
+        optionalAuthentication: !(nodeProtected || route.handlerProtected)
+          && (nodeOptionalAuthentication || route.handlerOptionalAuthentication),
         ownershipProtected: nodeOwnershipProtected || route.ownershipProtected || route.privilegeProtected,
         privilegeProtected: nodePrivilegeProtected || route.privilegeProtected,
         middlewareProtected: app.middlewareProtected,
@@ -1067,6 +1140,7 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
         child,
         joinPath(nodePrefix, edge.prefix),
         nodeProtected || edge.dependencyProtected,
+        nodeOptionalAuthentication || edge.dependencyOptionalAuthentication,
         nodeOwnershipProtected || edge.dependencyOwnershipProtected || edge.dependencyPrivilegeProtected,
         nodePrivilegeProtected || edge.dependencyPrivilegeProtected,
       );
@@ -1074,7 +1148,7 @@ export function analyzeFastApi(files: ProjectFile[]): FastApiAnalysis {
   };
 
   for (const app of [...nodes.values()].filter((node) => node.kind === "app" && !NON_RUNTIME_APP_PATH.test(node.sourcePath))) {
-    visit(app, app, "", false, false, false);
+    visit(app, app, "", false, false, false, false);
   }
   const deduplicated = new Map(routes.map((route) => [routeKey(route), route]));
   return {

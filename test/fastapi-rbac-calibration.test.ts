@@ -124,6 +124,7 @@ def health():
       routeCount: 1,
       requiredRoutes: ["GET /health"],
       fastapiFindings: [],
+      authenticationGapReasons: [],
       requiredSignalCounts: [],
       coverage: [
         { domain: "fastapi-authentication", status: "complete" },
@@ -156,6 +157,29 @@ def health():
     const unknown = runCalibration(["--manifest", unknownManifest, "--local", `fixture=${project}`]);
     assert.equal(unknown.status, 1);
     assert.match(unknown.stderr, /manifest contains unknown field unexpected/);
+
+    const unsupportedReasonManifest = join(temporary, "unsupported-reason-manifest.json");
+    const unsupportedReasonValue = {
+      ...structuredClone(manifestValue),
+      targets: [{
+        ...structuredClone(manifestValue.targets[0]!),
+        expected: {
+          ...structuredClone(manifestValue.targets[0]!.expected),
+          authenticationGapReasons: [{
+            reason: "parser_guess",
+            count: 1,
+            routes: ["POST /admin"],
+          }],
+        },
+      }],
+    };
+    await writeFile(unsupportedReasonManifest, `${JSON.stringify(unsupportedReasonValue)}\n`);
+    const unsupportedReason = runCalibration([
+      "--manifest", unsupportedReasonManifest,
+      "--local", `fixture=${project}`,
+    ]);
+    assert.equal(unsupportedReason.status, 1);
+    assert.match(unsupportedReason.stderr, /authenticationGapReasons\[0\]\.reason is unsupported/);
 
     await writeFile(join(project, "untracked.py"), "drift = True\n");
     const dirty = runCalibration(args);

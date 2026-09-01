@@ -44,6 +44,15 @@
             ]
           }
         ],
+        "authenticationGapReasons": [
+          {
+            "reason": "no_visible_guard",
+            "count": 1,
+            "routes": [
+              "POST /private/users"
+            ]
+          }
+        ],
         "requiredSignalCounts": [
           {
             "ruleId": "python.dataflow.ssrf",
@@ -106,6 +115,34 @@
             ]
           }
         ],
+        "authenticationGapReasons": [
+          {
+            "reason": "no_visible_guard",
+            "count": 10,
+            "routes": [
+              "GET /cryptos/tokens/{currency}",
+              "GET /cryptos/tokens/{currency}/abi",
+              "GET /manage/backups/frequencies",
+              "GET /manage/backups/providers",
+              "GET /manage/stores",
+              "GET /templates/list",
+              "PATCH /invoices/{model_id}/customer",
+              "PATCH /invoices/{model_id}/details",
+              "POST /configurator/deploy",
+              "POST /invoices/refunds/{refund_id}/submit"
+            ]
+          },
+          {
+            "reason": "optional_or_disabled_guard",
+            "count": 4,
+            "routes": [
+              "GET /manage/policies",
+              "POST /configurator/server-settings",
+              "POST /invoices/order_id/{order_id:path}",
+              "POST /users"
+            ]
+          }
+        ],
         "requiredSignalCounts": [
           {
             "ruleId": "python.dataflow.ssrf",
@@ -147,6 +184,7 @@
           }
         ],
         "fastapiFindings": [],
+        "authenticationGapReasons": [],
         "requiredSignalCounts": []
       }
     }

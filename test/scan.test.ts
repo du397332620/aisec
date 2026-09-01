@@ -249,6 +249,84 @@ app.include_router(edge_guarded, prefix="/internal", dependencies=[Depends(enfor
   }
 });
 
+test("FastAPI authentication explains optional and disabled guards across dependency boundaries", async () => {
+  const temporary = await mkdtemp(join(tmpdir(), "aisec-fastapi-optional-auth-"));
+  try {
+    await writeFile(join(temporary, "main.py"), `
+from typing import Annotated
+from fastapi import APIRouter, Depends, FastAPI, HTTPException
+
+class AuthDependency:
+    def __init__(self, token_required=True):
+        self.auto_error = token_required
+
+    async def __call__(self, request):
+        authorization = request.headers.get("authorization")
+        if self.auto_error and not authorization:
+            raise HTTPException(status_code=401)
+        return authorization
+
+required_auth = AuthDependency()
+optional_auth = AuthDependency(token_required=False)
+OptionalIdentity = Annotated[object, Depends(optional_auth)]
+
+app = FastAPI()
+optional_app = FastAPI(dependencies=[Depends(optional_auth)])
+router_optional = APIRouter(prefix="/router", dependencies=[Depends(optional_auth)])
+edge_optional = APIRouter()
+
+@router_optional.post("/refresh")
+def refresh_admin():
+    return refresh()
+
+@edge_optional.post("/reindex")
+def reindex_internal():
+    return reindex()
+
+@optional_app.post("/optional-app/sync")
+def sync_permissions():
+    return sync()
+
+@app.post("/admin/decorator", dependencies=[Depends(AuthDependency(token_required=False))])
+def decorated_optional():
+    return update()
+
+@app.post("/admin/annotated")
+def annotated_optional(identity: OptionalIdentity):
+    return update(identity)
+
+@app.post("/admin/plain")
+def plain_unguarded():
+    return update()
+
+@app.post("/admin/protected", dependencies=[Depends(required_auth)])
+def protected():
+    return update()
+
+app.include_router(router_optional)
+app.include_router(edge_optional, prefix="/edge", dependencies=[Depends(optional_auth)])
+`);
+    const { report } = await scanProject(temporary, { profile: "native", nativeOnly: true, persist: false });
+    const gaps = report.signals
+      .filter((signal) => signal.ruleId === "fastapi.auth.sensitive-route-without-guard")
+      .map((signal) => ({
+        route: signal.metadata?.route,
+        reason: signal.metadata?.authenticationGapReason,
+      }));
+    assert.deepEqual(gaps, [
+      { route: "POST /admin/annotated", reason: "optional_or_disabled_guard" },
+      { route: "POST /admin/decorator", reason: "optional_or_disabled_guard" },
+      { route: "POST /admin/plain", reason: "no_visible_guard" },
+      { route: "POST /edge/reindex", reason: "optional_or_disabled_guard" },
+      { route: "POST /optional-app/sync", reason: "optional_or_disabled_guard" },
+      { route: "POST /router/refresh", reason: "optional_or_disabled_guard" },
+    ]);
+    assert.ok(!gaps.some((gap) => gap.route === "POST /admin/protected"));
+  } finally {
+    await rm(temporary, { recursive: true, force: true });
+  }
+});
+
 test("FastAPI privileged authorization distinguishes role enforcement from tenant checks and unproven names", async () => {
   const temporary = await mkdtemp(join(tmpdir(), "aisec-fastapi-privileged-boundary-"));
   try {
@@ -363,6 +441,7 @@ scope_guard = ScopeGuard()
 optional_scope_guard = ScopeGuard(auto_error=False)
 CurrentUser = Annotated[object, Depends(get_current_user)]
 AdminUser = Annotated[object, Security(enforce_scopes, scopes=["admin"])]
+OptionalUser = Annotated[object, Security(optional_scope_guard, scopes=["admin"])]
 
 app = FastAPI()
 
@@ -386,6 +465,10 @@ def callable_scoped_admin(current_user=Security(scope_guard, scopes=["admin"])):
 def optional_scoped_admin(current_user=Security(optional_scope_guard, scopes=["admin"])):
     return run_admin_task()
 
+@app.post("/admin/optional-annotated")
+def optional_annotated_admin(current_user: OptionalUser):
+    return run_admin_task()
+
 @app.post("/admin/empty-scopes")
 def empty_scopes(current_user=Security(enforce_scopes, scopes=[])):
     return run_admin_task()
@@ -406,7 +489,17 @@ def alias_decoy():
     const privilegeRoutes = report.signals
       .filter((signal) => signal.ruleId === "fastapi.authorization.privileged-operation-without-role-check")
       .map((signal) => signal.metadata?.route);
-    assert.deepEqual(authRoutes, ["POST /admin/alias-decoy", "POST /admin/optional-scoped"]);
+    assert.deepEqual(authRoutes, [
+      "POST /admin/alias-decoy",
+      "POST /admin/optional-annotated",
+      "POST /admin/optional-scoped",
+    ]);
+    const authReasons = Object.fromEntries(report.signals
+      .filter((signal) => signal.ruleId === "fastapi.auth.sensitive-route-without-guard")
+      .map((signal) => [signal.metadata?.route, signal.metadata?.authenticationGapReason]));
+    assert.equal(authReasons["POST /admin/alias-decoy"], "no_visible_guard");
+    assert.equal(authReasons["POST /admin/optional-annotated"], "optional_or_disabled_guard");
+    assert.equal(authReasons["POST /admin/optional-scoped"], "optional_or_disabled_guard");
     assert.deepEqual(privilegeRoutes, ["POST /admin/dynamic-scopes", "POST /admin/empty-scopes"]);
   } finally {
     await rm(temporary, { recursive: true, force: true });
@@ -461,6 +554,11 @@ def unproven_admin():
       .filter((signal) => signal.ruleId === "fastapi.auth.sensitive-route-without-guard")
       .map((signal) => signal.metadata?.route);
     assert.deepEqual(authRoutes, ["POST /admin/disabled", "POST /admin/unproven"]);
+    const authReasons = Object.fromEntries(report.signals
+      .filter((signal) => signal.ruleId === "fastapi.auth.sensitive-route-without-guard")
+      .map((signal) => [signal.metadata?.route, signal.metadata?.authenticationGapReason]));
+    assert.equal(authReasons["POST /admin/disabled"], "optional_or_disabled_guard");
+    assert.equal(authReasons["POST /admin/unproven"], "no_visible_guard");
     assert.ok(!report.signals.some((signal) => signal.ruleId === "fastapi.authorization.privileged-operation-without-role-check"));
     assert.ok(!report.signals.some((signal) => signal.ruleId === "fastapi.authorization.object-without-ownership-check"));
   } finally {
